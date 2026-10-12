@@ -1,0 +1,70 @@
+{
+  "schema": "pgn-community-registry-v1",
+  "revision": 1,
+  "interval_convention": "start-inclusive-end-exclusive",
+  "coordinate_encoding": "exact-decimal-integer-strings",
+  "historical_source": {
+    "path": "historical-original.csv",
+    "sha256": "65392d0c164412e30c430bd2d11c054ace349dc2c8ae6366f814e0a5fa71cc0a",
+    "url": "https://docs.google.com/spreadsheets/d/1y0OWkPbf8dvg6cpNqGNawhIykAlAWAtI8vqUA4KPiQ8/export?format=csv&gid=2081297818",
+    "column_unit": "1000000000000000",
+    "preserved_verbatim": true,
+    "complete_means": "community-declared-complete-not-independent-coverage-proof"
+  },
+  "navigation": {
+    "round_range_width": "100000000000000000000",
+    "zones_per_range": 1000,
+    "blocks_per_zone": 100,
+    "zone_width": "100000000000000000",
+    "block_width": "1000000000000000",
+    "ranges": 3023,
+    "start": "0",
+    "end": "302300000000000000000000"
+  },
+  "provisional_defaults": [
+    {
+      "start": "0",
+      "end": "100000000000000000000",
+      "status": "Open",
+      "history_verified": false,
+      "basis": "operator-declared-open-pending-community-history-review"
+    },
+    {
+      "start": "200000000000000000000",
+      "end": "302300000000000000000000",
+      "status": "Open",
+      "history_verified": false,
+      "basis": "operator-declared-open-pending-community-history-review"
+    }
+  ],
+  "manual_reservations": [
+    {
+      "id": "benxy-79000000000000100000000000000-79000000000002100000000000000",
+      "owner": "Benxy",
+      "source_handle": "benxy031",
+      "start": "79000000000000100000000000000",
+      "end": "79000000000002100000000000000",
+      "source_start": "7.900000000000010e28",
+      "source_end": "7.900000000000210e28",
+      "status": "Reserved",
+      "kind": "operator-supplied-manual-exception",
+      "evidence": "operator-supplied-Discord-screenshot",
+      "source_message_url": null,
+      "display_rule": "whole-cell-only; incomplete edge blocks remain Open",
+      "mining_started": false,
+      "processed": false
+    }
+  ],
+  "cell_policy": {
+    "normal_reservations": "whole-blocks-or-whole-zones-only",
+    "manual_reserved_cell_requires": "complete-cell-contained-in-manual-interval",
+    "incomplete_manual_edge_status": "Open",
+    "partial_reservation_status": false,
+    "zone_status_requires": "full-zone-coverage-not-any-overlap",
+    "processed_status_requires": "complete-cell-coverage-with-explicit-completion-record"
+  },
+  "publication": {
+    "role": "development-copy-not-a-replacement-of-historical-stewardship",
+    "live_multi_miner_synchronization": "not-yet-deployed"
+  }
+}

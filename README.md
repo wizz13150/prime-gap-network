@@ -56,7 +56,8 @@ Experimental software and a preliminary reservation interface are being
 evaluated. The reservation workflow requires further development and
 agreement with the community.
 
-This repository currently contains only the project presentation.
+This repository contains the project presentation and a
+[development copy of the community range register](data/community/README.md).
 It does not yet provide a public software release.
 
 Existing community reservation records remain under their current
