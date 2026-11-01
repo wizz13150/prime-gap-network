@@ -1,5 +1,5 @@
 /build*/
-/wallet/**/build*/
+/wallet/core-integration/build*/
 /EngineRuntime/
 /delivery/
 /data/testnet/
