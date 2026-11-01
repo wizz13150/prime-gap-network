@@ -1,0 +1,6 @@
+<RCC><qresource prefix="/frontier">
+<file alias="app-icon.png">pgn-mark.png</file>
+<file alias="chevron-down.svg">chevron-down.svg</file>
+<file alias="chevron-up.svg">chevron-up.svg</file>
+<file alias="checkbox-tick.svg">checkbox-tick.svg</file>
+</qresource></RCC>

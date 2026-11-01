@@ -1,0 +1,84 @@
+{
+  "schema": "PGN_CPU_GPU_LINEAGE_PORT_HEAD_V1",
+  "request_ids": [
+    "B971-CPU-OPT-20261031",
+    "B971-CPU-CONTROLS-20261031"
+  ],
+  "canonical_root": "src/engine/prime_gap_native",
+  "source_manifest_sha256": "96C600D3486DED57B400FCD4428E904F6A3743E49F587DC85E93847D9FFDDE13",
+  "manifest_inputs": 54,
+  "all_input_hashes_verified": true,
+  "priority_bits": 68,
+  "required_domain": "67..95",
+  "source_inputs": [
+    {
+      "file": "candidate_extent.h",
+      "bytes": 396,
+      "sha256": "1AACCB6DB85D2F7FF2C65473FFFE12C2AA47B617BE110A3F4704B9EC2779B7E0"
+    },
+    {
+      "file": "candidate_walk.cuh",
+      "bytes": 37755,
+      "sha256": "BD5781A81E133C8F349019871D8D5213C0D74006AF46F726A92517C9526F61D7"
+    },
+    {
+      "file": "engine_contracts.h",
+      "bytes": 10956,
+      "sha256": "8376CC7DC4211DECAEFA9393F7654B6391BB18E7DC404370D9ED99C0EFF470F9"
+    },
+    {
+      "file": "euler96.cuh",
+      "bytes": 20323,
+      "sha256": "D3AC8711E414910DA563139B75AFD2DEAD54A9D7D928BF1754AA7EAE3D54FB91"
+    },
+    {
+      "file": "exact_prime_proof.h",
+      "bytes": 4327,
+      "sha256": "679F27AE29F759C44306E306C9B208A4F8A8118F40AFA013D66B6952E81A9B8C"
+    },
+    {
+      "file": "optimized_narrow_euler.cuh",
+      "bytes": 8780,
+      "sha256": "5BF221AEF8F9F537DB32AE5F59C1BBD3F1869718C15D542D1D1F7D63385A9431"
+    },
+    {
+      "file": "pgn_mr96.cuh",
+      "bytes": 3110,
+      "sha256": "04453A2A99C28EEE0D1B17965C2190B72851EDEE9BD0F537C33F6643C756BD18"
+    },
+    {
+      "file": "search_pipeline.cuh",
+      "bytes": 8742,
+      "sha256": "AF4E906D523E49046ADA05713978861C51D0A34412521147F11AF29FBA166E12"
+    },
+    {
+      "file": "search_worker.cu",
+      "bytes": 78558,
+      "sha256": "708A9A4864DDAB05181415D1DF785649471AE8FE64CABF8B1847080C432564E1"
+    },
+    {
+      "file": "segmented_sieve.cuh",
+      "bytes": 30942,
+      "sha256": "149AC2BF02752DDE47DCE4B49164313959DE3D300F2AF3CAF18ED7C14D0C7B4D"
+    },
+    {
+      "file": "window_steps.h",
+      "bytes": 517,
+      "sha256": "4F1F970038D640F4ABA8B522FF85ACE9273531E66D8B8D5D062EFE04218BD250"
+    }
+  ],
+  "pipeline": [
+    "class30bitmap with canonical sieve primebank and wheel ownership",
+    "shared perbit Euler-Jacobi predicate and its admitted cache/reciprocal bounds",
+    "canonical window_steps and backwardanchor/forwardendpoint walk",
+    "reportedpair MR13screen, interior exclusion, exactendpoint proof abovebound",
+    "canonical exactshortprefix/word/threshold seams, orderedprefixjournaling"
+  ],
+  "production_admission": "none until port-qualified; no standaloneFLINT/MRscientific fallback",
+  "owners": {
+    "arithmetic_simd": "Riecoin ownriecoin-codesign untilreview",
+    "orchestration_sieve_ownership_lifetime": "Naja",
+    "sharedhost_UI_CMake": "root"
+  },
+  "canonical_root_base": "repository root"
+}

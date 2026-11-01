@@ -1,0 +1,1 @@
+Finite completed RTX3090 Scout95bit validation transcript,2e12 positions,8 reported gaps. Only semantic wire records retained; no live journal, device/account credentials or private paths. Tests bind independent fixture identities and do not infer controller/network authority.

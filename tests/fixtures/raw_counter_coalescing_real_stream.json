@@ -1,0 +1,308 @@
+[
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140103962942000",
+    "observed_utc": "2026-10-18T06:04:15.8827484Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": [
+      "[pgn-counters] time_ns=140097293322400 positions=86586540687340 gaps=13776 tests=288486246450 batches=1344 processed_gaps=13776",
+      "[pgn-counters] time_ns=140097592979100 positions=86650965196780 gaps=13782 tests=288700857827 batches=1345 processed_gaps=13782",
+      "[pgn-counters] time_ns=140097634651800 positions=86715389706220 gaps=13794 tests=288915513514 batches=1346 processed_gaps=13794",
+      "[pgn-counters] time_ns=140097955255800 positions=86779814215660 gaps=13803 tests=289130168573 batches=1347 processed_gaps=13803",
+      "[pgn-counters] time_ns=140097996931800 positions=86844238725100 gaps=13816 tests=289344804589 batches=1348 processed_gaps=13816",
+      "[pgn-counters] time_ns=140098316097900 positions=86908663234540 gaps=13829 tests=289559464048 batches=1349 processed_gaps=13829",
+      "[pgn-counters] time_ns=140098361635600 positions=86973087743980 gaps=13837 tests=289774102024 batches=1350 processed_gaps=13837",
+      "[pgn-counters] time_ns=140098663710400 positions=87037512253420 gaps=13851 tests=289988761867 batches=1351 processed_gaps=13851",
+      "[pgn-counters] time_ns=140098709033500 positions=87101936762860 gaps=13860 tests=290203422051 batches=1352 processed_gaps=13860",
+      "[pgn-counters] time_ns=140099023805000 positions=87166361272300 gaps=13868 tests=290418065995 batches=1353 processed_gaps=13868",
+      "[pgn-counters] time_ns=140099064029800 positions=87230785781740 gaps=13876 tests=290632686549 batches=1354 processed_gaps=13876",
+      "[pgn-counters] time_ns=140099370804700 positions=87295210291180 gaps=13889 tests=290847349736 batches=1355 processed_gaps=13889",
+      "[pgn-counters] time_ns=140099418374800 positions=87359634800620 gaps=13895 tests=291062015926 batches=1356 processed_gaps=13895",
+      "[pgn-counters] time_ns=140099722246200 positions=87424059310060 gaps=13905 tests=291276643863 batches=1357 processed_gaps=13905",
+      "[pgn-counters] time_ns=140099766164000 positions=87488483819500 gaps=13913 tests=291491285975 batches=1358 processed_gaps=13913",
+      "[pgn-counters] time_ns=140100088311100 positions=87552908328940 gaps=13929 tests=291705913760 batches=1359 processed_gaps=13929",
+      "[pgn-counters] time_ns=140100131341800 positions=87617332838380 gaps=13940 tests=291920557828 batches=1360 processed_gaps=13940",
+      "[pgn-counters] time_ns=140100437960500 positions=87681757347820 gaps=13949 tests=292135152584 batches=1361 processed_gaps=13949",
+      "[pgn-counters] time_ns=140100487606900 positions=87746181857260 gaps=13961 tests=292349825806 batches=1362 processed_gaps=13961",
+      "[pgn-counters] time_ns=140100791099300 positions=87810606366700 gaps=13971 tests=292564456138 batches=1363 processed_gaps=13971",
+      "[pgn-counters] time_ns=140100830396900 positions=87875030876140 gaps=13981 tests=292779109909 batches=1364 processed_gaps=13981",
+      "[pgn-counters] time_ns=140101148233800 positions=87939455385580 gaps=13988 tests=292993761511 batches=1365 processed_gaps=13988",
+      "[pgn-counters] time_ns=140101189878900 positions=88003879895020 gaps=14001 tests=293208408293 batches=1366 processed_gaps=14001",
+      "[pgn-counters] time_ns=140101508851000 positions=88068304404460 gaps=14007 tests=293423063335 batches=1367 processed_gaps=14007",
+      "[pgn-counters] time_ns=140101553258700 positions=88132728913900 gaps=14022 tests=293637708013 batches=1368 processed_gaps=14022",
+      "[pgn-counters] time_ns=140101855241900 positions=88197153423340 gaps=14031 tests=293852396637 batches=1369 processed_gaps=14031",
+      "[pgn-counters] time_ns=140101902460000 positions=88261577932780 gaps=14037 tests=294067041151 batches=1370 processed_gaps=14037",
+      "[pgn-counters] time_ns=140102218018000 positions=88326002442220 gaps=14044 tests=294281657529 batches=1371 processed_gaps=14044",
+      "[pgn-counters] time_ns=140102256299700 positions=88390426951660 gaps=14056 tests=294496319904 batches=1372 processed_gaps=14056",
+      "[pgn-counters] time_ns=140102566683200 positions=88454851461100 gaps=14066 tests=294710964557 batches=1373 processed_gaps=14066",
+      "[pgn-counters] time_ns=140102622052700 positions=88519275970540 gaps=14071 tests=294925612091 batches=1374 processed_gaps=14071",
+      "[pgn-counters] time_ns=140102936990600 positions=88583700479980 gaps=14077 tests=295140252037 batches=1375 processed_gaps=14077",
+      "[pgn-counters] time_ns=140102974705500 positions=88648124989420 gaps=14087 tests=295354889611 batches=1376 processed_gaps=14087",
+      "[pgn-counters] time_ns=140103282765400 positions=88712549498860 gaps=14100 tests=295569558639 batches=1377 processed_gaps=14100",
+      "[pgn-counters] time_ns=140103321288400 positions=88776974008300 gaps=14112 tests=295784205570 batches=1378 processed_gaps=14112",
+      "[pgn-counters] time_ns=140103635884600 positions=88841398517740 gaps=14122 tests=295998832543 batches=1379 processed_gaps=14122",
+      "[pgn-counters] time_ns=140103677786900 positions=88905823027180 gaps=14134 tests=296213479361 batches=1380 processed_gaps=14134"
+    ]
+  },
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140104272261500",
+    "observed_utc": "2026-10-18T06:04:16.1825952Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": [
+      "[pgn-counters] time_ns=140103990931100 positions=88970247536620 gaps=14143 tests=296428147527 batches=1381 processed_gaps=14143",
+      "[pgn-counters] time_ns=140104029465500 positions=89034672046060 gaps=14157 tests=296642793013 batches=1382 processed_gaps=14157"
+    ]
+  },
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140104455822000",
+    "observed_utc": "2026-10-18T06:04:16.3641148Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": [
+      "[pgn-counters] time_ns=140104335779600 positions=89099096555500 gaps=14161 tests=296857422315 batches=1383 processed_gaps=14161",
+      "[pgn-counters] time_ns=140104377361900 positions=89163521064940 gaps=14173 tests=297072079886 batches=1384 processed_gaps=14173"
+    ]
+  },
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140104644214400",
+    "observed_utc": "2026-10-18T06:04:16.5498016Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": []
+  },
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140104894478400",
+    "observed_utc": "2026-10-18T06:04:16.7898992Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": [
+      "[pgn-counters] time_ns=140104689387700 positions=89227945574380 gaps=14182 tests=297286731055 batches=1385 processed_gaps=14182",
+      "[pgn-counters] time_ns=140104730844900 positions=89292370083820 gaps=14185 tests=297501388480 batches=1386 processed_gaps=14185"
+    ]
+  },
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140105143225600",
+    "observed_utc": "2026-10-18T06:04:17.0536404Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": [
+      "[pgn-counters] time_ns=140105043614400 positions=89356794593260 gaps=14194 tests=297716049468 batches=1387 processed_gaps=14194",
+      "[pgn-counters] time_ns=140105083249300 positions=89421219102700 gaps=14210 tests=297930678135 batches=1388 processed_gaps=14210"
+    ]
+  },
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140105444161000",
+    "observed_utc": "2026-10-18T06:04:17.3502830Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": []
+  },
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140105621080300",
+    "observed_utc": "2026-10-18T06:04:17.5220099Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": [
+      "[pgn-counters] time_ns=140105397192800 positions=89485643612140 gaps=14222 tests=298145328711 batches=1389 processed_gaps=14222",
+      "[pgn-counters] time_ns=140105441531600 positions=89550068121580 gaps=14232 tests=298359983441 batches=1390 processed_gaps=14232"
+    ]
+  },
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140105867576100",
+    "observed_utc": "2026-10-18T06:04:17.7684777Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": [
+      "[pgn-counters] time_ns=140105759690000 positions=89614492631020 gaps=14241 tests=298574630370 batches=1391 processed_gaps=14241",
+      "[pgn-counters] time_ns=140105806106400 positions=89678917140460 gaps=14251 tests=298789270920 batches=1392 processed_gaps=14251"
+    ]
+  },
+  {
+    "manifest": {
+      "schema": "pgn-native-process-1",
+      "run": "120577355cc44574be4c4b72baedfc70",
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",
+      "pid": 3844,
+      "birth": "2026-10-18T06:00:11.1159250Z",
+      "start": "199970000000000000000",
+      "end": "199971000000000000000",
+      "source_profile": {
+        "protocol": "pgn-source-legacy-carry-chain-v1",
+        "schema": "pgn-run-source-profile-1",
+        "image_sha256": "65c7b566b76d6a90cd94c75b2d31bf8c516074f30cce8e5ea307363816f82b8d",
+        "executable": "C:/PGN/native/20261018-carry-chain-v1/bin/pgn-continuous-gpu.exe"
+      }
+    },
+    "source_clock_ns": "140106052743500",
+    "observed_utc": "2026-10-18T06:04:17.9597746Z",
+    "owned": true,
+    "state": "RUNNING",
+    "binding": {
+      "uuid": "GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac"
+    },
+    "telemetry_lines": []
+  }
+]

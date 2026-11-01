@@ -1,0 +1,2 @@
+// Native Explorer/taskbar icon; separate from the Qt window-icon resource.
+1 ICON "@PGN_WINDOWS_ICON_FILE@"

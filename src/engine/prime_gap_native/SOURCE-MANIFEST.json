@@ -1,0 +1,275 @@
+{
+  "schema": "PRIME_GAP_SCOUT_NATIVE_INPUTS_V1",
+  "files": [
+    {
+      "file": "barrett70-exact.cuh",
+      "bytes": 12653,
+      "sha256": "A6D864BFA808737D234C4F3922572508A36F3F26716310CBF6157144EE86C9CC"
+    },
+    {
+      "file": "candidate_extent.h",
+      "bytes": 396,
+      "sha256": "1AACCB6DB85D2F7FF2C65473FFFE12C2AA47B617BE110A3F4704B9EC2779B7E0"
+    },
+    {
+      "file": "candidate_types.h",
+      "bytes": 1352,
+      "sha256": "9E21C618E5A093D9252D47FB897E231E22C750A157300284F94FB7AAADABA8A1"
+    },
+    {
+      "file": "candidate_walk.cuh",
+      "bytes": 37755,
+      "sha256": "BD5781A81E133C8F349019871D8D5213C0D74006AF46F726A92517C9526F61D7"
+    },
+    {
+      "file": "checkpoint_publish.h",
+      "bytes": 11821,
+      "sha256": "7B1CE65E0895EAAB16F52398E902371C9D1082799B4530FEA5580611A4DD9301"
+    },
+    {
+      "file": "diagnostic_data.h",
+      "bytes": 16183,
+      "sha256": "0F4F0A51DCBC3421D1ABCFDF58D9ABB20726157968FFF39AA4D03BD26FE8CA21"
+    },
+    {
+      "file": "engine_contracts.h",
+      "bytes": 10956,
+      "sha256": "8376CC7DC4211DECAEFA9393F7654B6391BB18E7DC404370D9ED99C0EFF470F9"
+    },
+    {
+      "file": "engine_specs.h",
+      "bytes": 1591,
+      "sha256": "66563258CF2ADFBF541277FB10D31B31C348B787FF5CFE7126F36D8F1E8BCA1E"
+    },
+    {
+      "file": "euler96.cuh",
+      "bytes": 20323,
+      "sha256": "D3AC8711E414910DA563139B75AFD2DEAD54A9D7D928BF1754AA7EAE3D54FB91"
+    },
+    {
+      "file": "exact_prime_proof.h",
+      "bytes": 4327,
+      "sha256": "679F27AE29F759C44306E306C9B208A4F8A8118F40AFA013D66B6952E81A9B8C"
+    },
+    {
+      "file": "extended_columns.cuh",
+      "bytes": 7754,
+      "sha256": "CBFC9223A38FDA141657A00EEC840696BAE634EB8B360F88BA1C6D59135E61CF"
+    },
+    {
+      "file": "memory_plan.h",
+      "bytes": 4131,
+      "sha256": "5B2E85A92DBA1C4C8A6B40F26DBCA76E389E20EFB033998712E400512F7C84FA"
+    },
+    {
+      "file": "montgomery_columns.cuh",
+      "bytes": 16670,
+      "sha256": "C842BBBA0D13F88188E0780B28E6F284E55690C65CF8BA197D1E35FF91B30710"
+    },
+    {
+      "file": "optimized_euler69.cuh",
+      "bytes": 4461,
+      "sha256": "5109B7F5FF9F76D75E1275E8AA4DD2C6DED758988EF013766B716481C372B49E"
+    },
+    {
+      "file": "optimized_euler72.cuh",
+      "bytes": 3648,
+      "sha256": "5B65A1E75DC02D0802DAC3DD531AADFD3008F4FE6498CE422231D01AA2355CFD"
+    },
+    {
+      "file": "optimized_euler75.cuh",
+      "bytes": 2804,
+      "sha256": "4FD953CA0BACC4037B9A42DE042CEEA6356315E92164112971BB4A95C81FC241"
+    },
+    {
+      "file": "optimized_float80.cuh",
+      "bytes": 14103,
+      "sha256": "C1D01F6E82E7949C761CDA8F36F921F021C6EE171177D204267DFBF7475C04CB"
+    },
+    {
+      "file": "optimized_narrow_euler.cuh",
+      "bytes": 8780,
+      "sha256": "5BF221AEF8F9F537DB32AE5F59C1BBD3F1869718C15D542D1D1F7D63385A9431"
+    },
+    {
+      "file": "optimized_pairs76_77.cuh",
+      "bytes": 4485,
+      "sha256": "A83CD21E9BE1CED75C8F315D88E2A4BA75B6FC99A0E46A463921117E5BEF31A6"
+    },
+    {
+      "file": "optimized_pairs78_79.cuh",
+      "bytes": 5386,
+      "sha256": "2AE9B960523BEC0476214FE37715FA082991547485B694CED436CED80CD6CEB4"
+    },
+    {
+      "file": "optimized_pairs81_87.cuh",
+      "bytes": 12173,
+      "sha256": "73118E68BFFB6740D5278134FCFB58C5FE460F7C9003D49FA5516D3FB694CA5F"
+    },
+    {
+      "file": "optimized_pairs88_94.cuh",
+      "bytes": 7183,
+      "sha256": "6AFCDBD70204EA89127BF01B86AF3851AAC3C9783B0EE982691055C4B0411A3D"
+    },
+    {
+      "file": "optimized_radix3.cuh",
+      "bytes": 2869,
+      "sha256": "7F9BC39C47E1BA7907EB9508D485AD62D88EA129F18882900D7D480725942B57"
+    },
+    {
+      "file": "optimized_radix3_upper.cuh",
+      "bytes": 5035,
+      "sha256": "805931613B8AFA2D579FA68498EEC4C0BCAA89FA70D2043169D06DF56B25643D"
+    },
+    {
+      "file": "optimized_retained95.cuh",
+      "bytes": 9556,
+      "sha256": "7321CDE2530904F94188E03577327E14667612FDED8A43C92A1B857E6C0E6AC6"
+    },
+    {
+      "file": "optimized_retained95_low.cuh",
+      "bytes": 8203,
+      "sha256": "9695874009974B223E48AF2DA0B45A424D7BA7CB48C41E1705BB8D0289CC6D0D"
+    },
+    {
+      "file": "paired_montgomery.cuh",
+      "bytes": 6781,
+      "sha256": "84ADE0EA48B288942A4E7BE991787E53F19C77EB3B502FAB9FA0860F44901EC5"
+    },
+    {
+      "file": "paired_montgomery_stream.cuh",
+      "bytes": 3101,
+      "sha256": "7D110017EF697B94249253A8AE5731CB5ADE962B5985EABF3912A02962C862BB"
+    },
+    {
+      "file": "perig.cuh",
+      "bytes": 14027,
+      "sha256": "82866D0546DB684B8475AC5777EF86692780E92F7517408278F3505703CA1AB1"
+    },
+    {
+      "file": "pgn_event210.cuh",
+      "bytes": 13223,
+      "sha256": "2D26F79628C722C28EED34E861C969C9C0BC281AF702CB8140567575C30403F1"
+    },
+    {
+      "file": "pgn_mr96.cuh",
+      "bytes": 3110,
+      "sha256": "04453A2A99C28EEE0D1B17965C2190B72851EDEE9BD0F537C33F6643C756BD18"
+    },
+    {
+      "file": "pgn_periodic_presieve.cuh",
+      "bytes": 2733,
+      "sha256": "73B1070DD52795891FAFE1229E37CEC279DD4A22F7C6DE6A495DE335D5CF132F"
+    },
+    {
+      "file": "pgn_smallword.cuh",
+      "bytes": 7586,
+      "sha256": "A2A8099CDC8F68ABAE38DE3BDC808D4A793CC0ADCC4ECF82AD495E839CCC6288"
+    },
+    {
+      "file": "pgn_tinywheel.cuh",
+      "bytes": 3910,
+      "sha256": "72C7DA9CBF755A0B5CF4D1D91AA428B1EFBF7B5247DC942FF092AC2FBA3C78CB"
+    },
+    {
+      "file": "portable_platform.h",
+      "bytes": 1008,
+      "sha256": "42DAFDB04B51569FC6C095D0E8F5E6758E8E04CD9890081634A9923C92915C8B"
+    },
+    {
+      "file": "proof_runtime_config.h",
+      "bytes": 108,
+      "sha256": "832DE57EA33913B8281AA1B3AA99F1251721ABAAE8679B8D2286E0B822075A8E"
+    },
+    {
+      "file": "proof_runtime_linux.h",
+      "bytes": 158,
+      "sha256": "B67E4868ADE5EC99D00704F02F996E81F354102365B34F85DC872181BA7D1847"
+    },
+    {
+      "file": "proof_runtime_windows.h",
+      "bytes": 185,
+      "sha256": "43DDF56BF925C9417D672D8739BFDBC5931EF256052BA759D0051430E747A875"
+    },
+    {
+      "file": "R64lazy32.cuh",
+      "bytes": 3643,
+      "sha256": "637628C1DAD9EF9883D9DD4BDA3658F8848615514D3400A83428233AD14E63B0"
+    },
+    {
+      "file": "R64lazy32_prp68.cuh",
+      "bytes": 8482,
+      "sha256": "047D0653B3F9A3D206C72671D34CFE9789ECBFE9846F64C1150440BC91E56C46"
+    },
+    {
+      "file": "radix16_euler68.cuh",
+      "bytes": 10190,
+      "sha256": "138121565A0FE1073E621CB74B2F2970DF23EF52DF65027E26FDC477F6DC06B3"
+    },
+    {
+      "file": "resident_protocol.h",
+      "bytes": 6896,
+      "sha256": "3C838A7867AE82C6418AD296F9A15FB2EBACE7579C32DEDDEC0A7B9E6FE9AF00"
+    },
+    {
+      "file": "resident_runtime.h",
+      "bytes": 6059,
+      "sha256": "D348045F2F27464DD47C3D4FDA2F9CB05C12E2DB418CA229323EB85CAB6930B5"
+    },
+    {
+      "file": "retained_columns.cuh",
+      "bytes": 15132,
+      "sha256": "7B5BA15C8A20ADDDA4F6594CD5888A92E9A77F0DF411E1BBDE04DA8A63A9026E"
+    },
+    {
+      "file": "scout_version.h",
+      "bytes": 43,
+      "sha256": "7CED29113D9307007C1E45CE10B1D134B2F37C54A7E330BFDA9E160AB520F960"
+    },
+    {
+      "file": "search_pipeline.cuh",
+      "bytes": 8742,
+      "sha256": "AF4E906D523E49046ADA05713978861C51D0A34412521147F11AF29FBA166E12"
+    },
+    {
+      "file": "search_worker.cu",
+      "bytes": 78558,
+      "sha256": "708A9A4864DDAB05181415D1DF785649471AE8FE64CABF8B1847080C432564E1"
+    },
+    {
+      "file": "seed_schedule.h",
+      "bytes": 2131,
+      "sha256": "109410BDD270F761B29464BE35A59FC416F61DC997999E3A3057F6AE732333B5"
+    },
+    {
+      "file": "segmented_sieve.cuh",
+      "bytes": 30942,
+      "sha256": "149AC2BF02752DDE47DCE4B49164313959DE3D300F2AF3CAF18ED7C14D0C7B4D"
+    },
+    {
+      "file": "stateful-u160-live.cuh",
+      "bytes": 1590,
+      "sha256": "269861BEB038E373122C686F9066BCB3595E44C8CC4A49AEA85701619AB53010"
+    },
+    {
+      "file": "wide_math.cuh",
+      "bytes": 7887,
+      "sha256": "3CFE09C559D6A57FE9F1613D5E6110EC41B67AE17C9D4712062C5E079C7B2432"
+    },
+    {
+      "file": "window_steps.h",
+      "bytes": 517,
+      "sha256": "4F1F970038D640F4ABA8B522FF85ACE9273531E66D8B8D5D062EFE04218BD250"
+    },
+    {
+      "file": "worker.manifest",
+      "bytes": 550,
+      "sha256": "31511123B836D78812BFB949D4D3D94356E5E722DE9369BFD33DD688E2C9EA72"
+    },
+    {
+      "file": "worker_diagnostics.cuh",
+      "bytes": 21010,
+      "sha256": "E34F351CCC634AD1A32DFC32C5E6DB67EDCFE2AF7FF082E0DBF1A4E7190D6F09"
+    }
+  ]
+}

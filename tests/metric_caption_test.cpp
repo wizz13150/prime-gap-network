@@ -1,0 +1,58 @@
+#include "ui/render/metric_caption.h"
+#include "ui/render/horizon_device_visuals.h"
+#include "ui/render/gauge_layout.h"
+#include <array>
+#include <iostream>
+#include <limits>
+
+int main()
+{
+    unsigned checks{}, failures{};
+    const auto check = [&](bool ok, const char* label) {
+        ++checks; if (!ok) { ++failures; std::cerr << "FAIL " << label << '\n'; }
+    };
+    using pgn::ui::compactMetricCaption;
+    struct Example { double raw; const char* text; };
+    for (const auto& example : std::array{
+        Example{0, "0"}, Example{0.001, "<0.01"}, Example{0.125, "0.13"},
+        Example{1, "1"}, Example{12.5, "12.5"}, Example{999, "999"},
+        Example{999.5, "1K"}, Example{1e3, "1K"}, Example{1e6, "1M"},
+        Example{746e6, "746M"}, Example{224e9, "224G"}, Example{240e9, "240G"},
+        Example{999.5e6, "1G"}, Example{1.4e12, "1.4T"}, Example{1e15, "1P"},
+        Example{1e18, "1E"}, Example{1e21, "1Z"}, Example{1e24, "1Y"}, Example{1e27, "1e27"}}) {
+        const std::optional<double> raw{example.raw};
+        check(compactMetricCaption(raw) == QString::fromLatin1(example.text), "common caption vector");
+        check(raw && *raw == example.raw, "presentation never changes raw rate");
+    }
+    for (const auto invalid : {-1.0, std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()})
+        check(compactMetricCaption(invalid) == QStringLiteral("—"), "invalid is unavailable, not positive/zero");
+    check(compactMetricCaption(std::nullopt) == QStringLiteral("—"), "missing remains unavailable");
+    check(compactMetricCaption(std::numeric_limits<double>::max()).size() <= 6, "extreme caption bounded");
+
+    QHash<QString, QColor> colors;
+    const QColor total = HorizonDeviceVisuals::totalCardAccent();
+    for (int i = 0; i < 1024; ++i) {
+        const auto id = QString("hardware-%1").arg(i);
+        const auto color = HorizonDeviceVisuals::identityColor(colors, id, "GPU");
+        check(color.isValid() && color.rgb() != total.rgb(), "summary accent never assigned to hardware");
+        check(HorizonDeviceVisuals::identityColor(colors, id, "GPU") == color, "hardware identity stays stable");
+    }
+    colors.insert("reserved-collision", total);
+    check(HorizonDeviceVisuals::identityColor(colors, "reserved-collision", "GPU").rgb() != total.rgb(),
+          "reserved accent cannot survive an existing hardware cache entry");
+    for (double width : {120.0, 240.0, 338.0, 640.0}) {
+        double previous = 0;
+        for (int i = 0; i != 4; ++i) {
+            const auto gauge = FrontierGaugeGeometryForCard(7, width, i, 4, 78, 22);
+            check(gauge.radius >= 0 && gauge.radius <= 22 && gauge.labelLeft >= 7 &&
+                  gauge.labelRight <= 7 + width, "all summary gauges use bounded device geometry");
+            if (i) check(std::abs(gauge.centerX - previous - gauge.meterWidth) < 1e-9,
+                         "identical meter spacing");
+            previous = gauge.centerX;
+        }
+    }
+    std::cout << "Metric presentation: checks=" << checks << " failures=" << failures
+              << "; no application/window/platform plugin, raw telemetry untouched\n";
+    return failures ? 1 : 0;
+}

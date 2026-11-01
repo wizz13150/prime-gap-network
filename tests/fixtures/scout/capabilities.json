@@ -1,0 +1,242 @@
+{
+  "schema": "pgn-engine-module-1",
+  "id": "cuda-continuous-source-v1",
+  "protocol": "phase0-source-1",
+  "host_refill": false,
+  "host_verification": true,
+  "whole_job_gpu_owned": false,
+  "cuda_arch": [
+    "sm86",
+    "sm120"
+  ],
+  "mono_gpu": true,
+  "network_pgn": false,
+  "prime_certificate": "GPU MR13 screening; exact FLINT endpoint proof above deterministic MR13 bound",
+  "coverage": "SOURCE_PRP_INDEPENDENT_PROOF_PENDING",
+  "single_low64_window": true,
+  "supported_high_word_range": [
+    4,
+    2147483647
+  ],
+  "bits_min": 67,
+  "bits_max": 95,
+  "gap_min": 960,
+  "gap_min_floor": 954,
+  "whole70_state_bytes": 8,
+  "whole71_state_bytes": 8,
+  "gap_min_dynamic": true,
+  "checkpoint_schema": "PGNS_GAP32_64B",
+  "memory_plan": true,
+  "max_source_blocks": 4194304,
+  "block_numbers": 1006632960,
+  "emit_min_gap_default": 960,
+  "profile_k": 64,
+  "self_test_compiled": true,
+  "optimized_literal_high_words": [
+    5,
+    10,
+    21,
+    43,
+    81,
+    162,
+    325,
+    542,
+    1084,
+    2168,
+    5421,
+    16263,
+    21684,
+    54210,
+    108420,
+    162630,
+    271050,
+    542101,
+    1084202,
+    2168404,
+    4336808,
+    10842021,
+    21684043,
+    54210108,
+    108420217,
+    162630325,
+    271050543,
+    542101086,
+    1084202172
+  ],
+  "retained_points": [
+    {
+      "bits": 67,
+      "high": 5,
+      "auto_gap_min": 954,
+      "state_bytes": 8
+    },
+    {
+      "bits": 68,
+      "high": 10,
+      "auto_gap_min": 960,
+      "state_bytes": 8
+    },
+    {
+      "bits": 69,
+      "high": 21,
+      "auto_gap_min": 982,
+      "state_bytes": 32
+    },
+    {
+      "bits": 70,
+      "high": 43,
+      "auto_gap_min": 994,
+      "state_bytes": 8
+    },
+    {
+      "bits": 71,
+      "high": 81,
+      "auto_gap_min": 1008,
+      "state_bytes": 8
+    },
+    {
+      "bits": 72,
+      "high": 162,
+      "auto_gap_min": 1022,
+      "state_bytes": 8
+    },
+    {
+      "bits": 73,
+      "high": 325,
+      "auto_gap_min": 1036,
+      "state_bytes": 8
+    },
+    {
+      "bits": 74,
+      "high": 542,
+      "auto_gap_min": 1050,
+      "state_bytes": 8
+    },
+    {
+      "bits": 75,
+      "high": 1084,
+      "auto_gap_min": 1062,
+      "state_bytes": 8
+    },
+    {
+      "bits": 76,
+      "high": 2168,
+      "auto_gap_min": 1076,
+      "state_bytes": 8
+    },
+    {
+      "bits": 77,
+      "high": 5421,
+      "auto_gap_min": 1090,
+      "state_bytes": 8
+    },
+    {
+      "bits": 78,
+      "high": 16263,
+      "auto_gap_min": 1104,
+      "state_bytes": 8
+    },
+    {
+      "bits": 79,
+      "high": 21684,
+      "auto_gap_min": 1116,
+      "state_bytes": 8
+    },
+    {
+      "bits": 80,
+      "high": 54210,
+      "auto_gap_min": 1130,
+      "state_bytes": 8
+    },
+    {
+      "bits": 81,
+      "high": 108420,
+      "auto_gap_min": 1144,
+      "state_bytes": 8
+    },
+    {
+      "bits": 82,
+      "high": 162630,
+      "auto_gap_min": 1158,
+      "state_bytes": 8
+    },
+    {
+      "bits": 83,
+      "high": 271050,
+      "auto_gap_min": 1170,
+      "state_bytes": 8
+    },
+    {
+      "bits": 84,
+      "high": 542101,
+      "auto_gap_min": 1184,
+      "state_bytes": 8
+    },
+    {
+      "bits": 85,
+      "high": 1084202,
+      "auto_gap_min": 1198,
+      "state_bytes": 8
+    },
+    {
+      "bits": 86,
+      "high": 2168404,
+      "auto_gap_min": 1212,
+      "state_bytes": 8
+    },
+    {
+      "bits": 87,
+      "high": 4336808,
+      "auto_gap_min": 1224,
+      "state_bytes": 8
+    },
+    {
+      "bits": 88,
+      "high": 10842021,
+      "auto_gap_min": 1238,
+      "state_bytes": 8
+    },
+    {
+      "bits": 89,
+      "high": 21684043,
+      "auto_gap_min": 1252,
+      "state_bytes": 8
+    },
+    {
+      "bits": 90,
+      "high": 54210108,
+      "auto_gap_min": 1266,
+      "state_bytes": 8
+    },
+    {
+      "bits": 91,
+      "high": 108420217,
+      "auto_gap_min": 1278,
+      "state_bytes": 8
+    },
+    {
+      "bits": 92,
+      "high": 162630325,
+      "auto_gap_min": 1292,
+      "state_bytes": 8
+    },
+    {
+      "bits": 93,
+      "high": 271050543,
+      "auto_gap_min": 1306,
+      "state_bytes": 8
+    },
+    {
+      "bits": 94,
+      "high": 542101086,
+      "auto_gap_min": 1318,
+      "state_bytes": 8
+    },
+    {
+      "bits": 95,
+      "high": 1084202172,
+      "auto_gap_min": 1332,
+      "state_bytes": 8
+    }
+  ]
+}

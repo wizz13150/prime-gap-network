@@ -1,0 +1,4 @@
+#pragma once
+#define SCOUT_PROOF_SUBDIRECTORY "linux"
+#define SCOUT_PROOF_LIBRARY "libflint-c63d529f.so.20.0.0"
+#define SCOUT_PROOF_LIBRARY_BYTES 13725161ULL

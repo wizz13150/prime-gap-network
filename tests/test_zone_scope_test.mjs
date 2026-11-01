@@ -1,0 +1,14 @@
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import assert from 'node:assert/strict';import {DatabaseSync} from 'node:sqlite';
+import {QueuedDispatch,CONSTANT_DEVICE} from '../tools/queued-dispatch.mjs';
+const temp=fs.mkdtempSync(path.join(os.tmpdir(),'pgn-zone-scope-')),file=path.join(temp,'book.sqlite'),db=new DatabaseSync(file);
+db.exec('CREATE TABLE bookings(id TEXT PRIMARY KEY,start TEXT,end TEXT,start_key TEXT,end_key TEXT,state TEXT,kind TEXT,device TEXT,created_utc TEXT);');
+const q=new QueuedDispatch(file),unit=10n**15n,key=x=>String(x).length.toString().padStart(3,'0')+x;
+const binding={uuid:CONSTANT_DEVICE,start:'134000000000000000000',end:'134001000000000000000',length:String(unit)},scope={schema:'pgn-local-test-scope-1',enabled:true,start:'199900000000000000000',end:'200000000000000000000'};
+const csv='Start *1e15,End *1e15,Status,Researcher\n100000,200000,Open,\n',run='a'.repeat(32);
+const other='12345678-1234-1234-1234-123456789012';db.prepare("INSERT INTO bookings VALUES(?,?,?,?,?,'QUEUED','LOCAL_INTENT',?,?)").run(other,binding.end,'134002000000000000000',key(binding.end),key('134002000000000000000'),CONSTANT_DEVICE,'2026-10-12T00:00:00Z');
+assert.throws(()=>q.prepareAtBoundary(run,binding,csv,{...scope,start:'1'}),/one exact whole zone/);
+const first=q.prepareAtBoundary(run,binding,csv,scope);assert.equal(first.start,scope.start);assert.equal(first.end,String(BigInt(scope.start)+unit));assert.equal(db.prepare('SELECT state FROM bookings WHERE id=?').get(other).state,'QUEUED');
+const worker={run:'b'.repeat(32),uuid:CONSTANT_DEVICE,start:first.start,end:first.end,queued_intent:first.id,birth:'2026-10-12T00:00:00Z'};assert.equal(q.reconcile({owned:true,state:'RUNNING',manifest:worker,binding:worker}),true);
+assert.equal(q.complete({schema:'pgn-source-range-completion-1',run:worker.run,queued_intent:first.id,start:first.start,end:first.end,source_positions:String(unit),source_range_complete:true,independent_coverage:false,source_exit_code:0}),true);
+const second=q.prepareAtBoundary(worker.run,{...binding,start:first.start,end:first.end},csv,scope);assert.equal(second.start,first.end);assert.equal(second.end,String(BigInt(first.end)+unit));
+q.close();db.close();console.log('PASS explicit test Zone1000 starts Block1, continues Block2 ascending, preserves unrelated manual reservations and rejects invalid scopes; no global-default behavior change');

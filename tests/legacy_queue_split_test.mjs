@@ -1,0 +1,15 @@
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import assert from 'node:assert/strict';import {randomUUID}from'node:crypto';import{DatabaseSync}from'node:sqlite';import{QueuedDispatch,CONSTANT_DEVICE}from'../tools/queued-dispatch.mjs';
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'pgn-legacy-split-')),db=new DatabaseSync(path.join(dir,'book.sqlite')),key=s=>String(s.length).padStart(3,'0')+s;
+db.exec('CREATE TABLE bookings(id TEXT PRIMARY KEY,start TEXT,end TEXT,start_key TEXT,end_key TEXT,state TEXT,kind TEXT,device TEXT,created_utc TEXT)');
+const q=new QueuedDispatch(path.join(dir,'book.sqlite')),a=134000000000000000000n,u=10n**15n,id=randomUUID();
+db.prepare("INSERT INTO bookings VALUES(?,?,?,?,?,'QUEUED','LOCAL_INTENT',?,'fixture')").run(id,String(a),String(a+10n*u),key(String(a)),key(String(a+10n*u)),CONSTANT_DEVICE);
+const binding={uuid:CONSTANT_DEVICE,start:String(a-u),end:String(a),length:String(u)};const csv='Start *1e15,End *1e15,Status,Owner\n100000,200000,Open,\n';const old='a'.repeat(32);
+q.beginExplicitStart(binding);
+const first=q.prepareAtBoundary(old,binding,csv);assert.equal(first.start,String(a));assert.equal(first.end,String(a+u));assert.notEqual(first.id,id);assert.equal(q.prepareAtBoundary(old,binding,csv).id,first.id);
+assert.equal(db.prepare('SELECT state FROM bookings WHERE id=?').get(id).state,'RELEASED');assert.equal(db.prepare('SELECT count(*) n FROM booking_derivations WHERE parent_id=?').get(id).n,2);
+let pending=db.prepare("SELECT start,end FROM bookings WHERE state='QUEUED'").all().map(row=>({...row}));assert.deepEqual(pending,[{start:String(a+u),end:String(a+10n*u)}]);
+db.prepare("UPDATE bookings SET state='SOURCE_FINISHED' WHERE id=?").run(first.id);db.prepare('DELETE FROM dispatch_requests WHERE id=?').run(first.id);
+const second=q.prepareAtBoundary('b'.repeat(32),{...binding,start:String(a),end:String(a+u)},csv);assert.equal(second.start,String(a+u));assert.equal(second.end,String(a+2n*u));
+pending=db.prepare("SELECT start,end FROM bookings WHERE state='QUEUED'").all().map(row=>({...row}));assert.deepEqual(pending,[{start:String(a+2n*u),end:String(a+10n*u)}]);assert.equal(db.prepare('SELECT count(*) n FROM booking_derivations').get().n,4);
+assert.equal(db.prepare("SELECT count(*) n FROM dispatch_requests WHERE state='PREPARED'").get().n,1);
+q.close();db.close();console.log('PASS legacy reservation splits only finite current work, exact remaining manual reservation conserved, original identities/derivations retained, pending claim idempotent; no GPU/network mutation');

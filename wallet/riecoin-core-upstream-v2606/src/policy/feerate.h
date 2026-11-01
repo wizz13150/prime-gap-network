@@ -1,0 +1,86 @@
+// Copyright (c) 2009-2010 Satoshi Nakamoto
+// Copyright (c) 2009-present The Bitcoin Core developers
+// Copyright (c) 2013-present The Riecoin developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#ifndef BITCOIN_POLICY_FEERATE_H
+#define BITCOIN_POLICY_FEERATE_H
+
+#include <consensus/amount.h>
+#include <serialize.h>
+#include <util/feefrac.h>
+#include <util/fees.h>
+
+
+#include <cstdint>
+#include <string>
+#include <type_traits>
+
+const std::string CURRENCY_UNIT = "PGN"; // One approved unit (10 decimal places).
+const std::string CURRENCY_ATOM = "PGN atom"; // One indivisible atomic unit.
+
+enum class FeeRateFormat {
+    BTC_KVB, //!< Legacy API name: format PGN/kvB (10 decimal places).
+    SAT_VB,  //!< Legacy API name: format PGN atomic units/vB (3 decimal places).
+};
+
+/**
+ * Fee rate in satoshis per virtualbyte: CAmount / vB
+ * the feerate is represented internally as FeeFrac
+ */
+class CFeeRate
+{
+private:
+    /** Fee rate in sats/vB (satoshis per N virtualbytes) */
+    FeePerVSize m_feerate;
+
+public:
+    /** Fee rate of 0 satoshis per 0 vB */
+    CFeeRate() = default;
+    template<std::integral I> // Disallow silent float -> int conversion
+    explicit CFeeRate(const I m_feerate_kvb) : m_feerate(FeePerVSize(m_feerate_kvb, 1000)) {}
+
+    /**
+     * Construct a fee rate from a fee in satoshis and a vsize in vB.
+     *
+     * Passing any virtual_bytes less than or equal to 0 will result in 0 fee rate per 0 size.
+     */
+    CFeeRate(const CAmount& nFeePaid, int32_t virtual_bytes);
+
+    /**
+     * Return the fee in satoshis for the given vsize in vbytes.
+     * If the calculated fee would have fractional satoshis, then the
+     * returned fee will always be rounded up to the nearest satoshi.
+     */
+    CAmount GetFee(int32_t virtual_bytes) const;
+
+    FeePerVSize GetFeePerVSize() const { return m_feerate; }
+
+    /**
+     * Return the fee in satoshis for a vsize of 1000 vbytes
+     */
+    CAmount GetFeePerK() const { return CAmount(m_feerate.EvaluateFeeDown(1000)); }
+    friend std::strong_ordering operator<=>(const CFeeRate& a, const CFeeRate& b) noexcept
+    {
+        return ByRatio{a.m_feerate} <=> ByRatio{b.m_feerate};
+    }
+    friend bool operator==(const CFeeRate& a, const CFeeRate& b) noexcept
+    {
+        return ByRatio{a.m_feerate} == ByRatio{b.m_feerate};
+    }
+    CFeeRate& operator+=(const CFeeRate& a) {
+        m_feerate = FeePerVSize(GetFeePerK() + a.GetFeePerK(), 1000);
+        return *this;
+    }
+    /** Pure signed rate presentation, not admission or a fee policy. Throws for
+     * an invalid denominator or an unrepresentable atomic/kvB value, before any
+     * unchecked FeeFrac evaluation. No transfer/supply ceiling applies here. */
+    std::string ToString(FeeRateFormat fee_rate_format = FeeRateFormat::BTC_KVB) const;
+    friend CFeeRate operator*(const CFeeRate& f, int a) { return CFeeRate(a * f.m_feerate.fee, f.m_feerate.size); }
+    friend CFeeRate operator*(int a, const CFeeRate& f) { return CFeeRate(a * f.m_feerate.fee, f.m_feerate.size); }
+
+    SERIALIZE_METHODS(CFeeRate, obj) { READWRITE(obj.m_feerate.fee, obj.m_feerate.size); }
+};
+
+#endif // BITCOIN_POLICY_FEERATE_H

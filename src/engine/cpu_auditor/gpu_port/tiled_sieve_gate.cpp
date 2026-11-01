@@ -1,0 +1,3 @@
+#include <iostream>
+#include "class30_tiled_candidate.h"
+int main(){const auto bank=pgn_cpu_shared::canonicalPrimeBank();uint64_t checked=0;for(uint32_t high:{8u,10u,15u})for(uint64_t slots:{2049ULL,(1ULL<<19)+73,(1ULL<<20)+7}){uint64_t lo=(1ULL<<60)+12345;uint64_t rem=(lo%30+(high%30)*16)%30;lo-=rem;pgn_cpu_shared::Class30Bitmap flat({lo,high},slots,bank);pgn_cpu_shared::Class30Bitmap tiled({lo,high},slots,pgn_cpu_shared::tiledClass30Marks({lo,high},slots,bank));for(uint64_t i=0;i<slots;i++){if(flat.marked(i)!=tiled.marked(i))return 1;++checked;}}std::cout<<"{\"PASS\":true,\"bitmap_positions_compared\":"<<checked<<",\"throughput_claim\":false}\n";}

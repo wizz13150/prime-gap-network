@@ -1,0 +1,78 @@
+// Copyright (c) 2011-present The Bitcoin Core developers
+// Copyright (c) 2013-present The Riecoin developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#ifndef BITCOIN_QT_OVERVIEWPAGE_H
+#define BITCOIN_QT_OVERVIEWPAGE_H
+
+#include <interfaces/wallet.h>
+#include <qt/pgnoverviewbalance.h>
+
+#include <QWidget>
+#include <QPointer>
+#include <memory>
+#include <vector>
+
+class ClientModel;
+class TransactionFilterProxy;
+class TransactionView;
+class TxViewDelegate;
+class PlatformStyle;
+class WalletModel;
+
+namespace Ui {
+    class OverviewPage;
+}
+
+QT_BEGIN_NAMESPACE
+class QModelIndex;
+QT_END_NAMESPACE
+
+/** Overview ("home") page widget */
+class OverviewPage : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit OverviewPage(const PlatformStyle *platformStyle, QWidget *parent = nullptr, bool closed = false);
+    ~OverviewPage();
+
+    void setClientModel(ClientModel *clientModel);
+    void setWalletModel(WalletModel *walletModel);
+    void showOutOfSyncWarning(bool fShow);
+
+public Q_SLOTS:
+    void setBalance(const interfaces::WalletBalances& balances);
+    void setPrivacy(bool privacy);
+
+Q_SIGNALS:
+    void createWalletButtonClicked();
+
+protected:
+    void changeEvent(QEvent* e) override;
+
+private:
+    Ui::OverviewPage *ui;
+    ClientModel* clientModel{nullptr};
+    QPointer<WalletModel> walletModel;
+    bool m_privacy{false};
+    bool m_balance_context_changing{false};
+    std::vector<QMetaObject::Connection> m_balance_connections;
+    void refreshBalancePresentation();
+    void applyBalancePresentation(const pgn::qt::OverviewBalancePresentation&);
+
+    const PlatformStyle* m_platform_style;
+
+    TxViewDelegate *txdelegate;
+    std::unique_ptr<TransactionFilterProxy> filter;
+
+    TransactionView *transactionView;
+
+private Q_SLOTS:
+    void LimitTransactionRows();
+    void updateAlerts(const QString &warnings);
+    void setMonospacedFont(const QFont&);
+};
+
+#endif // BITCOIN_QT_OVERVIEWPAGE_H

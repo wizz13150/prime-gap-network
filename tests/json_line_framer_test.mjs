@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';import {JsonLineFramer} from '../tools/json-line-framer.mjs';
+const rows=[];const framing=new JsonLineFramer(p=>rows.push(p),32);
+const bytes=Buffer.from('{"clock":"1"}\n{"clock":"2"}\n{"clock":"3"}\n');
+for(let i=0;i<bytes.length;i+=3)framing.feed(bytes.subarray(i,i+3));framing.finish();
+assert.deepEqual(rows.map(p=>p.clock),['1','2','3']);
+assert.throws(()=>framing.feed(Buffer.from('x'.repeat(33))),/bound/);
+const partial=new JsonLineFramer(()=>{});partial.feed(Buffer.from('{"partial":'));assert.throws(()=>partial.finish(),/partial/);
+assert.throws(()=>new JsonLineFramer(()=>{}).feed(Buffer.from('[]\n')),/object/);
+assert.throws(()=>new JsonLineFramer(()=>{}).feed(Buffer.from('bad\n')),SyntaxError);
+let commits=0;const broken=new JsonLineFramer(()=>{++commits;throw Error('disk commit failed')});
+assert.throws(()=>broken.feed(Buffer.from('{}\n{}\n')),/disk commit/);assert.equal(commits,1);
+console.log('PASS chunk split/combined raw ordering, bounded records, malformed/partial rejection, failed durability callback aborts without skipping');

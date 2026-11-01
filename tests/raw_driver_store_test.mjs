@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {RawDriverStore} from '../tools/raw-driver-store.mjs';
+
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'pgn-raw-driver-'));
+const file=path.join(root,'driver.sqlite');
+let store=new RawDriverStore(file);
+const row='2026/10/11 07:34:39.692, GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac, RTX 3090, 00000000:04:00.0, 100, 4096, 24576, 229.03, 350, 79, 1455, Active, N/A, Not Active';
+const packet={driver_valid:true,gpus:[row],observed_utc:'2026-10-11T05:34:39.6920000Z',source_clock_ns:'75188000000000',owned:true,manifest:{run:'a'.repeat(32)}};
+assert.equal(store.append(packet),true);
+assert.equal(store.append({...packet,observed_utc:'2026-10-11T05:40:00.000Z'}),false);
+assert.equal(store.append({...packet,driver_valid:false,gpus:[]}),false);
+assert.equal(store.append({...packet,gpus:[]}),false);
+let saved=store.db.prepare('SELECT * FROM raw_driver_observations').all();
+assert.equal(saved.length,1);assert.equal(saved[0].gpu_csv,JSON.stringify([row]));
+assert.equal(saved[0].observed_utc,packet.observed_utc);assert.equal(saved[0].source_clock_ns,packet.source_clock_ns);
+assert.equal(saved[0].owned,1);assert.equal(saved[0].run,packet.manifest.run);
+assert.throws(()=>store.append({...packet,source_clock_ns:75188000000000}),/clock/);
+assert.throws(()=>store.append({...packet,manifest:{run:'bad'}}),/identity/);
+assert.throws(()=>store.append({...packet,observed_utc:'unknown'}),/time/);
+assert.throws(()=>store.append({...packet,gpus:['x'.repeat(2049)]}),/bound/);
+assert.throws(()=>store.append({...packet,gpus:Array(65).fill(row)}),/bound/);
+assert.equal(store.db.prepare('SELECT count(*) AS n FROM raw_driver_observations').get().n,1);
+store.close();store=new RawDriverStore(file);
+assert.equal(store.append(packet),false);
+assert.equal(store.append({...packet,gpus:[row.replace('07:34:39.692','07:34:40.692').replace(', 1455,',', 0,')],observed_utc:'2026-10-11T05:34:40.692Z'}),true);
+saved=store.db.prepare('SELECT * FROM raw_driver_observations ORDER BY observed_utc').all();
+assert.equal(saved.length,2);assert.match(saved[1].gpu_csv,/, 0, Active, N\/A/);
+store.close();
+// Test-only fresh temporary directory; no runtime/scientific files removed.
+fs.rmSync(root,{recursive:true});
+console.log('PASS raw clock/thermal CSV and original time preserved; replay/restart idempotent; no missing-data zero; bounded strict input');

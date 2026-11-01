@@ -1,0 +1,135 @@
+// Copyright (c) 2011-present The Bitcoin Core developers
+// Copyright (c) 2013-present The Riecoin developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#ifndef BITCOIN_QT_TRANSACTIONVIEW_H
+#define BITCOIN_QT_TRANSACTIONVIEW_H
+
+#include <qt/guiutil.h>
+#include <qt/pgntransactionamount.h>
+
+#include <primitives/transaction_identifier.h>
+#include <uint256.h>
+
+#include <QWidget>
+#include <QKeyEvent>
+#include <QPointer>
+
+#include <memory>
+
+class PlatformStyle;
+class TransactionDescDialog;
+class TransactionFilterProxy;
+class WalletModel;
+
+QT_BEGIN_NAMESPACE
+class QComboBox;
+class QDateTimeEdit;
+class QFrame;
+class QLineEdit;
+class QMenu;
+class QModelIndex;
+class QTableView;
+QT_END_NAMESPACE
+
+/** Widget showing the transaction list for a wallet, including a filter row.
+    Using the filter row, the user can view or export a subset of the transactions.
+  */
+class TransactionView : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit TransactionView(const PlatformStyle *platformStyle, QWidget *parent = nullptr);
+
+    void setModel(WalletModel *model);
+
+    // Date ranges for filter
+    enum DateEnum
+    {
+        All,
+        Today,
+        ThisWeek,
+        ThisMonth,
+        LastMonth,
+        ThisYear,
+        Range
+    };
+
+protected:
+    void changeEvent(QEvent* e) override;
+
+private:
+    QPointer<WalletModel> model;
+    TransactionFilterProxy *transactionProxyModel{nullptr};
+    QTableView *transactionView{nullptr};
+
+    QComboBox *dateWidget;
+    QComboBox *typeWidget;
+    QLineEdit *search_widget;
+    QLineEdit *amountWidget;
+    std::unique_ptr<pgn::qt::TransactionMinimumAmount> m_minimum_amount;
+    QMetaObject::Connection m_context_about_connection;
+    QMetaObject::Connection m_context_changed_connection;
+    QMetaObject::Connection m_context_destroyed_connection;
+    // Retained token cannot be reused across a modal picker (including A->B->A).
+    std::shared_ptr<const char> m_monetary_binding_token{std::make_shared<const char>(0)};
+
+    QMenu *contextMenu;
+
+    QFrame *dateRangeWidget;
+    QDateTimeEdit *dateFrom;
+    QDateTimeEdit *dateTo;
+    QAction *abandonAction{nullptr};
+    QAction *bumpFeeAction{nullptr};
+    QAction *copyAddressAction{nullptr};
+    QAction *copyLabelAction{nullptr};
+
+    QWidget *createDateRangeWidget();
+    bool copyMonetaryData(int role);
+    void clearMinimumAmountBinding();
+    void bindMinimumAmountContext();
+    bool refreshTransactionContext();
+
+    bool eventFilter(QObject *obj, QEvent *event) override;
+
+    const PlatformStyle* m_platform_style;
+
+    QList<TransactionDescDialog*> m_opened_dialogs;
+
+private Q_SLOTS:
+    void contextualMenu(const QPoint &);
+    void dateRangeChanged();
+    void showDetails();
+    void copyAddress();
+    void editLabel();
+    void copyLabel();
+    void copyAmount();
+    void copyTxID();
+    void copyTxHex();
+    void copyTxPlainText();
+    void openThirdPartyTxUrl(QString url);
+    void abandonTx();
+    void bumpFee(bool checked);
+
+Q_SIGNALS:
+    void doubleClicked(const QModelIndex&);
+
+    /**  Fired when a message should be reported to the user */
+    void message(const QString &title, const QString &message, unsigned int style);
+
+    void bumpedFee(const Txid& txid);
+
+public Q_SLOTS:
+    void chooseDate(int idx);
+    void chooseType(int idx);
+    void changedAmount();
+    void changedSearch();
+    void exportClicked();
+    void closeOpenedDialogs();
+    void focusTransaction(const QModelIndex&);
+    void focusTransaction(const Txid& txid);
+};
+
+#endif // BITCOIN_QT_TRANSACTIONVIEW_H

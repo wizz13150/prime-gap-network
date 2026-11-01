@@ -1,0 +1,365 @@
+# Copyright (c) 2023-present The Bitcoin Core developers
+# Copyright (c) 2024-present The Riecoin developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or https://opensource.org/license/mit/.
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  enable_language(OBJCXX)
+  set(CMAKE_OBJCXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+  set(CMAKE_OBJCXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+  set(CMAKE_OBJCXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+  set(CMAKE_OBJCXX_FLAGS_MINSIZEREL "${CMAKE_CXX_FLAGS_MINSIZEREL}")
+  string(APPEND CMAKE_OBJCXX_COMPILE_OBJECT " ${APPEND_CPPFLAGS} ${APPEND_CXXFLAGS}")
+endif()
+
+get_target_property(qt_lib_type Qt6::Core TYPE)
+
+function(import_plugins target)
+  if(qt_lib_type STREQUAL "STATIC_LIBRARY")
+    set(plugins Qt6::QMinimalIntegrationPlugin)
+    if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
+      list(APPEND plugins Qt6::QXcbIntegrationPlugin)
+    elseif(WIN32)
+      list(APPEND plugins Qt6::QWindowsIntegrationPlugin Qt6::QModernWindowsStylePlugin)
+    elseif(APPLE)
+      list(APPEND plugins Qt6::QCocoaIntegrationPlugin Qt6::QMacStylePlugin)
+    endif()
+    qt6_import_plugins(${target}
+      INCLUDE ${plugins}
+      EXCLUDE_BY_TYPE
+        accessiblebridge
+        platforms
+        platforms_darwin
+        xcbglintegrations
+        platformthemes
+        platforminputcontexts
+        generic
+        iconengines
+        imageformats
+        egldeviceintegrations
+        styles
+        networkaccess
+        networkinformation
+        tls
+    )
+  endif()
+endfunction()
+
+# For Qt-specific commands and variables, please consult:
+#  - https://cmake.org/cmake/help/latest/manual/cmake-qt.7.html
+#  - https://doc.qt.io/qt-5/cmake-manual.html
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOMOC_MOC_OPTIONS "-p${CMAKE_CURRENT_SOURCE_DIR}")
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTOUIC_SEARCH_PATHS forms)
+
+set(CMAKE_AUTORCC OFF)
+qt6_add_resources(BITCOIN_QRC riecoin.qrc)
+if(BUILD_TRANSLATIONS)
+  configure_file(riecoin_locale.qrc riecoin_locale.qrc USE_SOURCE_PERMISSIONS COPYONLY)
+  qt6_add_resources(BITCOIN_LOCALE_QRC ${CMAKE_CURRENT_BINARY_DIR}/riecoin_locale.qrc)
+endif()
+# See: https://bugreports.qt.io/browse/QTBUG-141858.
+get_target_property(warn_flags warn_interface INTERFACE_COMPILE_OPTIONS)
+if("-Wtrailing-whitespace=any" IN_LIST warn_flags)
+  set_source_files_properties(${BITCOIN_QRC} ${BITCOIN_LOCALE_QRC} PROPERTIES COMPILE_OPTIONS -Wno-trailing-whitespace)
+endif()
+unset(warn_flags)
+
+# The riecoinqt sources have to include headers in
+# order to parse them to collect translatable strings.
+add_library(riecoinqt STATIC EXCLUDE_FROM_ALL
+  bantablemodel.cpp
+  bantablemodel.h
+  riecoin.cpp
+  riecoin.h
+  riecoinaddressvalidator.cpp
+  riecoinaddressvalidator.h
+  riecoinamountfield.cpp
+  riecoinamountfield.h
+  riecoingui.cpp
+  riecoingui.h
+  clientmodel.cpp
+  clientmodel.h
+  pgnsciencepanel.cpp
+  pgnsciencepanel.h
+  csvmodelwriter.cpp
+  csvmodelwriter.h
+  freespacechecker.cpp
+  freespacechecker.h
+  guiutil.cpp
+  guiutil.h
+  pgnmoneyformat.cpp
+  pgnmoneyformat.h
+  initexecutor.cpp
+  initexecutor.h
+  intro.cpp
+  intro.h
+  $<$<PLATFORM_ID:Darwin>:macdockiconhandler.h>
+  $<$<PLATFORM_ID:Darwin>:macdockiconhandler.mm>
+  $<$<PLATFORM_ID:Darwin>:macnotificationhandler.h>
+  $<$<PLATFORM_ID:Darwin>:macnotificationhandler.mm>
+  $<$<PLATFORM_ID:Darwin>:macos_appnap.h>
+  $<$<PLATFORM_ID:Darwin>:macos_appnap.mm>
+  networkstyle.cpp
+  networkstyle.h
+  notificator.cpp
+  notificator.h
+  optionsdialog.cpp
+  optionsdialog.h
+  optionsmodel.cpp
+  optionsmodel.h
+  peertablemodel.cpp
+  peertablemodel.h
+  peertablesortproxy.cpp
+  peertablesortproxy.h
+  platformstyle.cpp
+  platformstyle.h
+  qvalidatedlineedit.cpp
+  qvalidatedlineedit.h
+  qvaluecombobox.cpp
+  qvaluecombobox.h
+  rpcconsole.cpp
+  rpcconsole.h
+  splashscreen.cpp
+  splashscreen.h
+  trafficgraphwidget.cpp
+  trafficgraphwidget.h
+  utilitydialog.cpp
+  utilitydialog.h
+  $<$<PLATFORM_ID:Windows>:winshutdownmonitor.cpp>
+  $<$<PLATFORM_ID:Windows>:winshutdownmonitor.h>
+  ${BITCOIN_QRC}
+  ${BITCOIN_LOCALE_QRC}
+)
+target_compile_definitions(riecoinqt
+  PUBLIC
+    QT_NO_KEYWORDS
+    QT_USE_QSTRINGBUILDER
+  PRIVATE
+    $<$<BOOL:${BUILD_TRANSLATIONS}>:PGN_BUILD_TRANSLATIONS>
+)
+target_include_directories(riecoinqt
+  PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
+)
+set_property(SOURCE macnotificationhandler.mm
+  # Ignore warnings "'NSUserNotificationCenter' is deprecated: first deprecated in macOS 11.0".
+  APPEND PROPERTY COMPILE_OPTIONS -Wno-deprecated-declarations
+)
+target_link_libraries(riecoinqt
+  PUBLIC
+    Qt6::Widgets
+  PRIVATE
+    core_interface
+    riecoin_util
+    pgn-exact-amount-native
+    riecoin_cli
+    leveldb
+    Boost::headers
+    $<TARGET_NAME_IF_EXISTS:QRencode::QRencode>
+    $<$<PLATFORM_ID:Darwin>:-framework\ AppKit>
+    $<$<PLATFORM_ID:Windows>:shlwapi>
+)
+
+if(ENABLE_WALLET)
+  target_sources(riecoinqt
+    PRIVATE
+      addressbookpage.cpp
+      addressbookpage.h
+      addresstablemodel.cpp
+      addresstablemodel.h
+      askpassphrasedialog.cpp
+      askpassphrasedialog.h
+      coincontroldialog.cpp
+      coincontroldialog.h
+      coincontroltreewidget.cpp
+      coincontroltreewidget.h
+      createwalletdialog.cpp
+      createwalletdialog.h
+      editaddressdialog.cpp
+      editaddressdialog.h
+      generatecodedialog.cpp
+      generatecodedialog.h
+      openuridialog.cpp
+      openuridialog.h
+      overviewpage.cpp
+      overviewpage.h
+      paymentserver.cpp
+      paymentserver.h
+      psbtoperationsdialog.cpp
+      psbtoperationsdialog.h
+      qrimagewidget.cpp
+      qrimagewidget.h
+      receivecoinsdialog.cpp
+      receivecoinsdialog.h
+      receiverequestdialog.cpp
+      receiverequestdialog.h
+      recentrequeststablemodel.cpp
+      recentrequeststablemodel.h
+      sendcoinsdialog.cpp
+      sendcoinsdialog.h
+      sendcoinsentry.cpp
+      sendcoinsentry.h
+      signverifymessagedialog.cpp
+      signverifymessagedialog.h
+      transactiondesc.cpp
+      transactiondesc.h
+      transactiondescdialog.cpp
+      transactiondescdialog.h
+      transactionfilterproxy.cpp
+      transactionfilterproxy.h
+      transactionoverviewwidget.cpp
+      transactionoverviewwidget.h
+      transactionrecord.cpp
+      transactionrecord.h
+      transactiontablemodel.cpp
+      transactiontablemodel.h
+      pgntransactionamount.cpp
+      pgntransactionamount.h
+      pgnconsumeramount.cpp
+      pgnconsumeramount.h
+      pgnoverviewbalance.cpp
+      pgnoverviewbalance.h
+      pgntransactiondescamount.cpp
+      pgntransactiondescamount.h
+      pgnlegacypaymentrequest.cpp
+      pgnlegacypaymentrequest.h
+      pgnexactamount.cpp
+      pgnexactamount.h
+      pgnexactamountfield.cpp
+      pgnexactamountfield.h
+      pgnwalletamountbinding.cpp
+      pgnwalletamountbinding.h
+      pgncoincontrolbalance.cpp
+      pgncoincontrolbalance.h
+      pgnsendamountdisplay.cpp
+      pgnsendamountdisplay.h
+      pgncurrencyfeerate.cpp
+      pgncurrencyfeerate.h
+      pgncurrencyfeeratefield.cpp
+      pgncurrencyfeeratefield.h
+      pgncoincontrolpreview.cpp
+      pgncoincontrolpreview.h
+      pgncoincontrollabels.cpp
+      pgncoincontrollabels.h
+      pgnpsbtamountpreview.cpp
+      pgnpsbtamountpreview.h
+      pgnpsbtworkflow.cpp
+      pgnpsbtworkflow.h
+      transactionview.cpp
+      transactionview.h
+      walletcontroller.cpp
+      walletcontroller.h
+      walletframe.cpp
+      walletframe.h
+      walletmodel.cpp
+      walletmodel.h
+      walletmodeltransaction.cpp
+      walletmodeltransaction.h
+      walletview.cpp
+      walletview.h
+  )
+  target_link_libraries(riecoinqt
+    PRIVATE
+      riecoin_wallet
+      riecoin_common
+      univalue
+      Qt6::Network
+  )
+endif()
+
+if(WITH_DBUS)
+  target_link_libraries(riecoinqt PRIVATE Qt6::DBus)
+endif()
+
+if(qt_lib_type STREQUAL "STATIC_LIBRARY")
+  # We want to define static plugins to link ourselves, thus preventing
+  # automatic linking against a "sane" set of default static plugins.
+  qt6_import_plugins(riecoinqt
+    EXCLUDE_BY_TYPE
+      accessiblebridge
+      platforms
+      platforms_darwin
+      xcbglintegrations
+      platformthemes
+      platforminputcontexts
+      generic
+      iconengines
+      imageformats
+      egldeviceintegrations
+      styles
+      networkaccess
+      networkinformation
+      tls
+  )
+endif()
+
+if(BUILD_TRANSLATIONS)
+  add_subdirectory(locale)
+endif()
+
+add_executable(riecoin-qt
+  main.cpp
+  ../init/riecoin-qt.cpp
+)
+
+add_windows_resources(riecoin-qt res/riecoin-qt-res.rc)
+add_windows_application_manifest(riecoin-qt)
+
+target_link_libraries(riecoin-qt
+  core_interface
+  riecoinqt
+  riecoin_node
+)
+
+import_plugins(riecoin-qt)
+install_binary_component(riecoin-qt HAS_MANPAGE)
+if(WIN32)
+  set_target_properties(riecoin-qt PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
+
+if(ENABLE_IPC)
+  add_executable(riecoin-gui
+    main.cpp
+    ../init/riecoin-gui.cpp
+  )
+  target_link_libraries(riecoin-gui
+    core_interface
+    riecoinqt
+    riecoin_node
+    riecoin_ipc
+  )
+  import_plugins(riecoin-gui)
+  install_binary_component(riecoin-gui INTERNAL)
+  if(WIN32)
+    set_target_properties(riecoin-gui PROPERTIES WIN32_EXECUTABLE TRUE)
+  endif()
+endif()
+
+if(BUILD_GUI_TESTS)
+  add_subdirectory(test)
+endif()
+
+option(PGN_BUILD_NATIVE_PANEL_TESTS "Build no-network PGN native Core panel contract tests." OFF)
+if(PGN_BUILD_NATIVE_PANEL_TESTS)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../core-integration
+                   ${CMAKE_CURRENT_BINARY_DIR}/pgn-core-integration)
+endif()
+
+find_program(XGETTEXT_EXECUTABLE xgettext)
+if(NOT XGETTEXT_EXECUTABLE)
+  add_custom_target(translate
+    COMMAND ${CMAKE_COMMAND} -E echo "Error: GNU gettext-tools not found"
+  )
+else()
+  add_custom_target(translate COMMAND ${CMAKE_COMMAND}
+    -D "PROJECT_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+    -D "COPYRIGHT_HOLDERS=${COPYRIGHT_HOLDERS}"
+    -D "LCONVERT_EXECUTABLE=$<TARGET_FILE:Qt6::lconvert>"
+    -D "LUPDATE_EXECUTABLE=$<TARGET_FILE:Qt6::lupdate>"
+    -D "XGETTEXT_EXECUTABLE=${XGETTEXT_EXECUTABLE}"
+    -P ${PROJECT_SOURCE_DIR}/share/qt/translate.cmake
+  )
+endif()

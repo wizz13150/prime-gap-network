@@ -1,0 +1,45 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import {fileURLToPath} from 'node:url';
+import {spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+const directory=path.dirname(fileURLToPath(import.meta.url));
+const source=path.resolve(directory,'../tools/continuous-gpu-runtime.cu');
+const header=path.resolve(directory,'../src/engine/cuda/pgn_conditional_walk.cuh');
+const digest=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+for(const file of [source,header])assert.ok(fs.statSync(file).size<65536);
+const original=[digest(source),digest(header)],text=fs.readFileSync(source,'utf8'),conditional=fs.readFileSync(header,'utf8');
+const start=conditional.indexOf('__global__ void pgn_graph_advance('),end=conditional.indexOf('\n}\n#endif',start);
+assert.ok(start>=0&&end>start,'Extract the actual bounded header function, never a manual copy');
+const advance=conditional.slice(start,end+2);
+assert.ok(advance.indexOf('if(*mailbox.stop)')<advance.indexOf('auto *target='));
+assert.ok(advance.indexOf('==2u')<advance.indexOf('if(*mailbox.stop)'),'Known failed proof takes priority');
+assert.equal((text.match(/cudaGraphLaunch\(/g)??[]).length,1,'No CPU relaunch for quanta');
+for(const handle of ['tail','verify','publish'])assert.ok(text.includes(`cudaGraphSetConditional(control.${handle},`),'Explicit per-descriptor handle reset');
+assert.ok(text.includes('verifyLoop.conditional.type=cudaGraphCondTypeWhile'));
+assert.ok(text.includes('tailLoop.conditional.type=cudaGraphCondTypeWhile'));
+assert.ok(text.includes('publishGate.conditional.type=cudaGraphCondTypeIf'));
+const paused=text.indexOf('if(next<Count){auto checkpoint=saved;',text.indexOf('CHECK(cudaEventSynchronize(ended))'));
+assert.ok(paused>0&&paused<text.indexOf('#ifdef PGN_PRP_CALL_CENSUS',text.indexOf('CHECK(cudaEventSynchronize(ended))')),'Normal pause precedes incomplete diagnostic errors');
+assert.ok(text.indexOf('formatPrefixCounter(counter,sizeof(counter),observedNs(),checkpoint)',paused)<text.indexOf('stopped positions=',paused),'Actual accepted-prefix tuple precedes stopped footer');
+const compiler=process.argv[2]??'C:/msys64/mingw64/bin/g++.exe';
+assert.ok(fs.statSync(compiler).isFile());assert.match(path.basename(compiler),/^(?:g\+\+|clang\+\+)(?:\.exe)?$/);
+const environment={...process.env},pathKey=Object.keys(environment).find(k=>k.toLowerCase()==='path')??'PATH';
+environment[pathKey]=path.dirname(compiler)+path.delimiter+(environment[pathKey]??'');
+const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'pgn-source-pause-'));
+try{
+ fs.writeFileSync(path.join(temporary,'source-advance-extracted.h'),advance,{flag:'wx'});
+ const executable=path.join(temporary,process.platform==='win32'?'closed-pause-test.exe':'closed-pause-test');
+ const build=spawnSync(compiler,['-std=c++17','-O2','-Wall','-Wextra','-Werror','-I',temporary,path.join(directory,'source_terminal_pause_test.cpp'),'-o',executable],{encoding:'utf8',timeout:30000,windowsHide:true,env:environment});
+ assert.ifError(build.error);assert.equal(build.status,0,build.stdout+build.stderr);
+ const run=spawnSync(executable,[],{encoding:'utf8',timeout:10000,windowsHide:true,env:environment});
+ assert.ifError(run.error);assert.equal(run.status,0,run.stdout+run.stderr);process.stdout.write(run.stdout);
+ assert.match(run.stdout,/source terminal pause checks=\d+ failures=0/);
+ assert.deepEqual([digest(source),digest(header)],original,'Candidate closure remains unchanged by the test');
+}finally{
+ const resolved=path.resolve(temporary),prefix=path.resolve(os.tmpdir())+path.sep;
+ assert.ok(resolved.startsWith(prefix)&&path.basename(resolved).startsWith('pgn-source-pause-'));
+ fs.rmSync(resolved,{recursive:true,force:true});
+}

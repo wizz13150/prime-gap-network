@@ -1,0 +1,13 @@
+/build*/
+/wallet/**/build*/
+/EngineRuntime/
+/delivery/
+/data/testnet/
+/data/runtime/
+__pycache__/
+*.pyc
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.cookie
+wallet.dat

@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+import {SourceMirror} from '../tools/source-mirror.mjs';
+const directory=fs.mkdtempSync(path.join(os.tmpdir(),'pgn-source-mirror-')),run='e'.repeat(32);
+const mirror=new SourceMirror(directory),original=Buffer.from('raw source é\npartial end\n');
+mirror.append(run,0,original.subarray(0,17));mirror.append(run,0,original.subarray(0,17));
+mirror.append(run,12,original.subarray(12));assert.equal(mirror.size(run),original.length);
+assert.deepEqual(fs.readFileSync(mirror.file(run)),original);
+assert.throws(()=>mirror.append(run,original.length+1,Buffer.from('hole')),/missing prefix/);
+assert.throws(()=>mirror.append(run,0,Buffer.from('DIFFERENT')),/conflict/);
+assert.deepEqual(fs.readFileSync(mirror.file(run)),original);
+const resumed=new SourceMirror(directory);resumed.append(run,original.length,Buffer.from('next\n'));
+assert.deepEqual(fs.readFileSync(resumed.file(run)),Buffer.concat([original,Buffer.from('next\n')]));
+assert.throws(()=>mirror.file('../bad'),/identity/);
+console.log('PASS append-only original bytes, Unicode/partial packet conservation, idempotent retry, restart, conflict and sparse-prefix refusal');

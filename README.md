@@ -1,80 +1,76 @@
 # Prime Gap Network
 ### Community-driven prime-gap research
 
-Prime Gap Network (PGN) is a collaborative initiative conceived by
-**Rob Smith**, known as **robert44444uk** in the prime-gap community.
+Prime Gap Network (PGN) is a collaborative initiative conceived by **Rob Smith**, known as **robert44444uk** in the prime-gap community. Robert develops the scientific and network rules; Wizz works on the software implementation.
 
-The PGN concept and initiative are Robert's. This repository is an initial
-presentation and coordination space for the community, as we begin
-exploring the software and infrastructure that could support his vision.
+[Community website](https://wizz13150.github.io/prime-gap-network.github.io/) · [Discord](https://discord.gg/qZ2DerDMXQ) · [Standalone Scout](https://github.com/wizz13150/prime-gap-scout)
 
-[Join the PGN community on Discord](https://discord.gg/qZ2DerDMXQ)
+## Two separate applications
 
----
+**Prime Gap Scout** is the standalone prime-gap search tool. It needs no wallet, blockchain or PGN network. Its releases and console documentation belong to the [Scout repository](https://github.com/wizz13150/prime-gap-scout).
 
-## Why PGN?
-
-A prime gap is the distance between two consecutive prime numbers.
-Searching for large and unusual gaps combines mathematical questions
-with substantial computational work.
-
-PGN aims to bring researchers, developers, and volunteer contributors
-together around that work, with tools that make searches easier to
-coordinate, results easier to preserve, and data easier to understand.
-
-## Background
-
-The current software effort began in late July 2026 as an update to the
-Gapcoin software. Its scope subsequently expanded to work involving
-Riecoin and Primecoin.
-
-More recently, contact with Robert opened a new direction: exploring
-his PGN initiative and how our software work could help support it.
-
-This is the beginning of that collaboration—not a finished release.
-
-## What we are working towards
-
-- High-performance prime-gap searching, supported by reproducible
-  measurements and careful validation.
-- Community reservations that coordinate search ranges and reduce
-  unnecessary duplication.
-- Durable search records, with clear distinctions between candidates,
-  verified results, and completed coverage.
-- Interactive scientific views for exploring gap distributions,
-  search progress, and relationships within the data.
-- Clear documentation and community-led stewardship.
-
-These are development objectives, not claims that every feature
-is already available.
+**PGN Horizon** is the network client in this repository: an integrated wallet, optimized search engines, automatic work tickets, independent audits, and views of network evidence. It owns its engine runtime and does not require an installed Scout application.
 
 ## Current status
 
-**Early development and community discussion.**
+Horizon is a **private development testnet preview**, with play coins. The [0.1.0-alpha.1 pre-release](https://github.com/wizz13150/prime-gap-network/releases/tag/v0.1.0-alpha.1) is available for a small Windows and Ubuntu trial. It is not a production launch, a completed implementation of the final monetary rules, or a demonstrated large-network deployment.
 
-Experimental software and a preliminary reservation interface are being
-evaluated. The reservation workflow requires further development and
-agreement with the community.
+[Download Windows x64](https://github.com/wizz13150/prime-gap-network/releases/download/v0.1.0-alpha.1/PGN-Horizon-testnet-preview-Windows-x64.zip) · [Download Ubuntu 24.04 x86-64](https://github.com/wizz13150/prime-gap-network/releases/download/v0.1.0-alpha.1/PGN-Horizon-testnet-preview-Ubuntu24.04-x86_64.tar.gz) · [SHA-256 checksums](https://github.com/wizz13150/prime-gap-network/releases/download/v0.1.0-alpha.1/SHA256SUMS.txt)
 
-This repository contains the project presentation and a
-[development copy of the community range register](data/community/README.md).
-It does not yet provide a public software release.
+![PGN Horizon mining on an RTX 3090, with CPU audit controls](assets/horizon-mining.png)
 
-Existing community reservation records remain under their current
-stewardship. Any integration or transition should be agreed with their
-maintainers and should preserve the historical record.
+The preview includes:
+
+- Local wallet setup through an explicit assistant, a selectable data folder, and reopening an existing wallet.
+- An integrated encrypted bootstrap connection: testers do not install a VPN or expose wallet RPC.
+- Optimized NVIDIA CUDA engines covering 67–95-bit searches, with cached resident execution and qualified SM86/SM120 images. There is no automatic whole-range generic search fallback.
+- Automatically allocated, network-numbered tickets from a rolling pool of 10,000 available ranges. The pool is a window, not a 10,000-ticket lifetime limit. Manual reservations are disabled.
+- Persistent reports and audit state. Two audit operators must be distinct from each other and from the report owner. Insufficient independent operators leave a report pending.
+- GPU and CPU cards, explicit controls, dedicated CPU thread selection, Best/Recent results, compact statistics, and a bounded records display.
+- A separate diagnostic recorder with an explicit ZIP export and a 2 MiB capture limit.
+
+The CPU auditing path currently covers the **68-bit test area**. Physical testing on additional GPUs, a complete exchange with independent external auditors, final reward economics, Gold-only monetary-block rules, and large-network load qualification remain work in progress. Technical coordination-ledger height is **not** the number of Gold mining blocks.
+
+Read [the tester guide](docs/TESTING.md) before joining. The guide distinguishes computed results, committed reports, audits, scientific acceptance, and rewards.
+
+## Search performance
+
+Reference measurements for the retained active computation pipeline on an **RTX 3090**, at **1500 MHz core / 5001 MHz memory**:
+
+| Search width | Positions per second |
+| --- | ---: |
+| 68 bits | 1,003.52 billion |
+| 80 bits | 782.51 billion |
+| 95 bits | 575.23 billion |
+
+A position is an integer search position advanced, not a primality test. These are component reference measurements, not promises for a different GPU or for end-to-end network throughput including auditing, reporting and waiting. Scout documents the complete bit-by-bit reference table.
+
+## Why prime gaps?
+
+A prime gap is the distance between consecutive prime numbers. Searching for unusually large gaps combines mathematical questions with substantial computational work. PGN aims to coordinate that effort, preserve evidence, and make the results accessible to researchers and volunteer contributors.
+
+The network design separates discovery from verification. A returned range report is committed before its audit answers are disclosed; accepted scientific results require the configured independent checks. A displayed candidate or a completed local ticket does not by itself establish network acceptance or payment.
+
+## Building and reviewing the software
+
+The application source is in `src/`; the Core fork is in `wallet/riecoin-core-upstream-v2606/`. Qualified optimized CUDA input sources are in `src/engine/prime_gap_native/`, accompanied by their input manifest. This snapshot excludes retired independent search prototypes from the runtime source export.
+
+See [build instructions and provenance](docs/BUILDING.md) and [preview qualification](docs/QUALIFICATION.md). Build outputs require their own qualification before replacing the pinned runtime images. A successful compilation is not a new performance or compatibility certification.
+
+Wallets, private keys, authentication cookies, local mining history and operator-specific runtime configuration are not repository contents.
+
+## Background and community records
+
+The software effort began in late July 2026 as an update to Gapcoin software, then expanded to work involving Riecoin and Primecoin. Contact with Robert opened the collaboration around his PGN initiative.
+
+The [development copy of the historical community range register](data/community/README.md) is retained for provenance. Existing records remain under their maintainers' stewardship. They are distinct from automatic PGN tickets; Horizon does not offer manual network reservations.
 
 ## Get involved
 
-We welcome discussion with mathematicians, prime-gap researchers,
-developers, and people interested in contributing computing resources.
-
-The next steps include agreeing on priorities, reviewing the reservation
-workflow, and establishing an appropriate shared structure for the project.
-
-Please introduce yourself in the
-[PGN Discord community](https://discord.gg/qZ2DerDMXQ).
+Researchers, developers and volunteer testers are welcome. Introduce yourself in the [PGN Discord community](https://discord.gg/qZ2DerDMXQ). For a private trial, share only your public audit address and diagnostic information requested by the coordinator. Never send a private key or wallet file.
 
 ## Acknowledgements
 
-- **Rob Smith (robert44444uk)** — originator of the PGN concept and initiative
+- **Rob Smith (robert44444uk)** — originator of PGN and its scientific and network design.
+- **Wizz** — software implementation and integration.
+- The upstream Riecoin, Bitcoin, Gapcoin and mathematical software contributors whose work underpins the project. Existing component licence and copyright notices are retained in their respective source trees and distribution notices.

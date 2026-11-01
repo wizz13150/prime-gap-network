@@ -1,0 +1,15 @@
+#include "mining/cpu_fleet.h"
+#include <QCoreApplication>
+#include <QTemporaryDir>
+#include <QTimer>
+#include <QDebug>
+#include <QSysInfo>
+#include <QFile>
+#include <QJsonDocument>
+#include <iostream>
+int main(int argc,char** argv){QCoreApplication app(argc,argv);if(argc!=2&&argc!=4)return 2;QCoreApplication::setOrganizationName("PGN-CPU-TEST");QCoreApplication::setApplicationName("isolated-controller");QTemporaryDir workspace;QString host=QSysInfo::machineHostName();QString deviceId="CPU/"+host.toUpper()+"/0";pgn::mining::CpuControlEndpoint endpoint;if(argc==4){QFile file(QString::fromLocal8Bit(argv[2]));if(!file.open(QIODevice::ReadOnly)||file.size()>32768)return 2;for(const auto& value:QJsonDocument::fromJson(file.readAll()).object().value("endpoints").toArray()){const auto item=value.toObject();if(item.value("host").toString()!=QString::fromLocal8Bit(argv[3]))continue;host=item.value("host").toString();deviceId=item.value("device_id").toString();endpoint.host=host;endpoint.deviceId=deviceId;endpoint.program=item.value("program").toString();for(const auto& arg:item.value("arguments").toArray())endpoint.arguments.append(arg.toString());}}else{endpoint.program=QString::fromLocal8Bit(argv[1]);endpoint.arguments={"--workspace",workspace.path(),"--piece-positions","100000000"};endpoint.host=host;endpoint.deviceId=deviceId;}int maximum=1;pgn::mining::CpuFleet fleet;int stage=0,acks=0;bool failed=false;QJsonObject last;
+ const auto fail=[&](const QString& error){failed=true;qCritical().noquote()<<error;fleet.requestClose();QTimer::singleShot(1000,&app,&QCoreApplication::quit);};
+ fleet.onTelemetry=[&](const QString&,QJsonObject inventory,QJsonObject status,bool connected){if(!connected)return;last=status;if(!inventory.isEmpty())maximum=inventory.value("maximum_workers").toInt();if(status.value("network_accepted")!=false&&!status.isEmpty()){fail("Local service claimed network acceptance");return;}if(!status.value("worker_pids").toArray().isEmpty()){fail("Waiting audit started unrequested compute workers");return;}if(stage==0&&!inventory.isEmpty()&&status.value("state")=="IDLE"){stage=1;fleet.control(deviceId,"on-1",true,qRound(100./maximum));}};
+ fleet.onControl=[&](const QString&,const QString& request,bool applied,const QString& detail){if(!applied){fail(request+": "+detail);return;}++acks;if(request=="on-1"){if(last.value("state")!="WAITING_AUDIT"){fail("ON without assignment is not waiting");return;}stage=2;fleet.control(deviceId,"off-old",false,qRound(100./maximum));fleet.control(deviceId,"on-latest",true,qRound(200./maximum));}else if(request=="on-latest"){stage=3;fleet.control(deviceId,"off-final",false,qRound(200./maximum));}else if(request=="off-final"){stage=4;fleet.requestClose();}};
+ fleet.onCloseReady=[&]{if(stage!=4||!fleet.allStopped())fail("Closed before confirmed OFF");else app.quit();};
+ fleet.add(endpoint);QTimer::singleShot(12000,&app,[&]{fail("CPU fleet control test timeout");});app.exec();if(failed||stage!=4||acks!=3||!fleet.allStopped())return 1;std::cout<<"PASS actual native service: idle, ON/waiting, coalesced latest choice, OFF, close; zero compute PIDs\n";}

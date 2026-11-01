@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {checkRecoveryCursor} from '../tools/check-recovery-cursor.mjs';
+const temp=fs.mkdtempSync(path.join(os.tmpdir(),'pgn-recovery-check-'));
+const root=path.join(temp,'pgn'),globalRoot=path.join(temp,'global');
+fs.mkdirSync(path.join(root,'evidence'),{recursive:true});fs.mkdirSync(globalRoot,{recursive:true});
+const ids=['continuit-prime-gap-network','rc7-livraison-puis-rc8-cpu-gpu'];
+const head={recovery_gate:{latched:true},next:'Await explicit recovery/latch clearance',root_in_flight:'No live compiler; session6694 concluded',productive_gpu:'CURRENT OWNER/OFF UNKNOWN'};
+const ordered={requests:Array.from({length:7},(_,i)=>({id:'ROOT'+(379+i)}))};
+const files={head:path.join(root,'evidence/current-mission-20261011.json'),ordered:path.join(root,'evidence/root288-300-ordered-intent-20261011.json'),ledger:path.join(globalRoot,'ACTIVE-REQUEST-LEDGER.md')};
+function reset(){fs.writeFileSync(files.head,JSON.stringify(head));fs.writeFileSync(files.ordered,JSON.stringify(ordered));fs.writeFileSync(files.ledger,'|ROOT226-385|P04|live|root|');for(const id of ids){const dir=path.join(globalRoot,'automations',id);fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'automation.toml'),`id = "${id}"\nstatus = "PAUSED"\ntarget_thread_id = "019fa3c3-8674-7de0-b48e-2bcebe33d279"\n`)}}
+const check=()=>checkRecoveryCursor(root,globalRoot);let cases=0;
+reset();assert.equal(check().status,'PASS');cases++;
+fs.writeFileSync(path.join(globalRoot,'automations',ids[0],'automation.toml'),`id = "${ids[0]}"\nstatus = "ACTIVE"\n`);assert.throws(check,/still active/);cases++;
+reset();fs.writeFileSync(files.head,JSON.stringify({...head,root_in_flight:'tests running session6694'}));assert.throws(check,/compiler replayed/);cases++;
+reset();fs.writeFileSync(files.ordered,JSON.stringify({requests:ordered.requests.filter(x=>x.id!=='ROOT380')}));assert.throws(check,/missing or out of/);cases++;
+reset();fs.writeFileSync(files.ordered,JSON.stringify({requests:[...ordered.requests,{id:'ROOT379'}]}));assert.throws(check,/Duplicate expanded/);cases++;
+reset();fs.writeFileSync(files.head,' '.repeat(65537));assert.throws(check,/Bound exceeded/);cases++;
+reset();fs.writeFileSync(files.ordered,JSON.stringify({requests:[{ids:'ROOT324..325',requests_in_source_order:['a','b']},...ordered.requests]}));assert.equal(check().expanded_requests,9);cases++;
+fs.writeFileSync(files.ordered,JSON.stringify({requests:[{ids:'ROOT324..325',requests_in_source_order:['a']},...ordered.requests]}));assert.throws(check,/cardinality/);cases++;
+reset();fs.writeFileSync(files.ordered,JSON.stringify({requests:[...ordered.requests,{id:'ROOT386'}]}));assert.throws(check,/index does not cover/);cases++;
+fs.writeFileSync(files.ledger,'|ROOT226-386|P04|live|root|');fs.writeFileSync(files.head,JSON.stringify({...head,recovery_gate:{latched:false},next:'Fresh explicitly authorized next operation',productive_gpu:'Fresh independent owner receipt'}));assert.equal(check().status,'PASS');cases++;
+console.log(JSON.stringify({status:'PASS',cases,scope:'Reject active reminders, stale compiler, missing/duplicate requests, oversized head and stale index; accept grouped source and legitimate future unlatched cursor',fixture:temp,production_mutated:false}));

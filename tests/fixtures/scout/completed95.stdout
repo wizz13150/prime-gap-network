@@ -1,0 +1,43 @@
+[phase0-gpu] engine=GPU_OWNED_CONTINUOUS descriptors=32 original_start=20000000000000000000000000000 length=2000000000000 proof=EXACT_ENDPOINTS_GPU_INTERIOR coverage=SOURCE_PRP_INDEPENDENT_PROOF_PENDING
+[pgn-counters] time_ns=222064558046900 positions=64424509420 gaps=0 tests=167459534 batches=1 processed_gaps=0 emitted_gaps=0
+[pgn-counters] time_ns=222064558537900 positions=128849018860 gaps=0 tests=334900723 batches=2 processed_gaps=0 emitted_gaps=0
+[pgn-counters] time_ns=222064834133300 positions=193273528300 gaps=0 tests=502338153 batches=3 processed_gaps=0 emitted_gaps=0
+[pgn-counters] time_ns=222064834553500 positions=257698037740 gaps=0 tests=669736777 batches=4 processed_gaps=0 emitted_gaps=0
+[pgn-counters] time_ns=222065052880600 positions=322122547180 gaps=0 tests=837196576 batches=5 processed_gaps=0 emitted_gaps=0
+[phase0-gpu] GAP merit=20.4403 gap=1332 lower=20000000000000000326692788459 upper=20000000000000000326692789791 verified=1 proof=EXACT_ENDPOINTS_EULER_COMPOSITE record=off table=unknown
+[phase0-gpu] GAP merit=21.0848 gap=1374 lower=20000000000000000331359452237 upper=20000000000000000331359453611 verified=1 proof=EXACT_ENDPOINTS_EULER_COMPOSITE record=off table=unknown
+[phase0-gpu] GAP merit=21.4838 gap=1400 lower=20000000000000000373548589257 upper=20000000000000000373548590657 verified=1 proof=EXACT_ENDPOINTS_EULER_COMPOSITE record=off table=unknown
+[pgn-counters] time_ns=222065077052800 positions=386547056620 gaps=3 tests=1004651951 batches=6 processed_gaps=3 emitted_gaps=3
+[pgn-counters] time_ns=222065271629200 positions=450971566060 gaps=3 tests=1172053070 batches=7 processed_gaps=3 emitted_gaps=3
+[pgn-counters] time_ns=222065272007000 positions=515396075500 gaps=3 tests=1339496136 batches=8 processed_gaps=3 emitted_gaps=3
+[pgn-counters] time_ns=222065490374600 positions=579820584940 gaps=3 tests=1506934808 batches=9 processed_gaps=3 emitted_gaps=3
+[phase0-gpu] GAP merit=21.5144 gap=1402 lower=20000000000000000590863510877 upper=20000000000000000590863512279 verified=1 proof=EXACT_ENDPOINTS_EULER_COMPOSITE record=off table=unknown
+[pgn-counters] time_ns=222065496348500 positions=644245094380 gaps=4 tests=1674389511 batches=10 processed_gaps=4 emitted_gaps=4
+[phase0-gpu] GAP merit=20.5323 gap=1338 lower=20000000000000000697771455803 upper=20000000000000000697771457141 verified=1 proof=EXACT_ENDPOINTS_EULER_COMPOSITE record=off table=unknown
+[pgn-counters] time_ns=222065746088400 positions=708669603820 gaps=5 tests=1841830698 batches=11 processed_gaps=5 emitted_gaps=5
+[phase0-gpu] GAP merit=20.7165 gap=1350 lower=20000000000000000741076220327 upper=20000000000000000741076221677 verified=1 proof=EXACT_ENDPOINTS_EULER_COMPOSITE record=off table=unknown
+[pgn-counters] time_ns=222065751493300 positions=773094113260 gaps=6 tests=2009266243 batches=12 processed_gaps=6 emitted_gaps=6
+[pgn-counters] time_ns=222065927313600 positions=837518622700 gaps=6 tests=2176672015 batches=13 processed_gaps=6 emitted_gaps=6
+[pgn-counters] time_ns=222065927777700 positions=901943132140 gaps=6 tests=2344079775 batches=14 processed_gaps=6 emitted_gaps=6
+[pgn-counters] time_ns=222066161688400 positions=966367641580 gaps=6 tests=2511498450 batches=15 processed_gaps=6 emitted_gaps=6
+[pgn-counters] time_ns=222066162259500 positions=1030792151020 gaps=6 tests=2678945851 batches=16 processed_gaps=6 emitted_gaps=6
+[phase0-gpu] GAP merit=21.2382 gap=1384 lower=20000000000000001043659869143 upper=20000000000000001043659870527 verified=1 proof=EXACT_ENDPOINTS_EULER_COMPOSITE record=off table=unknown
+[pgn-counters] time_ns=222066401996600 positions=1095216660460 gaps=7 tests=2846344602 batches=17 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222066402442700 positions=1159641169900 gaps=7 tests=3013790063 batches=18 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222066599171900 positions=1224065679340 gaps=7 tests=3181238168 batches=19 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222066599732400 positions=1288490188780 gaps=7 tests=3348631816 batches=20 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222066817350200 positions=1352914698220 gaps=7 tests=3516049754 batches=21 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222066817857600 positions=1417339207660 gaps=7 tests=3683479432 batches=22 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222067044633900 positions=1481763717100 gaps=7 tests=3850940352 batches=23 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222067045111000 positions=1546188226540 gaps=7 tests=4018370750 batches=24 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222067263364400 positions=1610612735980 gaps=7 tests=4185829341 batches=25 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222067263792700 positions=1675037245420 gaps=7 tests=4353241446 batches=26 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222067482119400 positions=1739461754860 gaps=7 tests=4520695133 batches=27 processed_gaps=7 emitted_gaps=7
+[pgn-counters] time_ns=222067482653400 positions=1803886264300 gaps=7 tests=4688133751 batches=28 processed_gaps=7 emitted_gaps=7
+[phase0-gpu] GAP merit=20.6244 gap=1344 lower=20000000000000001811423457753 upper=20000000000000001811423459097 verified=1 proof=EXACT_ENDPOINTS_EULER_COMPOSITE record=off table=unknown
+[pgn-counters] time_ns=222067704606500 positions=1868310773740 gaps=8 tests=4855569316 batches=29 processed_gaps=8 emitted_gaps=8
+[pgn-counters] time_ns=222067705103400 positions=1932735283180 gaps=8 tests=5023024537 batches=30 processed_gaps=8 emitted_gaps=8
+[pgn-counters] time_ns=222067794629900 positions=1997159792620 gaps=8 tests=5190492594 batches=31 processed_gaps=8 emitted_gaps=8
+[pgn-counters] time_ns=222067795168800 positions=2000000000000 gaps=8 tests=5198622089 batches=32 processed_gaps=8 emitted_gaps=8
+[phase0-gpu] gaps reported=8 verification_failures=0 records_new=0
+[phase0-gpu] --- end ---
