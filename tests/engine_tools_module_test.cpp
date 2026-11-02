@@ -1,3 +1,4 @@
+#include "qt_offscreen_fixture.h"
 #include "ui/engine_tools_view.h"
 #include "telemetry.h"
 #include <QApplication>
@@ -50,11 +51,7 @@ static int lateCatalogue(const QString& root){
  return 0;
 }
 int main(int argc,char** argv){
- const QString plugin=argc>1?QString::fromLocal8Bit(argv[1]):QStringLiteral("C:/Gapcoin/toolchain/msys64/ucrt64/share/qt6/plugins/platforms/qoffscreen.dll");
- if(!QFileInfo(plugin).isFile())return 80;QPluginLoader preflight(plugin);
- if(!preflight.load()){std::cerr<<preflight.errorString().toStdString()<<'\n';return 81;}
- const auto keys=preflight.metaData().value("MetaData").toObject().value("Keys").toArray();if(!keys.contains("offscreen"))return 82;
- qputenv("QT_QPA_PLATFORM","offscreen");qputenv("QT_QPA_PLATFORM_PLUGIN_PATH",QFileInfo(plugin).absolutePath().toUtf8());
+ if(!pgn::test::prepareOffscreen(argc>1?QString::fromLocal8Bit(argv[1]):QString{}))return 80;
  QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);QApplication app(argc,argv);if(QGuiApplication::platformName()!="offscreen")return 83;
  QTemporaryDir temp;REQUIRE(temp.isValid());
  const QString mode=argc>2?QString::fromLocal8Bit(argv[2]):QString{};

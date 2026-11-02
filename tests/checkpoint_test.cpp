@@ -1,21 +1,25 @@
-#include "engine/phase0/pgn_native_io.h"
-#include <filesystem>
-#include <fstream>
-#include <string>
+#include "engine/prime_gap_native/checkpoint_publish.h"
+#include <QTemporaryDir>
+#include <QFile>
+#include <QFileInfo>
 #include <iostream>
 int main() {
-    auto dir = std::filesystem::temp_directory_path() / ("pgn-checkpoint-" + std::to_string(GetCurrentProcessId()));
-    std::filesystem::create_directory(dir);
-    const auto final = dir / "state", temporary = dir / "state.tmp";
+    QTemporaryDir temporary;
+    if (!temporary.isValid()) return 1;
+    const auto final = temporary.filePath("state");
+    const auto path = final.toUtf8().toStdString();
     for (int i = 1; i <= 3; ++i) {
-        FILE* f = fopen(temporary.string().c_str(), "wb");
-        if (!f) return 1;
-        fprintf(f, "checkpoint-%d", i);
-        if (pgn_flush_checkpoint(f) != 0 || fclose(f) != 0 ||
-            pgn_replace_checkpoint(temporary.string().c_str(), final.string().c_str()) != 0) return 2;
-        std::ifstream input(final); std::string content; input >> content;
-        if (content != "checkpoint-" + std::to_string(i)) return 3;
+        const auto content = QByteArray("checkpoint-") + QByteArray::number(i);
+        const auto result = pgn_checkpoint::publish(path, content.constData(), static_cast<uint32_t>(content.size()));
+        if (!result.ok || QFileInfo::exists(final + ".pending")) return 2;
+        QFile input(final);
+        if (!input.open(QIODevice::ReadOnly) || input.readAll() != content) return 3;
     }
-    std::filesystem::remove(final); std::filesystem::remove(dir);
-    std::cout << "3 replacement checkpoint commits PASS\n";
+    const auto archived = pgn_checkpoint::archive(path);
+    if (!archived.ok || archived.destination.empty() || QFileInfo::exists(final)) return 4;
+    QFile input(QString::fromUtf8(archived.destination.data(), qsizetype(archived.destination.size())));
+    if (!input.open(QIODevice::ReadOnly) || input.readAll() != "checkpoint-3") return 5;
+    const auto absent = pgn_checkpoint::archive(path);
+    if (!absent.ok || !absent.destination.empty()) return 6;
+    std::cout << "3 replacement checkpoint commits and exact archive PASS; own temporary files only\n";
 }

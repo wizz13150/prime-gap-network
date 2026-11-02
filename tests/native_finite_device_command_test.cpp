@@ -64,7 +64,11 @@ QByteArray json(const QJsonObject& value){return QJsonDocument(value).toJson(QJs
 QString script(const NativeControlCommand& command){
     const auto remote=command.ssh().arguments.last();const auto bytes=QByteArray::fromBase64(remote.mid(remote.lastIndexOf(' ')+1).toLatin1());
     check(!bytes.isEmpty()&&bytes.size()%2==0,"typed finite script uses UTF16LE EncodedCommand");
-    QString result;for(int i=0;i<bytes.size();i+=2)result+=QChar(quint8(bytes[i])|(quint16(quint8(bytes[i+1]))<<8));return result;
+    QString result;for(int i=0;i<bytes.size();i+=2)result+=QChar(quint8(bytes[i])|(quint16(quint8(bytes[i+1]))<<8));
+    const QString prefix="[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';try{";
+    const QString suffix="}catch{[Console]::Error.WriteLine($_.Exception.Message);exit 1}";
+    check(result.startsWith(prefix)&&result.endsWith(suffix),"exact UTF8 diagnostics/nonzero-error envelope preserved");
+    return result.mid(prefix.size(),result.size()-prefix.size()-suffix.size());
 }
 template<class F>void commandRefuses(F operation){bool caught=false;try{operation();}catch(const std::exception&){caught=true;}check(caught,"invalid finite command must refuse before execution");}
 void unknown(const NativeControlCommand& command,const QByteArray& bytes,bool normal=true,int code=0,const QByteArray& errors={}){
@@ -73,8 +77,8 @@ void unknown(const NativeControlCommand& command,const QByteArray& bytes,bool no
 }
 void commands(){
     QTemporaryDir temp;check(temp.isValid(),"own temp command metadata only");
-    const auto file=[&](const char* name){const auto path=temp.filePath(name);QFile f(path);check(f.open(QIODevice::WriteOnly)&&f.write("TESTONLY_NOT_EXECUTED")==21,"own fake endpoint files, no user key");return path;};
-    const SshObservationEndpoint endpoint{file("fake-ssh.exe"),file("fixture-key"),"example.invalid","fixture",22};
+    const auto file=[&](const char* name,bool executable=false){const auto path=temp.filePath(name);QFile f(path);check(f.open(QIODevice::WriteOnly)&&f.write("TESTONLY_NOT_EXECUTED")==21,"own fake endpoint files, no user key");f.close();if(executable)check(QFile::setPermissions(path,QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner),"own fake endpoint executable bit; file is never executed");return path;};
+    const SshObservationEndpoint endpoint{file("fake-ssh.exe",true),file("fixture-key"),"example.invalid","fixture",22};
     const QString request="11111111-2222-4333-8444-555555555555";
     const auto snapshot=NativeControlCommand::finite3060Snapshot(endpoint),start=NativeControlCommand::finite3060Start(endpoint,request);
     const auto stop=NativeControlCommand::finiteObservedRunStop(endpoint,request,Run);

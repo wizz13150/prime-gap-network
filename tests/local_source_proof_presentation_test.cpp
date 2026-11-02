@@ -1,12 +1,12 @@
 #include "ui/local_source_proof_presentation.h"
 #include <iostream>
 using namespace pgn::ui;
-int main(){unsigned checks=0,failures=0;const auto check=[&](bool b){++checks;if(!b)++failures;};
+int main(){unsigned checks=0,failures=0;const auto check=[&](bool b){++checks;if(!b){++failures;std::cerr<<"Failed presentation check "<<checks<<'\n';}};
     const QString run(32,'a');const QSet<QString> active{run};
     QJsonObject good{{"scope","LOCAL_CERTIFIED_PAIRS_ONLY"},{"run",run},{"declared_identity_sha256",QString(64,'a')},{"policy_sha256",QString(64,'b')},
         {"total","10000000000"},{"verified","9999999999"},{"rejected","1"},{"after_gap_id","10000000000"},{"source_watermark","10000000005"},
         {"more",true},{"error",""},{"network_credit",false},{"range_coverage",false}};
-    auto p=localSourceProofPresentation(good,active);check(p.present&&p.active&&p.caption.contains("9999999999")&&p.caption.startsWith("LOCAL EXACT"));
+    auto p=localSourceProofPresentation(good,active);check(p.present&&p.active&&p.caption.contains("9999999999")&&p.caption.startsWith("CPU AUDIT ·"));
     check(!localSourceProofPresentation(good,{}).present);
     auto change=good;change["run"]=QString(32,'c');check(!localSourceProofPresentation(change,active).present);
     change=good;change["more"]=false;change["source_watermark"]="10000000000";p=localSourceProofPresentation(change,active);check(p.present&&!p.active&&p.caption.contains("CAUGHT UP"));

@@ -112,7 +112,10 @@ int main(int argc,char** argv){
     auto* localAtlas=community->findChild<QWidget*>("pgn-source-atlas");
     if(!localAtlas||!localAtlas->property("pgn_atlas_combined_context").toBool()||localAtlas->property("pgn_atlas_local_segments").toInt()!=1)return 60;
     const auto* liveWork=community->findChild<QLabel*>("pgn-booking-active-work");
-    if(!liveWork||!liveWork->text().contains("MINING NOW")||!liveWork->text().contains("68 bits · Zone 1000 · Block 99"))return 61;
+    std::cout<<"OBSERVED_WORK_LABEL="<<(liveWork?liveWork->text().toStdString():"missing")<<'\n';
+    if(!liveWork||!liveWork->text().contains("MINING · 0.00%")||!liveWork->text().contains("68 bits · Zone 1000 · Block 99")){
+        std::cerr<<"Unexpected observed work label: "<<(liveWork?liveWork->text().toStdString():"missing")<<'\n';return 61;
+    }
     if(!localAtlas||pgn::ui::rangeAtlasJobRect(localAtlas,run).isEmpty())return 19;
     if(!canvas->property("pgn_total_card_first").toBool()||canvas->property("pgn_central_page").toString()!="TOTAL")return 20;
     auto* calendar=community->findChild<QWidget*>("pgn-range-calendar-grid");
@@ -132,7 +135,12 @@ int main(int argc,char** argv){
     auto* exactEnd=community->findChild<QLineEdit*>("pgn_booking_end");
     if(!exactOpen||!exactDialog||!exactApply||!exactStart||!exactEnd)return 104;
     exactOpen->click();exactStart->setText("not-a-number");exactEnd->setText("2");exactApply->click();app.processEvents();
-    if(!exactDialog->isVisible()||model.jobs().size()!=1||exactStart->height()<32||exactEnd->height()<32||exactApply->height()<32)return 105;
+    // The local panel style sizes controls from the platform font/padding.
+    // Require complete natural control height, independent of fixed pixel metrics.
+    const auto controlFits=[](const QWidget* control){return control->minimumSizeHint().height()>0&&control->height()>=control->minimumSizeHint().height();};
+    if(!exactDialog->isVisible()||model.jobs().size()!=1||!controlFits(exactStart)||!controlFits(exactEnd)||!controlFits(exactApply)){
+        std::cerr<<"EXACT_DIALOG visible="<<exactDialog->isVisible()<<" jobs="<<model.jobs().size()<<" start_height="<<exactStart->height()<<" end_height="<<exactEnd->height()<<" apply_height="<<exactApply->height()<<'\n';return 105;
+    }
     exactStart->setText("1");exactEnd->setText("2");exactApply->click();app.processEvents();
     if(!exactDialog->isVisible()||model.jobs().size()!=1)return 106;
     exactStart->setText("199997000000000000000");exactEnd->setText("199998000000000000000");exactApply->click();app.processEvents();

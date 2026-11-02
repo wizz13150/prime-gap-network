@@ -1,3 +1,4 @@
+#include "qt_offscreen_fixture.h"
 #include "memory_benchmark_fixture.h"
 #include "ui/engine_tools_view.h"
 #include "ui/memory_benchmark_view.h"
@@ -43,12 +44,7 @@ public:
     }
 };
 int main(int argc,char** argv) {
-    // Explicitly preload and verify the CLOSED offscreen plugin; never create
-    // a visible desktop window or attach to the user's running GUI/GPU.
-    const QString plugin="C:/Gapcoin/toolchain/msys64/ucrt64/share/qt6/plugins/platforms/qoffscreen.dll";
-    QPluginLoader loader(plugin);REQUIRE(loader.load());
-    REQUIRE(loader.metaData().value("MetaData").toObject().value("Keys").toArray().contains("offscreen"));
-    qputenv("QT_QPA_PLATFORM","offscreen");qputenv("QT_QPA_PLATFORM_PLUGIN_PATH",QFileInfo(plugin).absolutePath().toUtf8());
+    REQUIRE(pgn::test::prepareOffscreen());
     QApplication app(argc,argv);REQUIRE(QGuiApplication::platformName()=="offscreen");QTemporaryDir temp;REQUIRE(temp.isValid());
     std::unique_ptr<QWidget> bench(pgn::ui::createBenchmarkView(temp.path()));
     auto* memory=bench->findChild<QWidget*>("pgn-benchmark-memory-workspace");REQUIRE(memory);

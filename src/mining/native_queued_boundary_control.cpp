@@ -139,7 +139,7 @@ bool NativeQueuedBoundaryControl::submit(const QString& request,const QString& o
                 const auto retained=weak->store_.savedPreparedNextAdmission(Device,a.binding.value("queued_intent").toString(),a.base);
                 need(retained.status==booking::PreparedNextReadStatus::Present&&retained.admission.dispatch.has_value(),"Staged reconciliation requires existing SAME SQLite PREPARED; never allocate");
                 const auto& d=*retained.admission.dispatch;
-                need(d.start==a.binding.value("start")&&d.end==a.binding.value("end")&&d.state=="PREPARED"&&!d.run&&d.predecessor&&*d.predecessor==a.base.run,"Staged reconciliation tuple differs from retained PREPARED");
+                need(QJsonValue(d.start)==a.binding.value("start")&&QJsonValue(d.end)==a.binding.value("end")&&d.state=="PREPARED"&&!d.run&&d.predecessor&&*d.predecessor==a.base.run,"Staged reconciliation tuple differs from retained PREPARED");
             }
             const auto next=weak->store_.prepareNextAtBoundary(Device,a.base,a.scope,a.registry,{WorkBoundary::Ready,observation});
             if(next.status==booking::NextBoundaryStatus::Prepared||next.status==booking::NextBoundaryStatus::ReconcilePrepared)weak->consumedRuns_.insert(a.base.run);
