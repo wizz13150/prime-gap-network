@@ -3,6 +3,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QPointer>
 #include <QTemporaryDir>
@@ -45,7 +46,11 @@ int fakeSsh(const QStringList& args){
     if(std::fgetc(stdin)!=EOF)return 54; // transport stdin is actually null
     {QFile starts(key+".starts");if(!starts.open(QIODevice::Append))return 55;starts.write("started\n");starts.close();}
     if(scenario=="wait"){
-        QFile pid(key+".pid");if(!pid.open(QIODevice::WriteOnly))return 56;pid.write(QByteArray::number(QCoreApplication::applicationPid()));pid.close();
+        QSaveFile pid(key+".pid");if(!pid.open(QIODevice::WriteOnly))return 56;
+        // Leave a scheduler window before writing: the reader must see either
+        // no marker or the complete PID, never a newly created empty file.
+        QThread::msleep(50);const auto bytes=QByteArray::number(QCoreApplication::applicationPid());
+        if(pid.write(bytes)!=bytes.size()||!pid.commit())return 56;
         QThread::msleep(5000);return 0;
     }
     const auto good=response();
