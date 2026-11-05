@@ -18,10 +18,12 @@ foreach(_zone RANGE 0 999)
         string(APPEND _pgn_test_csv "${_start},${_end},Open,\n")
     endif()
 endforeach()
-string(SHA256 _pgn_test_sha "${_pgn_test_csv}")
+file(WRITE "${PGN_LOCAL_TEST_RUNTIME}/community-source.csv" "${_pgn_test_csv}")
+# Bind the physical bytes, including this platform's newline representation.
+# Hashing the pre-write CMake string rejected generated Windows fixtures.
+file(SHA256 "${PGN_LOCAL_TEST_RUNTIME}/community-source.csv" _pgn_test_sha)
 set(_pgn_test_common "\"source_sha256\":\"${_pgn_test_sha}\",\"observed_utc\":\"2026-10-11T11:00:00.123Z\"")
 set(_pgn_test_range "\"start\":\"199998000000000000000\",\"end\":\"199999000000000000000\"")
-file(WRITE "${PGN_LOCAL_TEST_RUNTIME}/community-source.csv" "${_pgn_test_csv}")
 file(WRITE "${PGN_LOCAL_TEST_RUNTIME}/binding.json"
     "{${_pgn_test_range},\"community\":{${_pgn_test_common},\"schema\":\"pgn-local-validation-registry-1\",\"authority\":\"OPERATOR_ENGINE_VALIDATION_NO_NETWORK_ACCEPTANCE\",\"source\":\"local-validation://cccccccccccccccccccccccccccccccc\",\"scope_start\":\"73786976294838206464\",\"scope_end\":\"39614081257132168796771975168\"}}\n")
 # The loader's historical provenance URL is a syntax-only fixture, never fetched.

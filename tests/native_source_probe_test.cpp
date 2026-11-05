@@ -32,8 +32,10 @@ QJsonObject packet(const QString& run,qint64 at,const QByteArray& bytes,qint64 p
     {"observed_utc","2026-10-15T17:00:00.123456789Z"},{"source_counter_age_ms",9876543210LL},
     {"manifest",QJsonObject{{"schema","pgn-native-process-1"},{"run",run},{"uuid",Device},{"pid",4242},{"birth","2026-10-14T17:00:00.1234567Z"},{"start","100000"},{"end","110000"},{"stdout","C:/PUBLIC-TESTONLY/"+run+".stdout"}}},
     {"binding",QJsonObject{{"schema","PUBLIC-TESTONLY"},{"uuid",Device}}},{"last_exit",QJsonObject{{"run",run},{"exit_code",0}}}};}
-int fake(const QStringList& args){const auto wide=QByteArray::fromBase64(args.last().section(' ',-1).toLatin1());need(wide.size()%2==0,"SELF UTF16 command");const auto script=QString::fromUtf16(reinterpret_cast<const char16_t*>(wide.constData()),wide.size()/2);
-    const auto m=QRegularExpression("^& 'C:/PGN/runtime/native-control.ps1' -Action stream -Offset ([0-9]+) -ExpectedRun '([0-9a-f]{32})'$").match(script);
+int fake(const QStringList& args){const auto wide=QByteArray::fromBase64(args.last().section(' ',-1).toLatin1());need(wide.size()%2==0,"SELF UTF16 command");auto script=QString::fromUtf16(reinterpret_cast<const char16_t*>(wide.constData()),wide.size()/2);
+    const QString wire="[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;";
+    need(script.startsWith(wire),"SELF exact UTF-8 wire setup");script.remove(0,wire.size());
+    const auto m=QRegularExpression("^& 'C:/PGN/runtime/native-control.ps1' -Action stream -Offset ([0-9]+) -ExpectedRun '([0-9a-f]{32})' -StreamCount 150$").match(script);
     need(m.hasMatch()&&m.capturedLength()==script.size(),"ONLY existing readonly stream command permitted");need(std::fgetc(stdin)==EOF,"SELF null stdin");
     QFile log(qEnvironmentVariable("PGN_SOURCE_PROBE_TEST_LOG"));need(log.open(QIODevice::WriteOnly|QIODevice::Append)&&log.write(script.toUtf8()+'\n')>0&&log.flush(),"SELF read action receipt");log.close();
     const auto mode=qEnvironmentVariable("PGN_SOURCE_PROBE_TEST_MODE");if(mode=="timeout"){QThread::msleep(60000);return 0;}if(mode=="malformed"){std::fputs("{bad}\n",stdout);std::fflush(stdout);return 0;}
@@ -58,10 +60,14 @@ struct Fixture{
     }
 };
 qint64 scalar(const QString& dbFile,const char* sql){sqlite3* db{};need(sqlite3_open_v2(dbFile.toUtf8().constData(),&db,SQLITE_OPEN_READONLY,nullptr)==SQLITE_OK,"own readonly history open");sqlite3_stmt* q{};need(sqlite3_prepare_v2(db,sql,-1,&q,nullptr)==SQLITE_OK&&sqlite3_step(q)==SQLITE_ROW,"own history scalar");const auto n=sqlite3_column_int64(q,0);sqlite3_finalize(q);sqlite3_close(db);return n;}
-void positive(){Fixture f;const auto result=f.run("complete");const auto& r=result.receipt;check(result.code==0&&r.value("accepted")==true&&r.value("state")=="SOURCE_CONSERVED"&&r.value("own_clients_stopped")==true,"SOURCE conserved only after own clients stopped");check(r.value("control_commands_sent")==0&&r.value("scope")=="SOURCE_BYTES_CONSERVED_AT_OBSERVED_EOF_ONLY_NOT_PHYSICAL_IDLE_OR_COVERAGE","receipt makes no physical idle/coverage claim");
+void positive(){Fixture f;const auto result=f.run("complete");const auto& r=result.receipt;
+    if(result.code!=0)std::cerr<<"PROBE_DIAGNOSTIC "<<compact(r).constData()<<'\n';
+    check(result.code==0&&r.value("accepted")==true&&r.value("state")=="SOURCE_CONSERVED"&&r.value("own_clients_stopped")==true,"SOURCE conserved only after own clients stopped");check(r.value("control_commands_sent")==0&&r.value("scope")=="SOURCE_BYTES_CONSERVED_AT_OBSERVED_EOF_ONLY_NOT_PHYSICAL_IDLE_OR_COVERAGE","receipt makes no physical idle/coverage claim");
     const auto progress=r.value("source_progress").toArray();
-    check(progress.size()==4&&!r.value("source_progress_overflow").toBool(),"one bounded actual first-frame stage sequence");
-    const QStringList stages{"frame_received","source_admitted","index_begin","index_done"};
+    // The finite conservation probe has no display-index subscriber. Its
+    // SOURCE contract must not start or wait for an unrelated index reader.
+    check(progress.size()==2&&!r.value("source_progress_overflow").toBool(),"one bounded actual first-frame SOURCE-only stage sequence");
+    const QStringList stages{"frame_received","source_admitted"};
     qint64 previous=-1,delivered=-1;
     for(int i=0;i<progress.size();++i){const auto event=progress[i].toObject();
         check(i<stages.size()&&event.value("stage")==stages.value(i)&&event.value("schema")=="pgn-native-source-progress-1"&&event.value("run")==Run&&event.value("request_id")==r.value("request_id"),"actual progress correlation/order, not a synthetic status");
