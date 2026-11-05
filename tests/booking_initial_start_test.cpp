@@ -1,3 +1,4 @@
+#include <QJsonDocument>
 #include "booking/booking_store.h"
 #include "booking/decimal_range.h"
 #include <QCoreApplication>

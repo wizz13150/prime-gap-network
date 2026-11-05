@@ -86,7 +86,13 @@ int main(int argc,char** argv){
         callbacks.stopped=[&]{receipt.insert("own_clients_stopped",true);receipt.insert("publications",publications);receipt.insert("elapsed_ms",clock.elapsed());try{output(receipt);app.exit(code);}catch(const std::exception& e){std::fputs(e.what(),stderr);app.exit(2);}};
         NativeSourceRuntimeConfig config{loaded.configuration->endpoint,device,paths.sourceHistoryDatabase,paths.sourceMirrorDirectory,5000,timeout+1000,timeout+1000};
         runtime=std::make_unique<NativeSourceRuntime>(config,std::move(callbacks));
-        QObject::connect(&deadline,&QTimer::timeout,&app,[&]{finish(4,"SOURCE observation deadline elapsed; only OWN observation clients stopped");});
+        QObject::connect(&deadline,&QTimer::timeout,&app,[&]{
+            // A timer wakeup is a hint, not proof that the monotonic deadline
+            // has elapsed. Millisecond conversion can leave one tick unpaid.
+            const auto remaining=qint64(timeout)-clock.elapsed();
+            if(remaining>0){deadline.start(int(remaining));return;}
+            finish(4,"SOURCE observation deadline elapsed; only OWN observation clients stopped");
+        });
         deadline.start(timeout);if(!runtime->startSource(request,run))finish(3,"SOURCE read attempt refused; no retry");
         // Cleanup is asynchronous and always awaited. A pre-existing index
         // audit can delay it; timeout is not a hard worker-termination promise.

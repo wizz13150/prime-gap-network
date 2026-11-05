@@ -1,0 +1,68 @@
+name: Windows source build
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-source-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-build:
+    name: UCRT64 all targets and isolated tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Enable long source paths on the disposable runner
+        shell: pwsh
+        run: git config --global core.longpaths true
+
+      - name: Check out the proposed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the UCRT64 build dependencies
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-gmp
+            mingw-w64-ucrt-x86_64-sqlite3
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-boost
+
+      - name: Record the actual tool versions
+        run: |
+          g++ --version
+          cmake --version
+          ninja --version
+          pacman -Q mingw-w64-ucrt-x86_64-qt6-base mingw-w64-ucrt-x86_64-sqlite3 mingw-w64-ucrt-x86_64-gmp
+
+      - name: Configure a clean Release tree
+        run: cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build every default source target
+        run: |
+          pgn_build_jobs="$(nproc)"
+          if [ "$pgn_build_jobs" -gt 4 ]; then pgn_build_jobs=4; fi
+          printf 'Build workers: %s\n' "$pgn_build_jobs"
+          cmake --build build-ci --parallel "$pgn_build_jobs"
+
+      - name: Run the isolated registered tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          GSETTINGS_BACKEND: memory
+        run: ctest --test-dir build-ci --output-on-failure --timeout 180 -j2
