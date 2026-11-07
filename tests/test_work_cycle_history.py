@@ -70,14 +70,14 @@ class ColdHistoryTests(unittest.TestCase):
     def test_real_process_exit_after_archive_commit_is_recoverable(self):
         for n in range(1,5):finish(self.j,n)
         hot=self.j.file.read_bytes();self.j.close()
-        result=subprocess.run([sys.executable,'-B','-I','-X','utf8',__file__,'--crash-after-archive',str(self.root)],timeout=10,creationflags=subprocess.CREATE_NO_WINDOW)
+        result=subprocess.run([sys.executable,'-B','-I','-X','utf8',__file__,'--crash-after-archive',str(self.root)],timeout=10,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         self.assertEqual(result.returncode,37)
         self.j=WorkCycleJournal(self.root,'a'*64)
         self.assertEqual(self.j.file.read_bytes(),hot);self.assertTrue(self.j.contains(work(1)['request_id']))
         self.j.prepare(work(5));self.restart();self.assertTrue(self.j.contains(work(1)['request_id']))
     def test_real_process_exit_inside_archive_transaction_rolls_back(self):
         r=self.evict();before=self.j.snapshot(r);self.j.close()
-        result=subprocess.run([sys.executable,'-B','-I','-X','utf8',__file__,'--crash-in-transaction',str(self.root)],timeout=10,creationflags=subprocess.CREATE_NO_WINDOW)
+        result=subprocess.run([sys.executable,'-B','-I','-X','utf8',__file__,'--crash-in-transaction',str(self.root)],timeout=10,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         self.assertEqual(result.returncode,38)
         self.j=WorkCycleJournal(self.root,'a'*64);self.assertEqual(self.j.snapshot(r),before)
         with self.j.history.database() as db:self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')

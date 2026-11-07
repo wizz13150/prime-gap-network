@@ -30,6 +30,9 @@ struct CollectedGap {
 class GapFlowModel {
 public:
     static constexpr int maximumEvents=64;
+    // Discoveries fold into their range report; confirmation is shown by the
+    // report itself. A disconnected Core must not strand old-ticket particles.
+    static constexpr qint64 reportHandoffDuration=4200;
     void observe(const QJsonObject& frame,const QString& producer,qint64 now){
         const auto ticket=frame.value("ticket_id").toString();
         if(!ticket.isEmpty()&&ticket!=ticket_){
@@ -123,8 +126,7 @@ public:
         departing_.erase(std::remove_if(departing_.begin(),departing_.end(),[this,now](const auto& node){
             if(!node.ticketTransition)return now-node.leaves>1700;
             if(node.toSink)return now-node.leaves>2200;
-            const auto confirmed=confirmedReports_.value(node.gap.ticket(),-1);
-            return confirmed>=0&&now>std::max(node.leaves+2800,confirmed)+1400;
+            return now-node.leaves>reportHandoffDuration;
         }),departing_.end());
     }
     const QVector<GapFlowEvent>& events()const{return events_;}

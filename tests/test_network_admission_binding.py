@@ -16,6 +16,7 @@ class Monitor:
 class BindingTests(unittest.TestCase):
     def worker(self):
         worker=object.__new__(module.NetworkWorker);worker.trace=[];worker.admission=Monitor(worker.trace)
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup);worker.root=Path(directory.name)
         worker.args=SimpleNamespace(miner=None,wallet='fixture',wait_for_network_sync=False)
         worker.output_lock=threading.Lock();worker.running=threading.Event();worker.running.set();worker.quitting=threading.Event()
         worker.controls=lambda:None

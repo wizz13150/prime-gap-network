@@ -40,7 +40,7 @@ CPU network operation/Huge pages and physical SM120 performance need wider quali
 
 The test ledger includes coordination records without coin issuance. **Ledger height is not Gold-block count.** Final Gold-only chain architecture, final economics and large-network load qualification remain development work. Complementary pseudoprime recovery is deferred in this preview; exhaustive scientific completeness against that case is not claimed. Ordinary network audits and exact Gold verification remain enabled.
 
-**Ubuntu source:** [Download the corrected complete source](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Ubuntu-source.zip). All default build targets compile successfully on Ubuntu 24.04 with GCC 13.3 and Qt 6.4.2. CTest: **236/245 tests pass; nine test failures remain under investigation**. This is not an all-tests-pass qualification. No new Ubuntu binary is included. Older Ubuntu alpha packages use an older network epoch. See [build instructions](docs/BUILDING.md).
+**Ubuntu source verification (2026-11-07):** [Download the complete Ubuntu source](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Ubuntu-source.zip). A clean Ubuntu 24.04 build of every Ninja target and all 245 CTest tests pass with Qt 6.4.2 and GCC 13.3. This is source to compile, not an Ubuntu binary. [Build instructions](docs/BUILDING.md).
 
 ## Search performance
 

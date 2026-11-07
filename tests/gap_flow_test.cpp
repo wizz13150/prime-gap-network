@@ -47,8 +47,11 @@ int main(int argc,char** argv){
  model.expire(22000);auto nextTicket=frame();nextTicket.insert("ticket_id",QString(64,'b'));model.observe(nextTicket,"gpu",23000);
  require(model.collected().isEmpty()&&model.departing().size()==1&&model.departing()[0].ticketTransition,"Ticket switch abruptly erased its visible discoveries");
  model.setVisibleBest(snapshot({old}),23001);require(model.collected().isEmpty(),"Old table snapshot leaked into the next ticket");
- model.expire(26000);require(model.departing().size()==1,"Unconfirmed report entered the chain on a timer");model.confirmReport(QString(64,'a'),26010);
- model.expire(28000);require(model.departing().isEmpty(),"Confirmed ticket departure did not close");
+ model.expire(26000);require(model.departing().size()==1,"Old-ticket discoveries vanished before their report handoff");
+ model.expire(23000+GapFlowModel::reportHandoffDuration+1);
+ require(model.departing().isEmpty(),"Disconnected Core stranded old-ticket particles indefinitely");
+ require(model.reportConfirmed(GapFlowEvent{QString(64,'a')+":pair","pair"})<0,"Presentation handoff fabricated report confirmation");
+ model.confirmReport(QString(64,'a'),28000);
  GapFlowModel inFlight;inFlight.observe(frame(),"gpu",0);inFlight.observe(frame({gold}),"gpu",10);inFlight.observe(nextTicket,"gpu",300);
  require(inFlight.events().isEmpty()&&inFlight.departing().size()==1&&inFlight.departing().first().flight.has_value(),"In-flight old-ticket gap still uses its normal expiry in the new ticket");
  auto audit=frame({row(3,33.)});audit.insert("work_role","audit");model.observe(audit,"gpu",300);

@@ -18,7 +18,7 @@ class ScopedProducerTests(unittest.TestCase):
 
     def run_cli(self,*args,exit=0):
         command=[str(EXE),*map(str,args)]
-        p=subprocess.run(command,capture_output=True,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
+        p=subprocess.run(command,capture_output=True,timeout=15,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         self.assertEqual(p.returncode,exit,p.stderr.decode(errors='replace')[-1000:])
         # Controlled receipt-shape fixture, not an assertion of per-call Job
         # ownership. The integration driver separately supplies a real Job receipt.
@@ -67,7 +67,7 @@ class ScopedProducerTests(unittest.TestCase):
     def test_interruption_leaves_no_complete_receipt(self):
         folder=self.base/'interrupted'
         child=subprocess.Popen([str(EXE),'10000000',str(folder),'150000000000000000000','150000001000000000000'],
-            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=subprocess.CREATE_NO_WINDOW)
+            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         try:
             end=time.monotonic()+3
             while not folder.is_dir()and time.monotonic()<end:

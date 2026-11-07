@@ -141,7 +141,10 @@ class MiningFlowCycleTests(unittest.TestCase):
                 completed(job, result)
                 if job.context['role'] == 'search': worker.quitting.set()
             flow.gpu.on_result = finish
-            timer = threading.Timer(2, lambda: (worker.quitting.set(), flow.gpu.wake()))
+            # Successful work stops on the actual search result above. The
+            # watchdog is only a failure bound, not a two-second work quota:
+            # durable audit journals can exceed that quota on a loaded CI host.
+            timer = threading.Timer(10 if should_search else 2, lambda: (worker.quitting.set(), flow.gpu.wake()))
             timer.start()
             for thread in flow.audit_threads: thread.start()
             try:

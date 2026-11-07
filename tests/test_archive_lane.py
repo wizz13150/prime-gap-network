@@ -194,6 +194,7 @@ class ArchiveLaneTests(unittest.TestCase):
     def test_real_archive_bytes_and_recovery_are_preserved_off_lane(self):
         fixture = archive_fixture.TicketArchiveTests()
         fixture.setUp()
+        fixture.valid_index()
         self.addCleanup(fixture.tearDown)
         self.root = fixture.folder.parent.parent.resolve()
         finished = threading.Event()
@@ -207,7 +208,7 @@ class ArchiveLaneTests(unittest.TestCase):
              patch.object(lane_module, 'compact', side_effect=compact):
             lane = self.lane()
             lane.offer(fixture.folder)
-            self.assertTrue(finished.wait(2))
+            self.assertTrue(finished.wait(2),self.notes)
             self.assertEqual(fixture.report,
                              archive_fixture.archive.result(fixture.folder, fixture.cfg))
             self.assertFalse(any((fixture.folder / name).exists()

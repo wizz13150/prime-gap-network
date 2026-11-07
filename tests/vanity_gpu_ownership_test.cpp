@@ -38,7 +38,12 @@ int main(int argc,char** argv){
  auto wait=[&](auto predicate){QElapsedTimer clock;clock.start();while(!predicate()&&clock.elapsed()<5000){app.processEvents(QEventLoop::AllEvents,10);QThread::msleep(5);}if(!predicate()){std::cerr<<"stage="<<stage.toStdString();if(diagnosticView){auto* label=diagnosticView->findChild<QLabel*>("pgn-vanity-status");std::cerr<<" status="<<(label?label->text().toStdString():"missing");}std::cerr<<"\n";}require(predicate(),"Ownership fixture timed out");};
  for(int scenario=0;scenario<6;++scenario){
   QTemporaryDir fixture;require(fixture.isValid(),"Temporary fixture missing");const auto root=fixture.path(),marker=root+"/unexpected-worker";qputenv("PGN_OWNERSHIP_TEST_MARKER",marker.toUtf8());
-  const auto native=root+"/wallet/native-runtime/pgn-vanity-session.exe";require(QDir().mkpath(QFileInfo(native).absolutePath())&&QDir().mkpath(root+"/data"),"Fixture paths unavailable");require(QFile::copy(QCoreApplication::applicationFilePath(),native),"Inert helper copy failed");QFile binary(native);require(binary.open(QIODevice::ReadOnly),"Helper unreadable");const auto hash=QString::fromLatin1(QCryptographicHash::hash(binary.readAll(),QCryptographicHash::Sha256).toHex());binary.close();
+  #ifdef Q_OS_WIN
+  const auto helperName=QStringLiteral("pgn-vanity-session.exe");
+#else
+  const auto helperName=QStringLiteral("pgn-vanity-session");
+#endif
+  const auto native=root+"/wallet/native-runtime/"+helperName;require(QDir().mkpath(QFileInfo(native).absolutePath())&&QDir().mkpath(root+"/data"),"Fixture paths unavailable");require(QFile::copy(QCoreApplication::applicationFilePath(),native),"Inert helper copy failed");QFile binary(native);require(binary.open(QIODevice::ReadOnly),"Helper unreadable");const auto hash=QString::fromLatin1(QCryptographicHash::hash(binary.readAll(),QCryptographicHash::Sha256).toHex());binary.close();
   QFile profile(root+"/data/vanity-runtime.json");require(profile.open(QIODevice::WriteOnly),"Profile unavailable");profile.write(QJsonDocument(QJsonObject{{"schema","pgn-vanity-runtime-1"},{"executable",native},{"sha256",hash},{"local_gpu_module","INERT-NEVER-LOAD-GPU"}}).toJson());profile.close();
   QWidget wrapper;auto* view=pgn::ui::createVanityView(root,nullptr,root+"/vault",true);view->setParent(&wrapper);diagnosticView=view;
   std::vector<std::function<void(QString)>> pauses;QString currentLease;int released=0;bool requestedResume=false,drained=false;

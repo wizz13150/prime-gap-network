@@ -15,7 +15,7 @@ class TicketArchiveTests(unittest.TestCase):
   self.original=archive.canonical(self.meta);(self.folder/'session.json').write_bytes(self.original);(self.folder/'report.json').write_bytes(archive.canonical(self.report))
   for name in archive.WORK_FILES:(self.folder/name).write_bytes(b'redundant fully committed data')
  def tearDown(self):self.tmp.cleanup()
- def compact(self):
+ def valid_index(self):
   # Every completed engine now conserves its exact index before retirement.
   path=self.folder/'session-index.sqlite3'
   if path.exists()and path.read_bytes()[:16]!=b'SQLite format 3\0':
@@ -27,6 +27,8 @@ class TicketArchiveTests(unittest.TestCase):
      db.execute('INSERT INTO meta VALUES(?,?)',('binding',json.dumps(dict(configuration_hash=hashlib.sha256(archive.canonical(self.cfg)).hexdigest()))))
      start=int(self.cfg['start'])
      db.executemany('INSERT INTO gaps VALUES(?,?,?,?,?)',[((start+i*20).to_bytes(16,'big'),(start+i*20+10).to_bytes(16,'big'),10,i,0)for i in range(3)])
+ def compact(self):
+  self.valid_index()
   with patch('horizon_ticket_archive.read_session_metadata',return_value=self.meta),patch('horizon_status_stream.ticket_frame',return_value=self.frame):return archive.compact(self.folder)
  def intact(self):
   self.assertEqual((self.folder/'session.json').read_bytes(),self.original)

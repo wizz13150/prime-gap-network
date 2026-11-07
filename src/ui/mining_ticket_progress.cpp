@@ -2,6 +2,7 @@
 #include "ui/gap_flow_motion.h"
 #include "ui/position_formats.h"
 #include "ui/ticket_flow_evidence.h"
+#include "ui/report_visual.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegion>
@@ -35,7 +36,8 @@ void workMark(QPainter& painter,const QPointF& point,const QString& letter,const
  if(audited){painter.setBrush(Qt::NoBrush);painter.setPen(QPen(QColor(149,255,202,185),1.2));painter.drawEllipse(QRectF(-12,-15,24,9));}
  painter.setBrush(QColor("#071b23"));painter.setPen(QPen(color,1.2));
  if(letter=="A")painter.drawEllipse(QPointF(),7,7);else painter.drawRoundedRect(QRectF(-7,-7,14,14),2,2);
- QFont font("Consolas");font.setPixelSize(10);font.setBold(true);painter.setFont(font);painter.setPen(color);painter.drawText(QRectF(-7,-7,14,14),Qt::AlignCenter,letter);painter.restore();
+  if(letter=="R"){painter.drawLine(QPointF(-4,-2),QPointF(4,-2));painter.drawLine(QPointF(-4,2),QPointF(3,2));painter.drawLine(QPointF(-4,5),QPointF(1,5));}
+  else{QFont font("Consolas");font.setPixelSize(10);font.setBold(true);painter.setFont(font);painter.setPen(color);painter.drawText(QRectF(-7,-7,14,14),Qt::AlignCenter,letter);}painter.restore();
 }
 struct Port {QString id;QRectF card;QPointF point;};
 QColor faded(QColor color,int alpha){color.setAlpha(std::clamp(alpha,0,255));return color;}
@@ -117,7 +119,7 @@ protected:
   rail_->setProperty("pgn_ticket_audit_markers",rail_->flow_.moving()&&rail_->flow_.audit()?1:0);
   // A whole range has a distinct packet. Its local completion, native report
   // inclusion and audited verdict are separate states; only the last gets a halo.
-  QJsonArray workTokens;int visibleRanges=0;
+  QJsonArray workTokens;QHash<QString,QPointF> reportPositions;int visibleRanges=0;
   for(auto at=rail_->landings_.crbegin();at!=rail_->landings_.crend()&&visibleRanges<6;++at){
    const auto& entry=*at;if(!entry.complete&&!entry.confirmed)continue;
    if(entry.audited&&now-entry.approvedAt>3200)continue;
@@ -128,7 +130,8 @@ protected:
    double opacity=1.;
    if(entry.audited){const double entering=std::clamp((now-entry.approvedAt-700)/2300.,0.,1.);position=livingFlowPoint(holding,chainPort,entering,flowSeed(qHash(entry.ticket)),seconds,4.);if(entering>.7)opacity=(1-entering)/.3;}
    position.setY(std::min(position.y(),box.bottom()-3));
-   workMark(painter,position,"R",entry.audited?QColor("#95ffca"):entry.confirmed?QColor("#69c9e4"):QColor("#b4cec8"),entry.audited,opacity);
+    painter.save();painter.setOpacity(opacity);drawReportVisual(painter,position,entry.request,entry.audited?QColor("#95ffca"):entry.confirmed?QColor("#69c9e4"):QColor("#b4cec8"),seconds,1.,entry.audited);painter.restore();
+   reportPositions.insert(entry.ticket,position);
    workTokens.append(QJsonObject{{"ticket_id",entry.ticket},{"request_id",entry.request},{"kind","range"},{"report_included",entry.confirmed},{"audited",entry.audited},{"x",position.x()},{"y",position.y()}});
   }
   rail_->setProperty("pgn_ticket_work_tokens",workTokens);
@@ -165,10 +168,9 @@ protected:
    }
   }
   QJsonArray hitRows;for(const auto& hit:rail_->hits_)hitRows.append(QJsonObject{{"pair",hit.pair},{"x",hit.point.x()},{"y",hit.point.y()}});rail_->setProperty("pgn_ticket_collection_hits",hitRows);
-  bool chainPulse=false;
   for(const auto& node:rail_->flow_.departing()){
    const double t=std::clamp((now-node.leaves)/double(node.toSink?1700:node.ticketTransition?2800:1700),0.,1.);
-   const QPointF holding=chainPort-QPointF(42,0)+QPointF(std::cos(node.gap.seed*12)*5,std::sin(node.gap.seed*12)*5);
+   const QPointF holding=reportPositions.value(node.gap.ticket(),QPointF(chainPort.x()-12,box.bottom()-3));
    const QPointF exit=node.toSink?blackHole+QPointF(std::cos(node.gap.seed*6.28)*24,std::sin(node.gap.seed*6.28)*10):node.ticketTransition?holding:QPointF(receiver.x()+100,center.y()-20);
    const double leaveSeconds=node.leaves/1000.;QPointF origin=collectionPointAt(node.gap,leaveSeconds);
    if(node.flight){const auto& event=*node.flight;const double age=node.flightAge;
@@ -179,15 +181,16 @@ protected:
    auto at=livingFlowPoint(origin,exit,t,node.gap.seed,seconds,12.);double opacity=node.ticketTransition?1.:std::min(1.,(1-t)*2);
    if(node.toSink&&t>=1.){const double swallowed=std::clamp((now-node.leaves-1700)/500.,0.,1.);const double angle=node.gap.seed*6.28+swallowed*9;at=blackHole+QPointF(std::cos(angle)*24,std::sin(angle)*10)*std::sqrt(1-swallowed);}
    else if(node.ticketTransition&&t>=1.){
-    const auto confirmed=rail_->flow_.reportConfirmed(node.gap);
-    if(confirmed>=0){const double entry=std::clamp((now-std::max(node.leaves+2800,confirmed))/1200.,0.,1.);at=livingFlowPoint(holding,chainPort,entry,node.gap.seed,seconds,4.);opacity=entry>.9?(1-entry)*10:1.;chainPulse|=entry>0.;}
-    else at+=QPointF(std::sin(seconds+node.gap.seed*9)*2,std::cos(seconds*.8+node.gap.seed*7)*2);
+    // The report keeps the discovery signature and the actual pending state.
+    // Folding a point into that envelope does not assert blockchain inclusion.
+    const double folded=std::clamp((now-node.leaves-2800)/1400.,0.,1.);
+    opacity=1-ease(folded);
    }
-   particle(at,meritColor(node.gap.tier,QColor("#69cf8b")),opacity,coinRadius(node.gap.tier)*(1-t*.1));
+   particle(at,meritColor(node.gap.tier,QColor("#69cf8b")),opacity,coinRadius(node.gap.tier)*(1-t*.1)*(node.ticketTransition&&!node.toSink?opacity:1.));
   }
   // A waiting packet sits outside the links. Only a current-branch Core report
   // proof permits the final ingress; this says nothing about audit acceptance.
-  painter.setBrush(QColor("#06161e"));painter.setPen(QPen(chainPulse?QColor("#7bd6ef"):QColor("#34545c"),1));
+  painter.setBrush(QColor("#06161e"));painter.setPen(QPen(QColor("#34545c"),1));
   for(int i=0;i<3;++i){const QPointF p=chainPort+QPointF((i-1)*14,0);QPainterPath link;link.moveTo(p+QPointF(0,-7));link.lineTo(p+QPointF(6,-3));link.lineTo(p+QPointF(6,4));link.lineTo(p+QPointF(0,8));link.lineTo(p+QPointF(-6,4));link.lineTo(p+QPointF(-6,-3));link.closeSubpath();painter.drawPath(link);painter.drawLine(p+QPointF(-6,-3),p+QPointF(0,1));painter.drawLine(p+QPointF(0,1),p+QPointF(6,-3));painter.drawLine(p+QPointF(0,1),p+QPointF(0,8));}
   double reaction=0;QColor resonance=alive?(rail_->flow_.audit()?QColor("#62cfff"):QColor("#69cf8b")):QColor("#426b70");
   const GapFlowEvent* measured=nullptr;
@@ -292,6 +295,7 @@ void MiningTicketProgress::present(const QJsonObject& frame){
   if(packet.value("work_role")=="audit")return;
   const auto ticket=packet.value("ticket_id").toString(),request=packet.value("request_id").toString();
   if(ticket.isEmpty()||!QRegularExpression("^[0-9a-f]{64}$").match(request).hasMatch())return;
+   QVector<QColor> signature;for(const auto& node:flow_.collected())signature.append(meritColor(node.gap.tier));rememberReportVisual(request,std::move(signature));
   for(auto& entry:landings_)if(entry.ticket==ticket&&entry.request==request){if(!entry.complete&&packet.value("phase")=="Report ready"){entry.complete=true;entry.born=clock_.elapsed();}return;}
   Landing entry;entry.ticket=ticket;entry.request=request;entry.complete=packet.value("phase")=="Report ready";entry.born=clock_.elapsed();landings_.append(entry);
   while(landings_.size()>32)landings_.removeFirst();

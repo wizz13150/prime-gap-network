@@ -2,6 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import copy
+import os
 import json
 import sys
 import tempfile
@@ -70,7 +71,8 @@ class DeferredRuntimeTests(unittest.TestCase):
         cfg=self.backend.bind_configuration(cfg);cfg.pop('complement_feed_sha256',None)
         identity=dict(worker_sha256=self.backend.image_sha,worker_source_sha256=self.backend.source_sha,
                       profile_k=64,native_protocol=PROTOCOL)
-        self.assertTrue(qualified_presentation_identity(cfg,identity))
+        # These artifacts are qualified for Windows only; Linux must refuse them.
+        self.assertEqual(qualified_presentation_identity(cfg,identity),os.name=='nt')
         for changed in [dict(cfg,preseal_required=False),dict(cfg,complement_canonical_table_sha256='f'*64),
                         dict(cfg,complement_primary_source_sha256='f'*64)]:
             self.assertFalse(qualified_presentation_identity(changed,identity))

@@ -1,7 +1,7 @@
 """Explicit qualified backend routing, exact scope and recovery; no CUDA."""
 from pathlib import Path
 from types import SimpleNamespace
-import importlib.util,json,sys,tempfile,unittest
+import importlib.util,json,sys,tempfile,unittest,os
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'src/engine/runtime_host'),str(ROOT/'src/engine/shared_composite'),str(ROOT/'src/protocol')]
@@ -98,7 +98,8 @@ class ComplementRuntimeTests(unittest.TestCase):
                  complement_feed_sha256=self.feed.fingerprint)
         identity=dict(worker_sha256=backend.IMAGE_SHA,worker_source_sha256=backend.SOURCE_SHA,
                       profile_k=64,native_protocol=PROTOCOL)
-        self.assertTrue(qualified_presentation_identity(cfg,identity))
+        # These artifacts are qualified for Windows only; Linux must refuse them.
+        self.assertEqual(qualified_presentation_identity(cfg,identity),os.name=='nt')
         for key,value in [('worker_sha256','0'*64),('worker_source_sha256','0'*64),
                           ('profile_k',32),('profile_k',64.0),('native_protocol','other')]:
             self.assertFalse(qualified_presentation_identity(cfg,dict(identity,**{key:value})),key)
