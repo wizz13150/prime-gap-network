@@ -53,11 +53,11 @@ int main(int argc, char** argv) {
     require(view.property("pgn_audit_active_jobs").toInt()==1,"Active audit count wrong");
     const auto partitions=details->findItems("Partition 1",Qt::MatchExactly|Qt::MatchRecursive);
     require(partitions.size()==1,"Audit partition missing");auto* partition=partitions.first();
-    require(partition->text(1)=="1 T\n1.0000e12\n≈ 1.819 × 2^39 positions","Partition must show common three notations");
+    require(partition->text(1)=="1 T · 1.0000e12 · ≈ 1.819 × 2^39 positions","Partition must show common three notations on one line");
     require(partition->child(0)->text(1)=="[150000000000000000000, 150000001000000000000)","Exact interval changed");
     require(partition->child(1)->text(1)=="[1.5e20, 1.50000001e20)","Nearby scientific bounds must remain distinct");
     const auto top=details->findItems("Partition 95",Qt::MatchExactly|Qt::MatchRecursive);
-    require(top.size()==1&&top.first()->text(1).startsWith("40\n"),"95bit interval width lost through floating point");
+    require(top.size()==1&&top.first()->text(1).startsWith("40 · "),"95bit interval width lost through floating point");
     partition->setExpanded(true);
     auto invalid=pgn::ui::positionRangeItem(partition,"Invalid","20","10");
     require(invalid->text(1)=="Invalid interval"&&invalid->child(0)->text(1)=="[20, 10)","Invalid interval must not invent a count");
@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
         View colored(View::PageReader{[sample](int,View::Result reply){reply(sample,{});}});colored.resize(800,500);colored.show();app.processEvents();
         auto* grid=colored.findChild<QTableWidget*>("pgn-audit-report-table");auto expected=pgn::ui::auditStatusPresentation(state);
         require(grid->item(0,2)->text()==expected.text&&grid->item(0,2)->foreground().color()==expected.color,"Audit status color/text missing");
-        if(state=="failed"||state=="future-state")require(grid->item(0,4)->text()!="Sampling passed","Unverified or failed status promoted to passed");
+        if(state=="failed"||state=="future-state")require(grid->item(0,4)->text()!="Both audits passed","Unverified or failed status promoted to passed");
         require(colored.findChild<QLabel*>("pgn-audit-status-legend")!=nullptr,"Missing audit legend");
     }
     View::Result detached;

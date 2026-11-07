@@ -7,7 +7,7 @@ namespace pgn::ui {
 // The visible quantity uses the common three notations; the original interval
 // remains an exact, independently selectable detail. No double subtraction.
 inline QTreeWidgetItem* positionRangeItem(QTreeWidgetItem* parent,const QString& name,
-                                          const QString& start,const QString& end,bool inlineQuantity=false){
+                                          const QString& start,const QString& end,bool inlineQuantity=true){
     const auto range=positionRangeFormats(start,end);
     auto* item=new QTreeWidgetItem(parent,{name,QString{}});
     new QTreeWidgetItem(item,{"Exact interval","["+start+", "+end+")"});

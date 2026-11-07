@@ -13,7 +13,11 @@ inline PositionFormats positionFormats(QString exact){
     while(exact.size()>1&&exact[0]=='0')exact.remove(0,1);out.exact=exact;
     if(exact=="0"){out.human="0";out.decimal="0e0";out.binary="0";return out;}
     const double value=exact.toDouble();const auto trim=[](QString x){while(x.contains('.')&&x.endsWith('0'))x.chop(1);if(x.endsWith('.'))x.chop(1);return x;};
-    out.human=exact;for(const auto& unit:{std::pair{1e18,"E"},std::pair{1e15,"P"},std::pair{1e12,"T"},std::pair{1e9,"G"},std::pair{1e6,"M"},std::pair{1e3,"K"}})if(value>=unit.first){out.human=trim(QString::number(value/unit.first,'f',2))+" "+unit.second;break;}
+    out.human=exact;for(const auto& unit:{std::pair{18,"E"},std::pair{15,"P"},std::pair{12,"T"},std::pair{9,"G"},std::pair{6,"M"},std::pair{3,"K"}})if(exact.size()>unit.first){
+        const auto digits=trim(QString::number(value/std::pow(10.,unit.first),'f',2));
+        auto restored=digits;const int point=restored.indexOf('.');const int fractional=point<0?0:restored.size()-point-1;restored.remove('.');restored+=QString(unit.first-fractional,'0');
+        while(restored.size()>1&&restored[0]=='0')restored.remove(0,1);
+        out.human=(restored==exact?QString{}:QString("≈ "))+digits+" "+unit.second;break;}
     out.decimal=QString::number(value,'e',4).replace("e+","e");out.decimal.replace(QRegularExpression("e(-?)0+([0-9]+)$"),"e\\1\\2");
     const int mark=out.decimal.indexOf('e');QString rebuilt=out.decimal.left(mark);rebuilt.remove('.');int shift=out.decimal.mid(mark+1).toInt()-4;while(shift<0&&rebuilt.endsWith('0')){rebuilt.chop(1);++shift;}if(shift>=0)rebuilt+=QString(shift,'0');while(rebuilt.size()>1&&rebuilt[0]=='0')rebuilt.remove(0,1);if(shift<0||rebuilt!=exact)out.decimal.prepend("≈ ");
     int exponent=0;double mantissa=std::frexp(value,&exponent)*2;--exponent;if(QString::number(mantissa,'f',4)=="2.0000"){mantissa=1;++exponent;}

@@ -58,6 +58,9 @@ def build(cohort, context_path, output, sequence, release_version, abi):
             files.append(dict(path=name, bytes=item['bytes'], sha256=actual))
         dependencies = ([dict(id='core',version=versions['core'],abi=abi)]
                         if component in ('gpu','cpu') and 'core' in versions else [])
+        if component=='gpu' and (root/'pgn-native-gap-evidence.exe').is_file():
+            stage.require('ui'in versions,'The shared proof helper requires its UI component')
+            dependencies.append(dict(id='ui',version=versions['ui'],abi=abi))
         components.append(dict(id=component,version=row['version'],abi=abi,
             primary='payload/'+component+'/'+PRIMARY[component],dependencies=dependencies,files=files))
     actual_files = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}

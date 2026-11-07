@@ -1203,6 +1203,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/delivery/engine-runtime/windows-x64/bundl
 endif()
 
 add_executable(pgn-gap-evidence src/engine/proof/gap_evidence_main.cpp)
+if(WIN32)
+    add_executable(pgn-gap-evidence-launcher src/engine/proof/gap_evidence_launcher.cpp)
+    target_compile_features(pgn-gap-evidence-launcher PRIVATE cxx_std_20)
+    if(MINGW)
+        target_link_options(pgn-gap-evidence-launcher PRIVATE -static -municode)
+    endif()
+endif()
 target_link_libraries(pgn-gap-evidence PRIVATE pgn-certified-gap-builder pgn-prime-certificate-builder pgn-certified-gap-encoding Qt6::Core)
 target_compile_features(pgn-gap-evidence PRIVATE cxx_std_20)
 

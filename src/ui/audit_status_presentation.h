@@ -15,7 +15,7 @@ inline AuditStatusPresentation auditStatusPresentation(const QString& state){
     if(state.isEmpty()||state=="awaiting")return {"Awaiting auditor","This audit remains pending until an eligible independent auditor is assigned.",QColor("#ffbd69")};
     if(state=="assigned")return {"Assigned","An auditor holds this assignment. Assignment alone does not prove that computation is running.",QColor("#62cfff")};
     if(state=="committed")return {"Answer committed","The auditor committed its answer; reveal and comparison are still required.",QColor("#b58cff")};
-    if(state=="passed")return {"Passed","The revealed sampling counts match. Exact gap proof and monetary acceptance remain separate checks.",QColor("#69efc5")};
+    if(state=="passed")return {"Counts match","The revealed sampling counts match. Exact gap proof and monetary acceptance remain separate checks.",QColor("#69efc5")};
     if(state=="failed")return {"Mismatch","The revealed sampling counts disagree. This report must not be presented as validated.",QColor("#ff718b")};
     return {"Unknown state","Unrecognized audit state: "+state,QColor("#99aeb8")};
 }
@@ -29,7 +29,7 @@ inline AuditStatusPresentation auditReportPresentation(const QJsonObject& report
         unknown|=state!="assigned"&&state!="committed"&&state!="passed";
     }
     if(unknown)return auditStatusPresentation("unknown");
-    if(report.value("audited")==true){auto result=auditStatusPresentation("passed");result.text="Sampling passed";return result;}
+    if(report.value("audited")==true){auto result=auditStatusPresentation("passed");result.text="Both audits passed";return result;}
     if(committed)return auditStatusPresentation("committed");
     if(assigned)return auditStatusPresentation("assigned");
     auto result=auditStatusPresentation("awaiting");result.text="Awaiting independent audits";return result;

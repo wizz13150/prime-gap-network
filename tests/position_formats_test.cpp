@@ -7,4 +7,7 @@ check(positionFormats("39614081257132168796771975167").exact=="39614081257132168
 check(positionFormats("39614081257132168796771975167").decimal.startsWith("≈ "));
 const auto close=pgn::ui::positionRangeFormats("39614081257132168796771975127","39614081257132168796771975167");
 check(close.valid&&close.start.decimal!=close.end.decimal);check(!pgn::ui::positionRangeFormats("10","10").valid);
+check(positionFormats("12345678901234567890123456789").human.startsWith("≈ "));
+check(positionFormats("123000000000000").human=="123 T");
+check(positionFormats("2000000000001").human.startsWith("≈ "));
 std::cout<<"PASS "<<n<<" position notation checks\n";}
