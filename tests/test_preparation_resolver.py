@@ -52,7 +52,7 @@ class PreparationResolverTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.provider=ProviderFixture()
-        self.r=resolver.PreparationResolver(self.root,self.provider,logical_cpu=4,memory_mib=128,timeout=1)
+        self.r=resolver.PreparationResolver(self.root,self.provider,logical_cpu=0,memory_mib=128,timeout=1)
         self.a=(LOW//30+100)*30
     def ticket(self, i):
         a=self.a+i*10**13;b=a+2*10**12
@@ -65,7 +65,7 @@ class PreparationResolverTests(unittest.TestCase):
             if value is not None:ready.set()
             return value
         self.provider.pump=produce
-        r=resolver.PreparationResolver(self.root,self.provider,logical_cpu=4,memory_mib=128,timeout=1,prefetch=True)
+        r=resolver.PreparationResolver(self.root,self.provider,logical_cpu=0,memory_mib=128,timeout=1,prefetch=True)
         self.addCleanup(r.close);tickets=[self.ticket(i)for i in range(1,6)];r.register(tickets)
         self.assertTrue(ready.wait(2));self.assertEqual(len(self.provider.executed),1)
         self.assertEqual(len(r(ticket_configuration(tickets[0])).selected),5)
@@ -80,7 +80,7 @@ class PreparationResolverTests(unittest.TestCase):
                 if resources['cancelled']():raise InterruptedError('Controlled producer cancelled')
             return pump(**resources)
         self.provider.pump=produce
-        r=resolver.PreparationResolver(self.root,self.provider,logical_cpu=4,memory_mib=128,timeout=1,prefetch=True)
+        r=resolver.PreparationResolver(self.root,self.provider,logical_cpu=0,memory_mib=128,timeout=1,prefetch=True)
         self.addCleanup(r.close)
         try:
             r.register([self.ticket(1)]);self.assertTrue(entered.wait(2))
@@ -96,7 +96,7 @@ class PreparationResolverTests(unittest.TestCase):
             while not resources['cancelled']():threading.Event().wait(.01)
             raise InterruptedError('Controlled producer cancelled')
         self.provider.pump=produce
-        r=resolver.PreparationResolver(self.root,self.provider,logical_cpu=4,memory_mib=128,timeout=1,prefetch=True)
+        r=resolver.PreparationResolver(self.root,self.provider,logical_cpu=0,memory_mib=128,timeout=1,prefetch=True)
         self.addCleanup(r.close);r.register([self.ticket(1)]);self.assertTrue(entered.wait(2))
         self.assertTrue(r.close());self.assertFalse(self.provider.executed);self.assertEqual(len(r._rows()),1)
         with self.assertRaises(InterruptedError):r.register([self.ticket(2)])
@@ -119,7 +119,7 @@ class PreparationResolverTests(unittest.TestCase):
         with patch.object(resolver,'atomic_bytes',side_effect=crash):
             with self.assertRaises(RuntimeError):self.r(ticket_configuration(tickets[0]))
         self.assertTrue(self.r.intent.exists());self.assertEqual(self.provider.executed,[])
-        restarted=resolver.PreparationResolver(self.root,self.provider,logical_cpu=4,timeout=1)
+        restarted=resolver.PreparationResolver(self.root,self.provider,logical_cpu=0,timeout=1)
         restarted.register([self.ticket(6)])
         restarted(ticket_configuration(tickets[0]))
         self.assertEqual(len(self.provider.executed),1)

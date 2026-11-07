@@ -3,12 +3,14 @@ from pathlib import Path
 from types import SimpleNamespace
 import math
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 P = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(P/'src/engine/runtime_host'), str(P/'src/protocol')]
 from horizon_report_poll import ReportPoller, owner_poll_delay
 from horizon_mining_flow import MiningFlow
+from horizon_work_cycle import WorkCycleJournal
 
 
 class Clock:
@@ -104,8 +106,15 @@ class MaintenancePollTests(unittest.TestCase):
         lock=Lock()
         flow.worker=SimpleNamespace(quitting=Stop(),audits=owner,network_lock=lock,network_notice=None,submit=submit)
         flow.audit_lanes=[];flow.outbox=Outbox();flow.changed=Changed()
-        with patch('horizon_report_poll.time.monotonic',clock):
-            flow.publish_reports()
+        # Use a real empty cycle journal: these preserved outbox reports are
+        # legacy work, while confirmation repair is still part of the publisher.
+        with tempfile.TemporaryDirectory() as folder:
+            flow.cycles=WorkCycleJournal(folder,'7'*64)
+            try:
+                with patch('horizon_report_poll.time.monotonic',clock):
+                    flow.publish_reports()
+            finally:
+                flow.cycles.close()
         return owner,lock.entries,acknowledgements,flow.worker.network_notice
 
     def test_actual_idle_publisher_only_locks_when_maintenance_is_due(self):
