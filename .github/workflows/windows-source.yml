@@ -1,6 +1,15 @@
 name: Windows source build
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/windows-source.yml'
   pull_request:
   workflow_dispatch:
 
@@ -66,3 +75,14 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           GSETTINGS_BACKEND: memory
         run: ctest --test-dir build-ci --output-on-failure --timeout 180 -j2
+
+      - name: Preserve test diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-source-tests-${{ github.run_id }}
+          path: |
+            build-ci/Testing/Temporary/LastTest.log
+            build-ci/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: ignore
+          retention-days: 7
