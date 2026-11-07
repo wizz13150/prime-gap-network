@@ -2,11 +2,20 @@
 import time,hashlib,re
 from horizon_core_rpc import CoreRpcError
 
+def native_header_hash(raw):
+ if len(raw)<112:raise ValueError('Whole native header required')
+ header=raw[:112];nonce=int.from_bytes(header[80:112],'little')
+ # Riecoin's legacy/genesis/scientific identity swaps bits and time for
+ # odd nonces or a zero low word. Coordination nonce2 uses wire order.
+ # This is the exact CBlockHeader::GetHash relation, not the PoW hash.
+ if nonce&1 or nonce&65535==0:header=header[:68]+header[76:80]+header[68:76]+header[80:112]
+ return hashlib.sha256(hashlib.sha256(header).digest()).digest()[::-1].hex()
+
 def validate_intent(intent):
  if not isinstance(intent,dict)or not isinstance(intent.get('block'),str)or len(intent['block'])>262144:raise ValueError('Bounded exact coordination candidate required')
  block=intent['block'];identity=intent.get('hash');parent=intent.get('parent')
  if len(block)<226 or len(block)%2 or not re.fullmatch('[0-9a-f]+',block):raise ValueError('Canonical native block bytes required')
- raw=bytes.fromhex(block);digest=hashlib.sha256(hashlib.sha256(raw[:112]).digest()).digest()[::-1].hex()
+ raw=bytes.fromhex(block);digest=native_header_hash(raw)
  if identity!=digest or parent!=raw[4:36][::-1].hex():raise ValueError('Coordination journal hash/parent differs from its exact block')
 
 def active_candidate(rpc,intent):

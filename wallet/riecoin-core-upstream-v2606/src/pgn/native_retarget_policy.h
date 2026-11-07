@@ -4,6 +4,9 @@
 #include <pgn/chain_work_policy.h>
 #include <array>
 #include <algorithm>
+#include <deque>
+#include <map>
+#include <mutex>
 namespace pgn::core {
 inline constexpr std::string_view NativeRetargetPolicyTag{"PGNTARGET-POLICY-CANDIDATE-1"};
 inline Bytes NativeRetargetPayload(const MeritControllerDefinition& d){
@@ -51,38 +54,58 @@ inline AdaptiveHeaderKind ClassifyAdaptiveHeader(const CBlockIndex& index,const 
     return (index.nNonce&65535)==2&&(index.nNonce>>80)==0?AdaptiveHeaderKind::Bootstrap:AdaptiveHeaderKind::Invalid;
 }
 struct HistoricalMeritQuote {uint32_t target_q16,scientific_count,adjusted_count,samples;};
-// PRECONDITION: actual branch already validated the monotone Boot^K SCI^n
-// phase and canonical header types. This query DOES NOT prove that premise or
-// grant caller-supplied indices native authority. Native consumers must supply
-// their own accepted/scoped-body-verified ancestry under cs_main.
+// PRECONDITION: callers supply accepted or scoped-body-verified ancestry.
+// Coordination records may occur between scientific blocks. Count and sample
+// only scientific headers; ledger height is not a scientific-work count.
 inline std::optional<HistoricalMeritQuote> DeriveHistoricalMeritTarget(const CBlockIndex& parent,const MeritControllerDefinition& d){
     if(!MeritControllerValid(d)||parent.nHeight<0||!parent.phashBlock)return {};
-    const auto* genesis=parent.GetAncestor(0);if(!genesis||genesis->GetBlockTime()<0||ClassifyAdaptiveHeader(*genesis,d)!=AdaptiveHeaderKind::Bootstrap)return {};
-    const auto kind=ClassifyAdaptiveHeader(parent,d);if(kind==AdaptiveHeaderKind::Invalid)return {};
-    if(kind==AdaptiveHeaderKind::Bootstrap){
+    const auto* genesis=parent.GetAncestor(0);
+    if(!genesis||!genesis->phashBlock||genesis->GetBlockTime()<0||ClassifyAdaptiveHeader(*genesis,d)!=AdaptiveHeaderKind::Bootstrap)return {};
+    struct Summary {
+        uint256 chain;std::array<uint32_t,5> policy;uint32_t count{},samples{};
+        std::array<int64_t,11> newest{};
+    };
+    // Immutable, hash-bound summaries are an acceleration only. Eviction or a
+    // policy change causes ancestry reconstruction; neither invents a count.
+    static std::mutex mutex;
+    static std::map<uint256,Summary> cache;
+    static std::deque<uint256> order;
+    const std::lock_guard lock(mutex);
+    const std::array<uint32_t,5> policy{d.initial_q16,d.minimum_q16,d.maximum_q16,d.spacing_seconds,d.half_life_seconds};
+    Summary result{genesis->GetBlockHash(),policy},prefix{genesis->GetBlockHash(),policy};
+    uint32_t added{},samples{};std::array<int64_t,11> newest{};
+    const CBlockIndex* node=&parent;
+    while(node&&node->nHeight>0){
+        if(!node->phashBlock||!node->pprev||node->pprev->nHeight!=node->nHeight-1)return {};
+        const auto kind=ClassifyAdaptiveHeader(*node,d);
+        if(kind==AdaptiveHeaderKind::Invalid)return {};
+        const auto known=cache.find(node->GetBlockHash());
+        if(known!=cache.end()&&known->second.chain==result.chain&&known->second.policy==policy){prefix=known->second;break;}
+        if(kind==AdaptiveHeaderKind::Scientific){
+            if(node->GetBlockTime()<genesis->GetBlockTime())return {};
+            ++added;if(samples<newest.size())newest[samples++]=node->GetBlockTime();
+        }
+        node=node->pprev;
+    }
+    if(!node||!node->phashBlock)return {};
+    result.count=prefix.count+added;
+    for(uint32_t i=0;i<samples;++i)result.newest[result.samples++]=newest[i];
+    for(uint32_t i=0;i<prefix.samples&&result.samples<result.newest.size();++i)result.newest[result.samples++]=prefix.newest[i];
+    if(result.samples!=std::min(11U,result.count))return {};
+    const auto id=parent.GetBlockHash();
+    if(cache.contains(id))cache[id]=result;
+    else{cache.emplace(id,result);order.push_back(id);}
+    while(cache.size()>4096){cache.erase(order.front());order.pop_front();}
+    if(!result.count){
         const auto median=parent.GetMedianTimePast();if(median<genesis->GetBlockTime())return {};
         const auto q=QuoteAnchoredMeritTarget(d,0,median-genesis->GetBlockTime());
         return q?std::optional{HistoricalMeritQuote{*q,0,0,0}}:std::nullopt;
     }
-    uint32_t low=1,high=uint32_t(parent.nHeight);
-    while(low<high){
-        const uint32_t mid=low+(high-low)/2;const auto* node=parent.GetAncestor(int(mid));if(!node)return {};
-        const auto mode=ClassifyAdaptiveHeader(*node,d);if(mode==AdaptiveHeaderKind::Invalid)return {};
-        if(mode==AdaptiveHeaderKind::Scientific)high=mid;else low=mid+1;
-    }
-    const auto* first=parent.GetAncestor(int(low));
-    if(!first||ClassifyAdaptiveHeader(*first,d)!=AdaptiveHeaderKind::Scientific||!first->pprev||
-       ClassifyAdaptiveHeader(*first->pprev,d)!=AdaptiveHeaderKind::Bootstrap)return {};
-    const uint32_t count=uint32_t(parent.nHeight)-low+1,samples=std::min(11U,count),adjusted=count-(samples-1)/2;
-    std::array<int64_t,11> times{};
-    for(uint32_t n=0;n<samples;++n){
-        const auto* node=parent.GetAncestor(parent.nHeight-int(n));
-        if(!node||ClassifyAdaptiveHeader(*node,d)!=AdaptiveHeaderKind::Scientific||node->GetBlockTime()<genesis->GetBlockTime())return {};
-        times[n]=node->GetBlockTime();
-    }
-    std::sort(times.begin(),times.begin()+samples);const auto elapsed=times[samples/2]-genesis->GetBlockTime();
+    const uint32_t adjusted=result.count-(result.samples-1)/2;
+    std::sort(result.newest.begin(),result.newest.begin()+result.samples);
+    const auto elapsed=result.newest[result.samples/2]-genesis->GetBlockTime();
     const auto q=QuoteAnchoredMeritTarget(d,adjusted,elapsed);
-    return q?std::optional{HistoricalMeritQuote{*q,count,adjusted,samples}}:std::nullopt;
+    return q?std::optional{HistoricalMeritQuote{*q,result.count,adjusted,result.samples}}:std::nullopt;
 }
 
 inline std::optional<arith_uint256> QuoteConfiguredNativeHeaderWork(const CBlock& genesis,const uint256& expected,

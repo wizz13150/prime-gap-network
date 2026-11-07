@@ -12,7 +12,7 @@ from pgn_native_contract import (
 
 def query_plan(
     worker, start, length, environment, child_options, gap_min=960, threshold_pin=None,
-    plan_provider=None,
+    plan_provider=None, command_transform=None,
 ):
     meta = module_metadata(worker)
     before = meta["image_sha256"]
@@ -28,6 +28,8 @@ def query_plan(
         "--gap-min",
         str(gap_min),
     ]
+    if command_transform is not None:
+        command = command_transform(command)
     raw = plan_provider(command) if plan_provider else None
     result = None if raw is not None else subprocess.run(
         command,

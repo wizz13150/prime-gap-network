@@ -3,7 +3,12 @@
 // GPU-owned interval search with exact endpoint proof before publication.
 // Runtime publication uses the existing phase0 source protocol, not network credit.
 #include "exact_prime_proof.h"
+#include "production_cohort_plan.h"
+#include "frozen_canonical_table.h"
 #include <cuda_runtime.h>
+#include "gpu_owner_buckets.cuh"
+#include <memory>
+#include <optional>
 #include "resident_runtime.h"
 #include "resident_protocol.h"
 #include "portable_platform.h"
@@ -858,6 +863,23 @@ static void printCapabilities() {
                "{\"bits\":67,\"first\":4,\"end\":8},"
                "{\"bits\":68,\"first\":8,\"end\":16}] }\n", stdout);
 }
+static const pgn_psp_native::SmallFactorTable& canonicalCompositeTable(const std::string& file) {
+    static std::string path;
+    static std::unique_ptr<const pgn_psp_native::SmallFactorTable> table;
+    if(!table||path!=file){
+        auto candidate=pgn_psp_native::FrozenCanonicalTable::load(file);
+        table=std::make_unique<const pgn_psp_native::SmallFactorTable>(std::move(candidate));path=file;
+    }
+    return *table;
+}
+static uint64_t compositeReservation(const pgn_psp_native::ProductionCohortPlan& plan) {
+    uint64_t bytes=64ull*1024*1024; // Conservative private scratch/table ceiling.
+    for(const auto& page:plan.pages()){
+        const auto owners=(page.length()+pgn_psp_native::DescriptorSpan-1)/pgn_psp_native::DescriptorSpan*pgn_psp_tile::TilesPerDescriptor;
+        bytes+=(owners*(32+1)+owners+1+pgn_psp_native::MaximumEvents)*4+sizeof(pgn_composite_device::Page);
+    }
+    return bytes;
+}
 static int pgnWorkerMain(int argc, char **argv) {
     pgnActiveGapMin = 960; // Every command starts from the documented default.
 #ifdef __linux__
@@ -865,11 +887,14 @@ static int pgnWorkerMain(int argc, char **argv) {
     if (ownerGuard)
         return ownerGuard;
 #endif
+    std::string canonicalTableFile,compositePageDirectory;
+    bool compositeSmallFactors=false;
     std::string startText, lengthText, stopFile, stateFile, logFile, diagnosticOutput = ".";
     unsigned gapMin = 960, emitMinGap = 960;
     bool diagnostic = false, diagnosticBenchmark = false, planOnly = false;
     for (int a = 1; a < argc; ++a) {
         const std::string option = argv[a];
+        if(option=="--composite-small-factors"){compositeSmallFactors=true;continue;}
         if (option == "--help" || option == "-h") {
             printHelp();
             return 0;
@@ -906,6 +931,8 @@ static int pgnWorkerMain(int argc, char **argv) {
         const std::string value = argv[++a];
         if (option == "--output-directory")
             diagnosticOutput = value;
+        else if(option=="--composite-canonical-table")canonicalTableFile=value;
+        else if(option=="--composite-page-directory")compositePageDirectory=value;
         else if (option == "--start")
             startText = value;
         else if (option == "--length")
@@ -954,6 +981,10 @@ static int pgnWorkerMain(int argc, char **argv) {
             std::fprintf(stderr, "Unsupported engine option %s\n", option.c_str());
             return 1;
         }
+    }
+    if((compositeSmallFactors||!canonicalTableFile.empty()||!compositePageDirectory.empty())&&
+       (diagnostic||!compositeSmallFactors||canonicalTableFile.empty())){
+        std::fprintf(stderr,"Complement requires normal source work and an explicit pinned table; diagnostics unsupported\n");return 9;
     }
     if (diagnostic) {
         if (planOnly) {
@@ -1010,8 +1041,16 @@ static int pgnWorkerMain(int argc, char **argv) {
             return admitted;
         size_t freeBytes = 0, totalBytes = 0;
         CHECK(cudaMemGetInfo(&freeBytes, &totalBytes));
-        printMemoryPlan(requested, length, originalRange,
-                        pgnMemoryPlan(originalRange, hostTables, freeBytes), freeBytes, totalBytes);
+        uint64_t reserve=0;
+        if(compositeSmallFactors){
+            (void)canonicalCompositeTable(canonicalTableFile);
+            reserve=compositeReservation(pgn_psp_native::ProductionCohortPlan::from(requested.low,requested.high,length,K));
+        }
+        auto plan=pgnMemoryPlan(originalRange,hostTables,freeBytes>=reserve?freeBytes-reserve:0);
+        plan.other+=reserve;plan.allocation+=reserve;plan.required+=reserve;plan.fixed+=reserve;
+        plan.fits=plan.fits&&reserve<=freeBytes&&plan.required<=freeBytes;
+        if(reserve){plan.maxDescriptors=0;plan.maxLength=0;}
+        printMemoryPlan(requested,length,originalRange,plan,freeBytes,totalBytes);
         return 0;
     }
     std::puts("[pgn-smallword7] primes=29,31,37,41,43,47,53 table_bytes=2248 all_marks_retained=1 "
@@ -1046,12 +1085,39 @@ static int pgnWorkerMain(int argc, char **argv) {
     const uint64_t remainder = resumedRange.remainder, baseLow = resumedRange.base,
                    blocks = resumedRange.blocks;
     const unsigned Count = unsigned(resumedRange.count);
+
+    std::optional<pgn_psp_native::ProductionCohortPlan> complementPlan;
+    std::vector<pgn_psp_native::CompositePage> factoredPages;
+    uint64_t complementBytes=0,complementEvents=0;
+    if(compositeSmallFactors||!compositePageDirectory.empty()) {
+        if(!compositeSmallFactors||canonicalTableFile.empty()){
+            std::fprintf(stderr,"Complement requires small-factor mode and pinned table\n");return 9;
+        }
+        try {
+            complementPlan.emplace(pgn_psp_native::ProductionCohortPlan::from(resumeLow,requested.high,remaining,K));
+            (void)canonicalCompositeTable(canonicalTableFile);
+            if(!compositePageDirectory.empty()){
+                factoredPages.reserve(complementPlan->pages().size());
+                for(size_t i=0;i<complementPlan->pages().size();++i){
+                    // Resume pages bind to the actual resumed physical plan.
+                    // Stale originals fail the native coordinate/product checks.
+                    factoredPages.push_back(pgn_psp_native::CompositePage::factored(compositePageDirectory+"/page-"+std::to_string(i)+".pgncmp",complementPlan->pages()[i]));
+                }
+            }
+            complementBytes=compositeReservation(*complementPlan);
+        }catch(const std::exception& e){std::fprintf(stderr,"Complement admission: %s\n",e.what());return 9;}
+    }
     const int admitted = admitDevice();
     if (admitted)
         return admitted;
     size_t freeBytes = 0, totalBytes = 0;
     CHECK(cudaMemGetInfo(&freeBytes, &totalBytes));
-    const auto memoryPlan = pgnMemoryPlan(resumedRange, hostTables, freeBytes);
+    auto memoryPlan = pgnMemoryPlan(resumedRange,hostTables,freeBytes>=complementBytes?freeBytes-complementBytes:0);
+    memoryPlan.other+=complementBytes;memoryPlan.allocation+=complementBytes;
+    memoryPlan.required+=complementBytes;memoryPlan.fixed+=complementBytes;
+    memoryPlan.fits=memoryPlan.fits&&complementBytes<=freeBytes&&memoryPlan.required<=freeBytes;
+    if(complementBytes){memoryPlan.maxDescriptors=0;memoryPlan.maxLength=0;}
+
     if (!memoryPlan.fits) {
         printMemoryPlan({resumeLow, requested.high}, remaining, resumedRange, memoryPlan, freeBytes,
                         totalBytes);
@@ -1192,6 +1258,31 @@ static int pgnWorkerMain(int argc, char **argv) {
     mailbox.ready = d_flags;
     mailbox.stop = d_flags + Count;
     mailbox.done = d_flags + Count + 1;
+    // Keep the fixed search allocation prefix stable across physical page
+    // counts, resumed lengths and exact CSR fallbacks in resident mode.
+    if(complementPlan){
+        static pgn_psp_native::gpu_bucket::Workspace workspace;
+        const auto began=std::chrono::steady_clock::now();
+        const auto& table=canonicalCompositeTable(canonicalTableFile);
+        std::vector<pgn_composite_device::Page> views;views.reserve(complementPlan->pages().size());
+        uint64_t owners=0,actualBytes=0;double gpu_ms=0;
+        for(size_t i=0;i<complementPlan->pages().size();++i){
+            const auto* extra=factoredPages.empty()?nullptr:&factoredPages[i];
+            const auto page=workspace.build(table,complementPlan->pages()[i],extra,[](size_t bytes)->void*{
+                void* p=nullptr;pgn_psp_native::gpu_bucket::checked(cudaMalloc(&p,bytes));return p;
+            });
+            owners+=page.owners;complementEvents+=page.events;actualBytes+=page.bytes;gpu_ms+=page.GPU_ms;
+            views.push_back({page.offsets,page.slots,page.owners,page.counts,page.capacity});
+        }
+        if(owners!=blocks*512||actualBytes>complementBytes){std::fprintf(stderr,"Complement owner/reservation ledger mismatch\n");return 9;}
+        pgn_composite_device::Page *bank=nullptr;
+        CHECK(cudaMalloc(&bank,views.size()*sizeof(*bank)));
+        CHECK(cudaMemcpy(bank,views.data(),views.size()*sizeof(*bank),cudaMemcpyHostToDevice));
+        buffers.complement={bank,unsigned(views.size()),owners,baseLow,requested.high};
+        std::fprintf(stderr,"[private-complement] pages=%zu proof_checked_events=%llu device_bytes=%llu preparation_seconds=%.9f complete_PSP_coverage=0\n",views.size(),(unsigned long long)complementEvents,(unsigned long long)(actualBytes+views.size()*sizeof(*bank)),std::chrono::duration<double>(std::chrono::steady_clock::now()-began).count());
+        std::fprintf(stderr,"[pgn-complement-gpu-preparation] elapsed_ms=%.9f scope=COMPOSITE_GENERATION_EXCLUDES_SEARCH_GRAPH\n",gpu_ms);
+    }
+
     CHECK(cudaMemcpy(d_primes, primes.data(), primes.size() * 8, cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(d_reciprocals, reciprocals.data(), primes.size() * 8, cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(d_r64, r64.data(), r64.size() * 8, cudaMemcpyHostToDevice));

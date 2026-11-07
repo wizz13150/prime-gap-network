@@ -1,7 +1,7 @@
 import pathlib,sys,unittest,hashlib
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/'src/engine/runtime_host'))
 from horizon_sync_guard import synchronized
-from horizon_coordination import confirm_candidate,active_candidate
+from horizon_coordination import confirm_candidate,active_candidate,native_header_hash,validate_intent
 from horizon_core_rpc import CoreRpcError
 HEADER=bytearray(112);HEADER[4:36]=bytes.fromhex('a'*64)[::-1]
 EXACT_HASH=hashlib.sha256(hashlib.sha256(HEADER).digest()).digest()[::-1].hex()
@@ -16,11 +16,51 @@ class ReadyRpc:
   if method=='getblockhash':return self.checkpoint
   raise AssertionError(method)
 class ReadinessTests(unittest.TestCase):
+ def test_native_scientific_header_identity_uses_riecoin_field_order(self):
+  header=bytearray(HEADER);header[68:76]=(1793540000).to_bytes(8,'little');header[76:80]=(32*65536).to_bytes(4,'little')
+  reordered=header[:68]+header[76:80]+header[68:76]+header[80:112]
+  expected=hashlib.sha256(hashlib.sha256(reordered).digest()).digest()[::-1].hex()
+  self.assertEqual(native_header_hash(header),expected)
+  self.assertNotEqual(expected,hashlib.sha256(hashlib.sha256(header).digest()).digest()[::-1].hex())
+  validate_intent(dict(hash=expected,parent='a'*64,block=(header+b'\0').hex()))
+ def test_native_coordination_header_keeps_wire_order(self):
+  header=bytearray(HEADER);header[68:76]=(1793540000).to_bytes(8,'little');header[76:80]=(0x207fffff).to_bytes(4,'little');header[80:112]=(2).to_bytes(32,'little')
+  self.assertEqual(native_header_hash(header),hashlib.sha256(hashlib.sha256(header).digest()).digest()[::-1].hex())
  def test_exact_synced_chain_ready(self):self.assertTrue(synchronized(ReadyRpc(),1242,'a'*64))
+ def inbound_rpc(self,**peer_changes):
+  rpc=ReadyRpc();original=rpc.call
+  def call(method,params=None):
+   if method=='getpeerinfo':return [dict(connection_type='inbound',inbound=True,pgn_announced_height=rpc.remote_height,pgn_syncing=rpc.native_syncing,**peer_changes)]
+   return original(method,params)
+  rpc.call=call;return rpc
+ def test_synced_listening_seed_with_only_inbound_peer(self):
+  self.assertTrue(synchronized(self.inbound_rpc(),1242,'a'*64))
+ def test_inbound_topology_cannot_override_core_ibd(self):
+  rpc=self.inbound_rpc();rpc.ibd=True;self.assertFalse(synchronized(rpc,1242,'a'*64))
+ def test_inbound_topology_preserves_native_and_checkpoint_guards(self):
+  for field,value in [('headers',1243),('blocks',1241),('remote_height',1243),('native_syncing',True),('peers',0)]:
+   with self.subTest(field=field):
+    rpc=self.inbound_rpc();setattr(rpc,field,value);self.assertFalse(synchronized(rpc,1242,'a'*64))
+  with self.assertRaisesRegex(ValueError,'checkpoint'):synchronized(self.inbound_rpc(),1242,'b'*64)
  def test_missing_blocks_headers_ibd_and_no_peer_wait(self):
-  for field,value in [('blocks',1241),('headers',1243),('ibd',True),('ibd',None),('peers',0)]:
+  for field,value in [('blocks',1241),('headers',1243),('ibd',None),('ibd',1),('peers',0)]:
    with self.subTest(field=field):
     rpc=ReadyRpc();setattr(rpc,field,value);self.assertFalse(synchronized(rpc,1242,'a'*64))
+ def test_old_tip_ibd_can_recover_only_after_native_download_and_checkpoint(self):
+  rpc=ReadyRpc();rpc.ibd=True;self.assertTrue(synchronized(rpc,1242,'a'*64));self.assertTrue(rpc.ibd)
+  rpc.native_syncing=True;self.assertFalse(synchronized(rpc,1242,'a'*64))
+  rpc.native_syncing=False;rpc.remote_height=1243;self.assertFalse(synchronized(rpc,1242,'a'*64))
+  rpc.remote_height=1242
+  with self.assertRaisesRegex(ValueError,'checkpoint'):synchronized(rpc,1242,'b'*64)
+ def test_every_manual_peer_requires_exact_native_fields(self):
+  for field,value in [('pgn_announced_height',True),('pgn_announced_height',-1),('pgn_announced_height','1242'),('pgn_syncing',0),('pgn_syncing',None)]:
+   rpc=ReadyRpc();original=rpc.call
+   def call(method,params=None):
+    if method=='getpeerinfo':
+     good=dict(connection_type='manual',pgn_announced_height=1242,pgn_syncing=False)
+     return [good,{**good,field:value}]
+    return original(method,params)
+   rpc.call=call;self.assertFalse(synchronized(rpc,1242,'a'*64))
  def test_foreign_checkpoint_rejected(self):
   with self.assertRaisesRegex(ValueError,'checkpoint'):synchronized(ReadyRpc(),1242,'b'*64)
  def test_native_local_headers_equal_blocks_does_not_hide_remote_ahead(self):

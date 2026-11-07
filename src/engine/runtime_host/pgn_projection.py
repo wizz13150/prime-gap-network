@@ -20,7 +20,7 @@ def decoded(value):
 
 
 class Projection:
-    def __init__(self, index, configuration, rebuild=False):
+    def __init__(self, index, configuration, rebuild=False, *, commit=True):
         self.index = index
         self.db = index.db
         self.start = int(configuration["start"])
@@ -105,7 +105,8 @@ class Projection:
                 ).fetchone()[0]
             self.refill(value)
             index.put_meta("projection", value)
-            self.db.commit()
+            if commit:
+                self.db.commit()
             self.value = value
 
         # Migrate the derived histogram once, from the committed prefix only.
@@ -122,7 +123,8 @@ class Projection:
             ):
                 self.add_merit(value, gap, decoded(low), 1)
             index.put_meta("projection", value)
-            self.db.commit()
+            if commit:
+                self.db.commit()
             self.value = value
 
         if set(self.value.get("threshold_counts", {})) != {
@@ -139,7 +141,8 @@ class Projection:
             value = copy.deepcopy(self.value)
             self.refill(value)
             index.put_meta("projection", value)
-            self.db.commit()
+            if commit:
+                self.db.commit()
             self.value = value
 
     def eligibility(self, low, gap):

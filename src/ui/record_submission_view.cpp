@@ -1,3 +1,4 @@
+#include "app/horizon_user_paths.h"
 #include "ui/record_submission_view.h"
 #include "science/record_submissions.h"
 #include "science/record_reference_refresh.h"
@@ -24,6 +25,7 @@
 #include <QSaveFile>
 #include <QDir>
 #include <QRegularExpression>
+#include <QResizeEvent>
 #include <QtConcurrent/QtConcurrentRun>
 #include <memory>
 
@@ -38,7 +40,17 @@ class RecordSubmissionView final:public QWidget {
     QString referenceNotice_;std::function<void(const QJsonArray&)> eligibility_;
     static constexpr qint64 CandidateByteLimit=1024*1024;
     static constexpr int CandidateCountLimit=4096;
-    QString candidatePath()const{return root_+"/data/testnet/record-candidates.json";}
+    void fitContentHeight(){
+        // A wrapped status can make the header taller than minimumSizeHint.
+        // Reserve that actual height before the fixed-height record editor.
+        if(!layout())return;
+        const int wanted=layout()->totalHeightForWidth(width());
+        if(wanted>=0&&minimumHeight()!=wanted)setMinimumHeight(wanted);
+    }
+    void resizeEvent(QResizeEvent* event)override{
+        QWidget::resizeEvent(event);fitContentHeight();
+    }
+    QString candidatePath()const{return pgn::app::mutableDataRoot(root_)+"/testnet/record-candidates.json";}
     bool mergeCandidates(const QJsonArray& incoming,bool save,bool* changed=nullptr){
         QMap<quint32,science::SubmissionRecord> best;
         for(const auto& pair:pairs_)best.insert(pair.gap,pair);
@@ -71,7 +83,7 @@ class RecordSubmissionView final:public QWidget {
         if(!published_)setStatus(ticketMode_?"Checking ticket candidates…":"Checking the archive against the record reference…");
         const auto root=root_,referenceFile=referenceFile_;const auto cancelled=cancelled_;
         if(ticketMode_){const auto pairs=pairs_;work_.setFuture(QtConcurrent::run([referenceFile,pairs,cancelled]{return science::collectRecordSubmissionsFromPairs(pairs,referenceFile,cancelled.get());}));return;}
-        work_.setFuture(QtConcurrent::run([root,referenceFile,cancelled]{return science::collectRecordSubmissions(root+"/data/runtime/scientific-history.sqlite",referenceFile,cancelled.get());}));
+        work_.setFuture(QtConcurrent::run([root,referenceFile,cancelled]{return science::collectRecordSubmissions(pgn::app::mutableDataRoot(root)+"/runtime/scientific-history.sqlite",referenceFile,cancelled.get());}));
     }
 public:
     void observeEligibility(std::function<void(const QJsonArray&)> observer){eligibility_=std::move(observer);}
@@ -86,11 +98,11 @@ public:
         row->addWidget(refresh_);row->addWidget(copy_);auto* cloudygo=new QPushButton("Open Cloudygo");cloudygo->setObjectName("pgn-open-cloudygo");cloudygo->setToolTip("Open the prime-gap record submission site in your browser");connect(cloudygo,&QPushButton::clicked,this,[]{QDesktopServices::openUrl(QUrl("https://primegaps.cloudygo.com/"));});row->addWidget(cloudygo);box->addLayout(row);
         text_=new QPlainTextEdit;text_->setObjectName("pgn-admissible-record-text");text_->setReadOnly(true);text_->setLineWrapMode(QPlainTextEdit::NoWrap);text_->setPlaceholderText("Verified improvements will appear here as: GAP  MERIT  LOWER_PRIME");text_->setFixedHeight(96);box->addWidget(text_);
         text_->setToolTip("Only independently verified consecutive-prime gaps which improve the dated reference are offered for copying. Paste into the prime-gap record submission form; acceptance is decided by its maintainers.");
-        const auto setExpanded=[this](bool expanded){text_->setVisible(expanded);expand_->setArrowType(expanded?Qt::DownArrow:Qt::RightArrow);expand_->setToolTip(expanded?"Collapse records":"Expand records");setProperty("pgn_record_submissions_expanded",expanded);QSettings().setValue("records/expanded",expanded);updateGeometry();};
+        const auto setExpanded=[this](bool expanded){text_->setVisible(expanded);expand_->setArrowType(expanded?Qt::DownArrow:Qt::RightArrow);expand_->setToolTip(expanded?"Collapse records":"Expand records");setProperty("pgn_record_submissions_expanded",expanded);QSettings().setValue("records/expanded",expanded);fitContentHeight();updateGeometry();};
         const bool expanded=QSettings().value("records/expanded",false).toBool();expand_->setChecked(expanded);setExpanded(expanded);
         connect(expand_,&QToolButton::toggled,this,setExpanded);
-        referenceFile_=root_+"/data/testnet/record-reference.json";QDir().mkpath(QFileInfo(referenceFile_).absolutePath());
-        if(!QFile::exists(referenceFile_)){QFile bundled(root_+"/data/reference/prime-gap-records.json");if(bundled.open(QIODevice::ReadOnly)&&bundled.size()<=4*1024*1024){QSaveFile copy(referenceFile_);const auto bytes=bundled.readAll();if(copy.open(QIODevice::WriteOnly)&&copy.write(bytes)==bytes.size())copy.commit();}}
+        referenceFile_=pgn::app::mutableDataRoot(root_)+"/testnet/record-reference.json";QDir().mkpath(QFileInfo(referenceFile_).absolutePath());
+        if(!QFile::exists(referenceFile_)){const auto legacyBundled=root_+"/data/reference/prime-gap-records.json";QFile bundled(QFile::exists(legacyBundled)?legacyBundled:QCoreApplication::applicationDirPath()+"/data/reference/prime-gap-records.json");if(bundled.open(QIODevice::ReadOnly)&&bundled.size()<=4*1024*1024){QSaveFile copy(referenceFile_);const auto bytes=bundled.readAll();if(copy.open(QIODevice::WriteOnly)&&copy.write(bytes)==bytes.size())copy.commit();}}
         auto* reference=new science::RecordReferenceRefresh(referenceFile_,this);
         reference->onChanged=[this](bool ok,const QString& message){referenceNotice_=ok?QString{}:message;setProperty("pgn_record_reference_update_error",referenceNotice_);if(ok)setProperty("pgn_record_reference_checked_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));refresh();};
         refresh_->setToolTip("Check the official prime-gap list now. Automatic reference updates run hourly; a failed download retains the last valid reference.");
@@ -116,10 +128,11 @@ public:
     }
     void ticketData(const QJsonObject& packet){
         if(!ticketMode_||packet.value("schema")!="PGN_HORIZON_MINING_VIEW_V1")return;
-        const auto data=packet.value("record_pairs");if(!data.isArray()){setStatus("Waiting for ticket record data");copy_->setEnabled(false);return;}
-        const auto array=data.toArray();if(array.size()>100){setStatus("Ticket record data exceeds its admitted size");copy_->setEnabled(false);return;}
+        const auto data=packet.value("record_pairs");if(!data.isArray()){ticketDataKnown_=false;setStatus("Waiting for ticket record data");copy_->setEnabled(false);return;}
+        const auto array=data.toArray();if(array.size()>100){ticketDataKnown_=false;setStatus("Ticket record data exceeds its admitted size");copy_->setEnabled(false);return;}
         const auto fingerprint=QCryptographicHash::hash(QJsonDocument(array).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256);if(ticketDataKnown_&&pairsHash_==fingerprint)return;
-        bool changed=false;if(!mergeCandidates(array,true,&changed)){setStatus("Record candidate storage unavailable · 1 MiB limit · source ticket preserved");copy_->setEnabled(false);return;}pairsHash_=fingerprint;ticketDataKnown_=true;if(changed||!published_)refresh();
+        const bool recovering=!ticketDataKnown_;
+        bool changed=false;if(!mergeCandidates(array,true,&changed)){ticketDataKnown_=false;setStatus("Record candidate storage unavailable · 1 MiB limit · source ticket preserved");copy_->setEnabled(false);return;}pairsHash_=fingerprint;ticketDataKnown_=true;if(changed||!published_||recovering)refresh();
     }
     ~RecordSubmissionView()override{cancelled_->store(true);}
 };

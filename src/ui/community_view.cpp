@@ -1,4 +1,5 @@
 #include "ui/community_view.h"
+#include "ui/position_formats.h"
 #include "ui/panel_style.h"
 #include "ui/booking_history_view.h"
 #include "ui/reservation_directory_view.h"
@@ -194,7 +195,7 @@ private:
         QString conflict;
         for(const auto& job:model_->jobs())if(job.state!="RELEASED"&&pgn::booking::overlaps(first,last,job.start,job.end)){conflict="Already in our work · "+localWorkLabel(job.state);break;}
         selectionSummary_->setText("2  SELECTED · "+identity.title+"\n"+(conflict.isEmpty()?identity.declaration:conflict));
-        selectionSummary_->setToolTip(identity.exact+"\n"+identity.declaration+" · "+length+" exact positions. Zone numbers refer to this snapshot; bits are exact number size, not difficulty. No automatic reservation.");
+        selectionSummary_->setToolTip(identity.exact+"\n"+identity.declaration+"\n"+positionFormats(length).stackedText()+" positions\nExact count: "+length+". Zone numbers refer to this snapshot; bits are exact number size, not difficulty. No automatic reservation.");
     }
     void filter(){filtered_.clear();page_=0;const auto query=search_->text();const auto status=state_->currentText();
         for(int i=0;i<model_->source().ranges.size();++i){const auto& r=model_->source().ranges[i];if(status!="All declarations"&&status!=r.status)continue;
@@ -225,7 +226,8 @@ private:
         progress_->setText(progress.run.isEmpty()?"No GPU work observed":QString("Raw progress · %1 · observed %2 · independent proof pending")
             .arg(progress.fraction?QString::number(*progress.fraction*100,'f',5)+"%":"unavailable",
                 progress.observedUtc.isValid()?progress.observedUtc.toUTC().toString("HH:mm:ss.zzz 'UTC'"):"UNKNOWN"));
-        progress_->setToolTip(progress.positions+" / "+(progress.run.isEmpty()?QString("UNKNOWN"):pgn::booking::subtractUnsigned(progress.end,progress.start))+" exact positions · no averaging");
+        progress_->setToolTip(progress.run.isEmpty()?QString("Observed positions unavailable"):QString("Observed positions\n%1\nTotal positions\n%2\nExact counts: %3 / %4 · no averaging")
+            .arg(positionFormats(progress.positions).stackedText(),positionFormats(pgn::booking::subtractUnsigned(progress.end,progress.start)).stackedText(),progress.positions,pgn::booking::subtractUnsigned(progress.end,progress.start)));
         if(!model_->error().isEmpty())progress_->setText(progress_->text()+"\n"+model_->error());
     }
     pgn::booking::BookingModel* model_;QLineEdit *search_{},*start_{},*end_{};QComboBox* state_{};

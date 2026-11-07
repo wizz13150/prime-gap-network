@@ -1,4 +1,6 @@
+#include "app/horizon_user_paths.h"
 #include "ui/archive_browser.h"
+#include "ui/bounded_catalog_export.h"
 #include "ui/native_archive_view.h"
 #include "ui/panel_style.h"
 #include "ui/mining_canvas.h"
@@ -20,6 +22,8 @@
 #include <QSaveFile>
 #include <QMessageBox>
 #include <QTabWidget>
+#include <QFutureWatcher>
+#include <QtConcurrentRun>
 #include <memory>
 namespace pgn::ui {
 static QWidget* createImportedArchiveBrowser(const QString& root,QWidget* canvas){
@@ -27,13 +31,13 @@ static QWidget* createImportedArchiveBrowser(const QString& root,QWidget* canvas
  page->setStyleSheet(dataPanelStyle());
  auto* title=new QLabel("SCIENTIFIC ARCHIVE · EXACT ENDPOINTS / SOURCE PROVENANCE");layout->addWidget(title);
  auto* notice=new QLabel("Source observations are not independent certificates or certified interval coverage. Graph data is loaded explicitly by page; the complete conserved catalogue remains accessible here.");notice->setWordWrap(true);notice->setStyleSheet("color:#ffad4a");layout->addWidget(notice);
- const QString dir=root+"/data/import-20261011";QFile index(dir+"/history-pages.json");
+ const QString dir=pgn::app::mutableDataRoot(root)+"/import-20261011";QFile index(dir+"/history-pages.json");
  QJsonObject meta;if(index.open(QIODevice::ReadOnly)&&index.size()<=262144)meta=QJsonDocument::fromJson(index.readAll()).object();
  const auto offsets=meta.value("offsets").toArray();const int rows=meta.value("rows").toInt();
  auto* controls=new QHBoxLayout;auto* previous=new QPushButton("Previous");auto* next=new QPushButton("Next");auto* number=new QSpinBox;number->setRange(1,qMax(1,int(offsets.size())));
  auto* plot=new QPushButton("Add this page to Mining graph");auto* provenance=new QPushButton("Open conserved sources and proofs");
  controls->addWidget(previous);controls->addWidget(number);controls->addWidget(next);controls->addWidget(plot);controls->addWidget(provenance);layout->addLayout(controls);
- auto* count=new QLabel;layout->addWidget(count);
+ auto* count=new QLabel;count->setWordWrap(true);layout->addWidget(count);
  auto* table=new QTableWidget;table->setColumnCount(5);table->setHorizontalHeaderLabels({"Left endpoint p","Right endpoint q","Gap q − p","Merit (display)","Proof / coverage status"});
  table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);table->horizontalHeader()->setStretchLastSection(true);table->setEditTriggers(QAbstractItemView::NoEditTriggers);layout->addWidget(table,1);
  auto records=std::make_shared<QList<QJsonObject>>();
@@ -60,10 +64,17 @@ static QWidget* createImportedArchiveBrowser(const QString& root,QWidget* canvas
    if(action=="Independent certificates"){QDesktopServices::openUrl(QUrl::fromLocalFile(dir+"/archive/evidence"));return;}
    if(action=="Export gaps"){
     const QString destination=QFileDialog::getSaveFileName(page,"Export complete source catalogue",{},"Newline-delimited JSON (*.ndjson)");if(destination.isEmpty())return;
-    QFile source(dir+"/history.ndjson");QSaveFile output(destination);
-    if(!source.open(QIODevice::ReadOnly)||!output.open(QIODevice::WriteOnly)){QMessageBox::warning(page,action,"Export file could not be opened");return;}
-    while(!source.atEnd()){const QByteArray chunk=source.read(65536);if(chunk.isEmpty()||output.write(chunk)!=chunk.size()){output.cancelWriting();QMessageBox::warning(page,action,"Export failed; destination not committed");return;}}
-    if(!output.commit())QMessageBox::warning(page,action,"Atomic export commit failed");return;
+    button->setEnabled(false);count->setText("Exporting the complete catalogue · files are limited to 64 MiB each…");
+    auto* watcher=new QFutureWatcher<CatalogueExportResult>(page);
+    const auto cancellation=std::make_shared<std::atomic_bool>(false);
+    const auto closeConnection=QObject::connect(page,&QObject::destroyed,[cancellation]{cancellation->store(true);});
+    QObject::connect(watcher,&QFutureWatcher<CatalogueExportResult>::finished,page,[=]{
+     const auto result=watcher->result();QObject::disconnect(closeConnection);watcher->deleteLater();button->setEnabled(true);
+     if(!result.ok){count->setText("Export failed · conserved source unchanged");QMessageBox::warning(page,action,result.error);return;}
+     count->setText(QString("Complete export saved · %1 file(s) · %2").arg(result.parts).arg(result.destination));
+    });
+    const auto source=dir+"/history.ndjson";const auto expected=meta.value("bytes").toInteger(-1);
+    watcher->setFuture(QtConcurrent::run([source,destination,expected,cancellation]{return exportBoundedCatalogue(source,destination,expected,64*1024*1024,cancellation);}));return;
    }
    if(action=="Export coverage"){
     const QString destination=QFileDialog::getSaveFileName(page,"Export explicit coverage status",{},"JSON (*.json)");if(destination.isEmpty())return;

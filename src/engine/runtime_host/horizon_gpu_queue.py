@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import threading
 import copy
 import time
+from horizon_audit_pressure import AuditPressure, WeightedService
 
 @dataclass
 class GpuJob:
@@ -15,18 +16,24 @@ class GpuJob:
     view_sequence: int | None = None
 
 class ResidentGpuQueue:
-    def __init__(self, engine, enabled, stopping, on_start, on_result, on_paused, on_error, on_waiting=None):
+    def __init__(self, engine, enabled, stopping, on_start, on_result, on_paused, on_error, on_waiting=None, *, clock_ns=time.monotonic_ns, policy_clock=time.monotonic, may_start=None):
         self.engine = engine
         self.enabled, self.stopping = enabled, stopping
         self.on_start, self.on_result = on_start, on_result
         self.on_paused, self.on_error = on_paused, on_error
         self.on_waiting = on_waiting
+        # Local workflow state only: admission must never perform network I/O
+        # in the execution lane. None preserves an ungated standalone queue.
+        self.may_start = may_start
+        self.search_waiting_for_audits = False
         self.condition = threading.Condition()
         self.search, self.audits = deque(), deque()
         self.jobs = {}
         self.active = None
         self.resume_job = None
-        self.audit_credit = 0
+        self.clock_ns = clock_ns
+        self.audit_pressure = AuditPressure(clock=policy_clock)
+        self.service = WeightedService(self.audit_pressure.weights())
         self.last_completed = None
         self.timings = deque(maxlen=32)
 
@@ -55,13 +62,43 @@ class ResidentGpuQueue:
         with self.condition:
             self.condition.notify_all()
 
+    def update_audit_backlog(self, compute_slots, audit_operators, oldest_seconds):
+        with self.condition:
+            weights = self.audit_pressure.update(compute_slots, audit_operators, oldest_seconds)
+            self.service.update_weights(weights)
+            self.condition.notify_all()
+
+    def audit_service_view(self):
+        with self.condition:
+            view = self.audit_pressure.view()
+            view["target_audit_share"] = view.pop("audit_share")
+            view.update(search_ready=len(self.search), audit_ready=len(self.audits),
+                        active_role=self.active.context["role"] if self.active else None,
+                        search_waiting_for_audits=self.search_waiting_for_audits)
+            return view
+
+    def admitted(self, job):
+        allowed = True if self.may_start is None else self.may_start(job)
+        if type(allowed) is not bool:
+            raise ValueError("Explicit local workflow admission required")
+        return allowed
+
     def _next(self):
         if self.resume_job is not None:
+            if not self.admitted(self.resume_job):
+                return None
             job, self.resume_job = self.resume_job, None
             return job
-        if self.audits and (self.audit_credit > 0 or not self.search):
-            return self.audits.popleft()
-        if self.search:
+        # Search remains FIFO. Audit preparation may finish out of order, so
+        # find the first permitted audit within the existing ten-job bound.
+        search = self.search[0] if self.search and self.admitted(self.search[0]) else None
+        audit = next((job for job in self.audits if self.admitted(job)), None)
+        self.search_waiting_for_audits = bool(self.search) and search is None
+        role = self.service.choose(search is not None, audit is not None)
+        if role == "audit":
+            self.audits.remove(audit)
+            return audit
+        if role == "search":
             return self.search.popleft()
         return None
 
@@ -76,27 +113,39 @@ class ResidentGpuQueue:
                     self.last_completed = None
                 continue
             announced_pause = False
-            with self.condition:
-                job = self._next()
-                if job is None:
-                    if waiting_since is None:
-                        waiting_since = time.monotonic()
-                    if self.on_waiting is not None and time.monotonic() - waiting_since >= .5:
-                        self.on_waiting()
-                        waiting_since = time.monotonic()
-                    self.condition.wait(.05)
-                    continue
+            try:
+                with self.condition:
+                    job = self._next()
+                    if job is None:
+                        if waiting_since is None:
+                            waiting_since = time.monotonic()
+                        if self.on_waiting is not None and time.monotonic() - waiting_since >= .5:
+                            self.on_waiting()
+                            waiting_since = time.monotonic()
+                        self.condition.wait(.05)
+                        continue
+            except Exception as error:
+                self.enabled.clear()
+                self.on_error(error)
+                self.on_paused()
+                announced_pause = True
+                self.last_completed = None
+                continue
             waiting_since = None
             self.active = job
             try:
-                preparation_started = time.monotonic_ns()
+                preparation_started = self.clock_ns()
                 self.on_start(job)
-                started = time.monotonic_ns()
+                started = self.clock_ns()
                 if self.last_completed is not None:
                     self.timings.append(dict(previous=self.last_completed[0],current=job.ticket["ticket_id"],role=job.context["role"],dispatch_gap_ns=str(started-self.last_completed[1]),context_preparation_ns=str(started-preparation_started),measurement="Host handoff includes durable result publication; not a CUDA kernel trace"))
                 result = self.engine.run_ticket(job.ticket, job.maximum_piece)
+                finished = self.clock_ns()
+                with self.condition:
+                    self.service.charge(job.context["role"], finished - started)
                 if result.get("state") == "PAUSED":
-                    self.enabled.clear()
+                    # OFF/ON controls own the desired state. This older job's
+                    # pause acknowledgement must not erase a newer ON.
                     with self.condition:
                         self.resume_job = job
                     self.on_paused()
@@ -105,13 +154,7 @@ class ResidentGpuQueue:
                     continue
                 # Persist the completed handoff before publishing another active
                 # job. This callback must never perform network requests.
-                finished = time.monotonic_ns()
                 self.on_result(job, result)
-                length = int(job.ticket["end"]) - int(job.ticket["start"])
-                if job.context["role"] == "search":
-                    self.audit_credit = min(40_000_000_000_000, self.audit_credit + length // 10)
-                else:
-                    self.audit_credit = max(0, self.audit_credit - length)
                 self.last_completed = (job.ticket["ticket_id"],finished)
                 job.future.set_result(result)
                 with self.condition:
@@ -127,7 +170,9 @@ class ResidentGpuQueue:
                 announced_pause = True
                 self.last_completed = None
             finally:
-                self.active = None
+                with self.condition:
+                    self.active = None
+                    self.condition.notify_all()
         with self.condition:
             for job in self.jobs.values():
                 if not job.future.done():

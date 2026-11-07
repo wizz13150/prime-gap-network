@@ -17,8 +17,8 @@ int main(int argc,char** argv){
             const auto expected=entry.toObject();
             for(const int k:{8,16,32,64}){
                 const auto job=pgn::mining::primeGapEngineJob(expected.value("start").toString(),expected.value("end").toString(),k);
-                check(job.bits==expected.value("bits").toInt());check(QString::number(job.highWord)==expected.value("high"));check(QString::number(job.lowWord)==expected.value("low"));
-                check(QString::number(job.minimumGap)==expected.value("min_gap"));check(job.length=="2000000000000");
+                check(job.bits==expected.value("bits").toInt());check(QJsonValue(QString::number(job.highWord))==expected.value("high"));check(QJsonValue(QString::number(job.lowWord))==expected.value("low"));
+                check(QJsonValue(QString::number(job.minimumGap))==expected.value("min_gap"));check(job.length=="2000000000000");
                 const auto args=pgn::mining::primeGapPlanArguments(job,0);check(args.first()=="--plan");check(args.contains(job.start));check(args.at(args.indexOf("--gap-min")+1)==QString::number(job.minimumGap));
                 check(pgn::mining::primeGapImageProfile("/engine/bin/worker-k"+QString::number(k),k));check(!pgn::mining::primeGapImageProfile("/engine/bin/worker-k64",k==64?8:k));
             }

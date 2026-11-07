@@ -12,13 +12,17 @@ namespace {
 int checks=0;
 void require(bool ok,const char* message){++checks;if(!ok)throw std::runtime_error(message);}
 template<class F> void rejected(F action,const char* message){bool failed=false;try{action();}catch(const std::exception&){failed=true;}require(failed,message);}
-const QString device="GPU-11111111-2222-3333-4444-555555555555",run(32,'a');
+const QString device="GPU-11111111-2222-3333-4444-555555555555",run(32,'a'),Booking="11111111-2222-4333-8444-555555555555";
 const QByteArray row="[phase0-gpu] GAP merit=1.9000 gap=6 lower=23 upper=29 verified=1 proof=GPU_MR12_EULER_COMPOSITE record=off table=unknown unix_ts=1791982800 time_basis=source_batch_publication\n";
 QJsonObject packet(const QString& sourceRun=run,qint64 offset=0,const QByteArray& bytes={}){
     return {{"schema","pgn-runtime-snapshot-1"},{"state","OFF"},{"owned",false},{"operator_stop",false},{"pending_bytes",0},
         {"observed_utc","2026-10-14T18:00:00.000000001Z"},{"offset",offset},{"next_offset",offset+bytes.size()},{"chunk",QString::fromLatin1(bytes.toBase64())},
         {"manifest",QJsonObject{{"schema","pgn-native-process-1"},{"run",sourceRun},{"uuid",device},{"pid",qint64(1234)},
-            {"birth","2026-10-14T17:00:00.1234567Z"},{"start","199900000000000000000"},{"end","199901000000000000000"}}},
+            {"birth","2026-10-14T17:00:00.1234567Z"},{"queued_intent",Booking},{"start","199900000000000000000"},{"end","199901000000000000000"}}},
+        // TESTONLY admitted peer DTO; this does not execute a RAW verifier or prove prime coverage.
+        {"resume_lineage",QJsonObject{{"schema","pgn-source-resume-lineage-1"},{"ready",true},{"error",""},{"terminal","complete"},
+            {"run",sourceRun},{"booking_id",Booking},{"start","199900000000000000000"},{"end","199901000000000000000"},
+            {"epochs",1},{"chain_sha256",QString(64,'d')},{"scope","LOCAL_RAW_LINEAGE_COUNTER_DELTAS_NOT_INDEPENDENT_PRIME_COVERAGE"}}},
         {"last_exit",QJsonObject{{"run",sourceRun},{"exit_code",0}}},
         {"completion_candidate",QJsonObject{{"schema","pgn-source-range-completion-1"},{"run",sourceRun},
             {"start","199900000000000000000"},{"end","199901000000000000000"},{"source_positions","1000000000000000"},

@@ -983,6 +983,7 @@ public:
             iterator->enabled = iterator->enabledBeforeRequest;
         }
         iterator->toggleRequestPending = false;
+        if (applied) iterator->known = true;
         iterator->status = applied ? FrontierDeviceControlStatus::Applied
                                    : FrontierDeviceControlStatus::Rejected;
         iterator->detail = detail;
@@ -1501,6 +1502,18 @@ public:
                 {"active",minerLaneLive(lane)||(lane.stale&&!lane.terminalSealed)},{"validation_only",validation},
                 {"role",cpu?QString("audit"):lane.raw.value("pgn_work_role").toString("search")}};
             if(summary.positionsRate)row.insert("positions_per_second",*summary.positionsRate);
+            const auto cpuStatus=lane.raw.value("pgn_cpu_status").toObject();
+            const auto counter=cpu?pgn::ui::cpuMiningRates(cpuStatus,lane.authoritative&&!lane.stale).value("positions").toString():lane.rowsCompleted;
+            const auto age=pgn::mining::sourceAgeLowerBoundNs(lane.raw);
+            const auto receiptAge=lane.observedUtc.isValid()?lane.observedUtc.msecsTo(QDateTime::currentDateTimeUtc()):-1;
+            const bool fresh=lane.authoritative&&!lane.stale&&(age?*age>=0&&*age<=7'000'000'000LL:receiptAge>=0&&receiptAge<=5000);
+            row.insert("selected",lane.raw.value("pgn_device_enabled").toBool(lane.raw.value("legacy_miner_bound").toBool(minerLaneLive(lane))));
+            QString counterEpoch=lane.runId,total=cpu?cpuStatus.value("total_positions").toString():lane.rowsTotal;bool zeroOrigin=cpu&&!counter.isEmpty();
+            if(!cpu&&!lane.domainStart.isEmpty()&&!lane.domainEnd.isEmpty())try{
+                zeroOrigin=pgn::booking::subtractUnsigned(lane.domainEnd,lane.domainStart)==total;
+                counterEpoch=lane.domainStart+"/"+lane.domainEnd;
+            }catch(const std::invalid_argument&){}
+            row.insert("counter_epoch",counterEpoch);row.insert("counter_total",total);row.insert("counter_zero_origin",zeroOrigin);row.insert("completed_positions",counter);row.insert("counter_fresh",fresh);
             result.append(row);
         }
         return result;
@@ -1800,14 +1813,48 @@ private:
     };
 
     struct DeviceControlState {
-        bool enabled{true};
-        bool enabledBeforeRequest{true};
+        bool enabled{false};
+        bool enabledBeforeRequest{false};
+        bool known{false};
+        bool observationSeen{false};
+        bool observedEnabled{false};
+        qint64 observationSequence{-1};
+        QDateTime observationUtc;
         bool toggleRequestPending{false};
         int budgetPercent{100};
         FrontierDeviceControlStatus status{FrontierDeviceControlStatus::Idle};
         QString requestId;
         QString detail;
     };
+
+    void observeDeviceControl(const QString& id,const FrontierTelemetrySnapshot& lane) {
+        auto& control=m_deviceControls[id];
+        if(lane.engineId==QLatin1String("frontier-exact-cpu-verifier")&&minerLaneLive(lane)){
+            control.enabled=true;control.known=true;control.status=FrontierDeviceControlStatus::Applied;
+            control.detail=QStringLiteral("OBSERVED PID %1 · %2 THREADS · LIVE HEARTBEAT").arg(lane.verifierProcessId,lane.verifierThreads);return;
+        }
+        if(control.status==FrontierDeviceControlStatus::Pending)return;
+        if(lane.raw.contains("pgn_cpu_inventory")&&!lane.raw.value("pgn_cpu_control").toBool())return;
+        const auto explicitState=lane.raw.value("pgn_device_enabled");
+        const auto legacyState=lane.raw.value("legacy_miner_bound");
+        if(!explicitState.isBool()&&!(m_legacyR4Mode&&legacyState.isBool()))return;
+        const bool enabled=explicitState.toBool(legacyState.toBool());
+        // Repainting an older telemetry frame must not undo a newer command ACK.
+        if(control.observationSeen&&control.observationSequence==lane.sequence&&
+           control.observationUtc==lane.observedUtc&&control.observedEnabled==enabled)return;
+        control.observationSeen=true;control.observationSequence=lane.sequence;
+        control.observationUtc=lane.observedUtc;control.observedEnabled=enabled;
+        control.enabled=enabled;control.known=true;
+        if(control.status!=FrontierDeviceControlStatus::Rejected)
+            control.status=enabled?FrontierDeviceControlStatus::Applied:FrontierDeviceControlStatus::Idle;
+    }
+
+    static QString deviceControlCaption(const DeviceControlState& control) {
+        if(control.status==FrontierDeviceControlStatus::Pending)
+            return control.enabled?QStringLiteral("STARTING"):QStringLiteral("STOPPING");
+        if(!control.known)return QStringLiteral("WAIT");
+        return control.enabled?QStringLiteral("ON"):QStringLiteral("OFF");
+    }
 
     struct DeviceControlHit {
         QString deviceId;
@@ -2471,7 +2518,14 @@ private:
                    const QColor& valueColor = QColor{})
     {
         
-        const auto valueRectangle=HorizonDeviceVisuals::gauge(painter,center,radius,fraction,color,value,label,labelWidth,4.,7,false,valueColor);
+        const bool geometryAudit=property("pgn_card_layout_audit").toBool()||property("pgn_card_geometry_enabled").toBool();
+        QRectF labelBounds;
+        const auto valueRectangle=HorizonDeviceVisuals::gauge(painter,center,radius,fraction,color,value,label,labelWidth,4.,7,false,valueColor,geometryAudit?&labelBounds:nullptr);
+        if(geometryAudit){
+            auto labels=property("pgn_gauge_label_rects").toJsonArray();
+            if(labels.size()<128)labels.append(QJsonObject{{"label",label},{"rect",QJsonArray{labelBounds.x(),labelBounds.y(),labelBounds.width(),labelBounds.height()}}});
+            setProperty("pgn_gauge_label_rects",labels);
+        }
         if(property("pgn_values_audit_enabled").toBool()){
             auto rectangles=property("pgn_values_audit_rects").toJsonArray();
             rectangles.append(QJsonObject{{"label",label},{"value",value},
@@ -4088,11 +4142,28 @@ private:
         const auto control=m_deviceControls.value(id);const int wanted=std::clamp(qRound(maximum*control.budgetPercent/100.),1,maximum);
         const int active=lane.raw.value("pgn_cpu_active_threads").toInt();
         painter.setFont(Font(7,QFont::DemiBold,true));painter.setPen(Alpha(color,200));
-        painter.drawText(QRectF(pod.left()+12,pod.bottom()-20,pod.width()-24,9),Qt::AlignLeft|Qt::AlignVCenter,QString("%1 selected · %2 resident · %3 tasks").arg(wanted).arg(lane.raw.value("pgn_cpu_status").toObject().value("resident_workers").toInt()).arg(active));
+        const auto pages=pgn::ui::cpuMemoryPagesPresentation(lane.raw.value("pgn_cpu_status").toObject(),lane.raw.value("pgn_cpu_control").toBool());
+        const qreal badgeWidth=std::min(112.,(pod.width()-24)*.44);
+        const QRectF budgetCaption(pod.left()+12,pod.bottom()-24,pod.width()-28-badgeWidth,12);
+        const QString budgetText=QString("%1 selected · %2 resident · %3 tasks").arg(wanted).arg(lane.raw.value("pgn_cpu_status").toObject().value("resident_workers").toInt()).arg(active);
+        const auto displayedBudget=painter.fontMetrics().elidedText(budgetText,Qt::ElideRight,int(budgetCaption.width()));
+        painter.drawText(budgetCaption,Qt::AlignLeft|Qt::AlignVCenter,displayedBudget);
+        const QRectF pagesCaption(pod.right()-12-badgeWidth,pod.bottom()-24,badgeWidth,12);
+        painter.setPen(pages.color);painter.drawText(pagesCaption,Qt::AlignRight|Qt::AlignVCenter,pages.text);
+        m_uiTooltipHits.append({budgetCaption,budgetText});m_uiTooltipHits.append({pagesCaption,pages.tooltip});
+        auto pageStates=property("pgn_cpu_memory_pages").toJsonObject();pageStates.insert(id,QJsonObject{{"active",pages.active},{"text",pages.text},{"color",pages.color.name()}});setProperty("pgn_cpu_memory_pages",pageStates);
         const QRectF slider(pod.left()+13,pod.bottom()-8,pod.width()-26,4);const qreal fraction=maximum>1?qreal(wanted-1)/(maximum-1):0.;
         painter.setPen(Qt::NoPen);painter.setBrush(QColor(35,71,78));painter.drawRoundedRect(slider,3,3);painter.setBrush(Alpha(color,supported?210:80));painter.drawRoundedRect(QRectF(slider.left(),slider.top(),slider.width()*fraction,slider.height()),3,3);painter.drawEllipse(QPointF(slider.left()+slider.width()*fraction,slider.center().y()),4,4);
-        if(supported){bool found=false;for(auto& hit:m_deviceControlHits)if(hit.deviceId==id){hit.slider=slider.adjusted(-3,-5,3,5).intersected(m_deviceStripRect);found=true;break;}if(!found)m_deviceControlHits.append({id,"CPU",{},slider.adjusted(-3,-5,3,5).intersected(m_deviceStripRect),true});}
-        m_uiTooltipHits.append({slider.adjusted(-3,-12,3,6),"Dedicated logical processors. Physical cores are selected before SMT siblings; a budget change is applied after the current bounded pieces finish."});
+        const auto sliderHit=slider.adjusted(-3,-3,3,3).intersected(m_deviceStripRect);
+        if(supported){bool found=false;for(auto& hit:m_deviceControlHits)if(hit.deviceId==id){hit.slider=sliderHit;found=true;break;}if(!found)m_deviceControlHits.append({id,"CPU",{},sliderHit,true});}
+        m_uiTooltipHits.append({sliderHit,"Dedicated logical processors. Physical cores are selected before SMT siblings; a budget change is applied after the current bounded pieces finish."});
+        if(property("pgn_card_layout_audit").toBool()||property("pgn_card_geometry_enabled").toBool()){
+            const auto rect=[](const QRectF& r){return QJsonArray{r.x(),r.y(),r.width(),r.height()};};
+            auto footers=property("pgn_cpu_footer_geometry").toJsonObject();
+            footers.insert(id,QJsonObject{{"budget",rect(painter.boundingRect(budgetCaption,Qt::AlignLeft|Qt::AlignVCenter,displayedBudget))},
+                {"pages",rect(painter.boundingRect(pagesCaption,Qt::AlignRight|Qt::AlignVCenter,pages.text))},{"slider",rect(sliderHit)}});
+            setProperty("pgn_cpu_footer_geometry",footers);
+        }
     }
 
     void drawCompactLanePod(QPainter& painter,
@@ -4136,13 +4207,7 @@ private:
         const QString controlId = stableDeviceId;
         DeviceControlState& control = m_deviceControls[controlId];
         const bool labCrtTest = lane.raw.value(QStringLiteral("lab_highshift")).toBool(false);
-        const bool observedLegacyOn = lane.raw.value("pgn_device_enabled").toBool(lane.raw.value(QStringLiteral("legacy_miner_bound")).toBool(false));
-        if (m_legacyR4Mode && control.status != FrontierDeviceControlStatus::Pending) {
-            control.enabled = observedLegacyOn;
-            if (control.status != FrontierDeviceControlStatus::Rejected)
-                control.status = observedLegacyOn ? FrontierDeviceControlStatus::Applied
-                                                  : FrontierDeviceControlStatus::Idle;
-        }
+        observeDeviceControl(controlId,lane);
         const bool managedDevice = !property("pgn_source_only_control").toBool()
             || stableDeviceId.compare(property("pgn_managed_source_device").toString(),Qt::CaseInsensitive)==0
             || lane.raw.value("pgn_cpu_control").toBool();
@@ -4160,10 +4225,7 @@ private:
         painter.setPen(stateColor);
         painter.drawText(statePill, Qt::AlignCenter,
                          !managedDevice ? (deviceKind=="CPU"?QStringLiteral("OFF"):QStringLiteral("MONITOR")) : labCrtTest ? QStringLiteral("TEST") :
-                         control.status==FrontierDeviceControlStatus::Pending
-                             ?(control.enabled?QStringLiteral("STARTING"):QStringLiteral("STOPPING"))
-                             :control.enabled ? QStringLiteral("ON")
-                                         : QStringLiteral("OFF"));
+                         deviceControlCaption(control));
         if (controlConnected && !labCrtTest) {
             m_deviceControlHits.append({controlId, deviceKind,
                                         statePill.adjusted(-5, -5, 5, 5)
@@ -4220,13 +4282,14 @@ private:
                                 : QStringLiteral("MONITOR ONLY · %1")
                                       .arg(lane.state.toUpper())))));
         if (lane.raw.value("pgn_cpu_inventory").isObject()) {
-            state=pgn::ui::cpuActivityCaption(lane.raw.value("pgn_cpu_status").toObject(),lane.raw.value("pgn_cpu_control").toBool());
+            state=pgn::ui::cpuActivityCaption(lane.raw.value("pgn_cpu_status").toObject(),lane.raw.value("pgn_cpu_control").toBool(),property("pgn_cpu_audit_network_status").toString());
 
         }
         const auto nativeMinimum=lane.raw.value("pgn_native_min_gap").toString();
         if(!nativeMinimum.isEmpty())state+=QStringLiteral(" · MIN GAP %1").arg(nativeMinimum);if(lane.raw.value("pgn_native_profile_k").toInt()>0)state+=QString(" · K%1").arg(lane.raw.value("pgn_native_profile_k").toInt());
         if(!control.enabled||deviceKind=="CPU")painter.drawText(QRectF(pod.left() + 12, pod.top() + 27, pod.width() - 24, 13),
                          Qt::AlignLeft | Qt::AlignVCenter, state);
+        if(deviceKind=="CPU")m_uiTooltipHits.append({QRectF(pod.left()+12,pod.top()+27,pod.width()-24,13).intersected(m_deviceStripRect),state});
         if(control.enabled&&deviceKind!="CPU")drawThrottleBadge(painter,
                           QRectF(pod.left() + 12, pod.top() + 27,
                                  pod.width() - 24, 11),
@@ -4338,13 +4401,13 @@ private:
         // until the producer actually stops, independently of the request.
         const bool keepLastPgnSample = lane.raw.value(QStringLiteral("pgn_process_running")).toBool(false);
         if (!(deviceKind=="CPU"&&lane.raw.value("pgn_cpu_control").toBool())&&!liveMiner && !keepLastPgnSample) for(int i=1;i<meters.size();++i){meters[i].value.reset();meters[i].text=QStringLiteral("—");}
-        const auto bands=pgn::ui::deviceCardBands(pod,1,deviceKind=="CPU"&&lane.raw.value("pgn_cpu_control").toBool()?2:0,18.);
+        const auto bands=pgn::ui::deviceCardBands(pod,1,pgn::ui::hasCpuThreadBudget(deviceKind,lane.raw)?2:0,18.);
         for (int index = 0; index < meters.size(); ++index) {
             const CompactMeter& meter = meters.at(index);
             const FrontierGaugeGeometry gauge = FrontierGaugeGeometryForCard(
                 pod.left(), pod.width(), index, meters.size(), bands.centerY,bands.radius);
             drawGauge(painter, QPointF(gauge.centerX,bands.centerY), gauge.radius,
-                      property("pgn_compact_mining").toBool()&&(meter.label.compare("pos/s",Qt::CaseInsensitive)==0||meter.label=="tests/s"||meter.label=="gaps/s"||meter.label=="gaps/Gpos")?rateGaugeFraction(lane,stableDeviceId,meter.label,meter.value):meter.value&&meter.scale>0?*meter.value/meter.scale:0.,
+                      (property("pgn_compact_mining").toBool()||deviceKind=="CPU")&&(meter.label.compare("pos/s",Qt::CaseInsensitive)==0||meter.label=="tests/s"||meter.label=="gaps/s"||meter.label=="gaps/Gpos")?rateGaugeFraction(lane,stableDeviceId,meter.label,meter.value):meter.value&&meter.scale>0?*meter.value/meter.scale:0.,
                       meter.color, meter.text, meter.label, gauge.meterWidth - 4.0);
             QString explanation;
             if(meter.label == QLatin1String("pos/s")) explanation=QStringLiteral("Numeric positions advanced per second: delta of the range cursor divided by the exact adjacent source interval. Sieving and jumps discard most integers; this is not the number of primality tests.");
@@ -4356,7 +4419,7 @@ private:
                 explanation+=QStringLiteral(" Display only: gap counter deltas over the same active-computation window, up to60seconds. Counts, history, source age, pos/s and tests/s are untouched.");
             m_uiTooltipHits.append({QRectF(gauge.centerX-gauge.meterWidth/2.0,pod.top()+43,gauge.meterWidth,63),explanation});
         }
-        if(deviceKind=="CPU"&&lane.raw.value("pgn_cpu_control").toBool())drawCpuThreadBudget(painter,pod,lane,stableDeviceId,color,controlConnected);
+        if(deviceKind=="CPU"&&lane.raw.value("pgn_cpu_inventory").isObject())drawCpuThreadBudget(painter,pod,lane,stableDeviceId,color,controlConnected);
         painter.restore();
     }
 
@@ -4417,21 +4480,7 @@ private:
 
         const QString controlId = lane.gpuUuid.isEmpty() ? laneName : lane.gpuUuid;
         DeviceControlState& control = m_deviceControls[controlId];
-        const bool observedLegacyOn = lane.raw.value("pgn_device_enabled").toBool(lane.raw.value(QStringLiteral("legacy_miner_bound")).toBool(false));
-        if (m_legacyR4Mode && control.status != FrontierDeviceControlStatus::Pending) {
-            control.enabled = observedLegacyOn;
-            if (control.status != FrontierDeviceControlStatus::Rejected)
-                control.status = observedLegacyOn ? FrontierDeviceControlStatus::Applied
-                                                  : FrontierDeviceControlStatus::Idle;
-        }
-        if (lane.engineId == QLatin1String("frontier-exact-cpu-verifier") && live) {
-            // Observed physical state outranks a stale response from an older
-            // UI request. Never leave a live worker painted as rejected.
-            control.enabled = true;
-            control.status = FrontierDeviceControlStatus::Applied;
-            control.detail = QStringLiteral("OBSERVED PID %1 · %2 THREADS · LIVE HEARTBEAT")
-                                 .arg(lane.verifierProcessId, lane.verifierThreads);
-        }
+        observeDeviceControl(controlId,lane);
         // A configured create-only sidecar makes requests available for both
         // CPU and GPU resource cards.  Only an authenticated response may
         // promote a request to APPLIED; READY never claims a backend action.
@@ -4449,7 +4498,7 @@ private:
         const bool verifierOnline = verifierDisplay == FrontierVerifierDisplayState::Online;
         const bool verifierArchive = verifierDisplay == FrontierVerifierDisplayState::SealedArchive;
         const QRectF statePill(pod.right() - 156, pod.top() + 7, 120, 17);
-        const QColor controlColor = control.status==FrontierDeviceControlStatus::Pending?QColor("#ffad4a"):m_legacyR4Mode ? (observedLegacyOn ? color : QColor(QStringLiteral("#739da8")))
+        const QColor controlColor = control.status==FrontierDeviceControlStatus::Pending?QColor("#ffad4a"):m_legacyR4Mode ? (control.known && control.enabled ? color : QColor(QStringLiteral("#739da8")))
             : verifierOnline
             ? QColor(QStringLiteral("#8ee7c3"))
             : (!controlConnected ? QColor(QStringLiteral("#739da8"))
@@ -4471,8 +4520,7 @@ private:
                            ? QStringLiteral("APPLIED") : QStringLiteral("READY")));
         painter.drawText(statePill, Qt::AlignCenter,
                          m_legacyR4Mode
-                             ? (control.status==FrontierDeviceControlStatus::Pending?(control.enabled?QStringLiteral("STARTING"):QStringLiteral("STOPPING")):control.enabled ? QStringLiteral("ON")
-                                                : QStringLiteral("OFF"))
+                             ? deviceControlCaption(control)
                          : exactVerifierCard
                              ? (verifierOnline ? QStringLiteral("VERIFIER ONLINE")
                                 : (verifierArchive ? QStringLiteral("SEALED EXACT ARCHIVE")
@@ -4628,8 +4676,10 @@ private:
         if(deviceKind=="CPU"){
             painter.setFont(Font(7,QFont::DemiBold,true));painter.setPen(Alpha(color,190));
             const auto state=lane.raw.value("pgn_cpu_state").toString("OFF");
-            const QString caption=pgn::ui::cpuActivityCaption(lane.raw.value("pgn_cpu_status").toObject(),lane.raw.value("pgn_cpu_control").toBool());
-            painter.drawText(QRectF(pod.left()+12,pod.top()+38,pod.width()-24,11),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(caption,Qt::ElideRight,int(pod.width()-24)));
+            const QString caption=pgn::ui::cpuActivityCaption(lane.raw.value("pgn_cpu_status").toObject(),lane.raw.value("pgn_cpu_control").toBool(),property("pgn_cpu_audit_network_status").toString());
+            const QRectF activity(pod.left()+12,pod.top()+38,pod.width()-24,11);
+            painter.drawText(activity,Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(caption,Qt::ElideRight,int(activity.width())));
+            m_uiTooltipHits.append({activity.intersected(m_deviceStripRect),caption});
         }
 
         bool usedOk = false;
@@ -4783,14 +4833,14 @@ private:
                 meter.value.reset();meter.text=QStringLiteral("—");
             }
         }
-        const auto bands=pgn::ui::deviceCardBands(pod,compactPresentation?1:2,compactPresentation?0:2,compactPresentation?18.:20.);
+        const auto bands=pgn::ui::deviceCardBands(pod,compactPresentation?1:2,compactPresentation&&!pgn::ui::hasCpuThreadBudget(deviceKind,lane.raw)?0:2,compactPresentation?18.:20.);
         for (int i = 0; i < meters.size(); ++i) {
             const Meter& meter = meters.at(i);
             const FrontierGaugeGeometry gauge = FrontierGaugeGeometryForCard(
                 pod.left(), pod.width(), i, meters.size(), bands.centerY,bands.radius);
             const QPointF center(gauge.centerX,bands.centerY);
             drawGauge(painter, center, gauge.radius,
-                      property("pgn_compact_mining").toBool()&&(meter.label.compare("pos/s",Qt::CaseInsensitive)==0||meter.label=="tests/s"||meter.label=="gaps/s"||meter.label=="gaps/Gpos")?rateGaugeFraction(lane,stableDeviceId,meter.label,meter.value):meter.value&&meter.scale>0?*meter.value/meter.scale:0.,
+                      (property("pgn_compact_mining").toBool()||deviceKind=="CPU")&&(meter.label.compare("pos/s",Qt::CaseInsensitive)==0||meter.label=="tests/s"||meter.label=="gaps/s"||meter.label=="gaps/Gpos")?rateGaugeFraction(lane,stableDeviceId,meter.label,meter.value):meter.value&&meter.scale>0?*meter.value/meter.scale:0.,
                       meter.accent, meter.text, meter.label, gauge.meterWidth - 4.0);
             const bool filteredGap = meter.label==QLatin1String("gaps/s")||meter.label==QLatin1String("gaps/Gpos");
             QString metricState = (!active && keepLastPgnSample && i >= 4)
@@ -4813,9 +4863,9 @@ private:
         }
         painter.setFont(Font(7, QFont::DemiBold, true));
         painter.setPen(Alpha(color, 155));
-        const QString sampleAge = sampleAgeMs == std::numeric_limits<qint64>::max()
-            ? QString::fromUtf8("—")
-            : (nativePgn?QStringLiteral("≥%1ms").arg(sampleAgeMs):QStringLiteral("%1ms").arg(sampleAgeMs));
+        const auto measuredAge = sampleAgeMs == std::numeric_limits<qint64>::max()
+            ? std::optional<qint64>{} : std::optional<qint64>{sampleAgeMs};
+        const QString sampleAge = pgn::ui::telemetryAgeCaption(measuredAge, nativePgn);
         std::optional<double> observedCadence = m_resourceTelemetry.samplerObservedIntervalMs;
         if (!observedCadence && history.size() >= 2 &&
             history.at(history.size() - 2).observedUtc.isValid() &&
@@ -4840,6 +4890,7 @@ private:
                          compactPresentation?clockCaption:(nativePgn?QStringLiteral("SRC %1 · GPU OBS %2%3"):QStringLiteral("AGE %1 · OBS %2%3"))
                              .arg(sampleAge, sourceInterval, relayCost));
         if(nativePgn)m_uiTooltipHits.append({QRectF(pod.left()+12,pod.top()+116,pod.width()-220,12),QString("Source age is a monotonic lower bound: producer clock lag + local elapsed since receipt; network transit is unmeasured. Original source UTC retained: %1. GPU OBS is the separate measured driver-sample interval, not the position-counter interval. No UTC-skew clamping, averaging or interpolation.").arg(lane.observedUtc.toUTC().toString(Qt::ISODateWithMs))});
+        else if(measuredAge&&*measuredAge<0)m_uiTooltipHits.append({QRectF(pod.left()+12,pod.top()+126,pod.width()-220,12),QStringLiteral("The producer timestamp is ahead of this PC. Source age cannot be inferred from these clocks; original timestamps remain unchanged in diagnostics.")});
         const QRectF budgetLabel(pod.right() - 205, pod.top() + (compactPresentation?96:126), 193, 12);
         painter.setFont(Font(7, QFont::DemiBold, true));
         painter.setPen(controlColor);
@@ -4849,8 +4900,8 @@ private:
                 ? QStringLiteral("EXTERNAL CRT TEST · READ ONLY")
             : m_legacyR4Mode
                 ? QStringLiteral("PROCESS CONTROL · %1")
-                      .arg(control.enabled ? QStringLiteral("ENGINE ON")
-                                           : QStringLiteral("ENGINE OFF"))
+                      .arg(!control.known?QStringLiteral("ENGINE WAIT"):
+                           control.enabled?QStringLiteral("ENGINE ON"):QStringLiteral("ENGINE OFF"))
             : !controlConnected
                 ? (deviceKind == QLatin1String("CPU")
                        ? QStringLiteral("NO CPU CONTROL SIDECAR")
@@ -5056,7 +5107,23 @@ private:
         painter.setPen(QPen(accent, 2));
         painter.drawRoundedRect(pod.adjusted(1, 1, -1, -1), 14, 14);
         const bool expanded=!m_collapsedDevices.value("@total",true);const QRectF expand(pod.right()-27,pod.top()+7,17,17);painter.setBrush(QColor(4,24,31));painter.setPen(QPen(accent,1));painter.drawRoundedRect(expand,7,7);painter.setFont(Font(9,QFont::DemiBold,true));painter.drawText(expand,Qt::AlignCenter,expanded?"−":"+");m_deviceCollapseHits.append({"@total",expand.adjusted(-5,-5,5,5)});setProperty("pgn_total_expanded",expanded);setProperty("pgn_total_expand_rectangle",expand);
-        const auto cards=miningLaneCards();for(int i=0;i<2;++i){const QString kind=i?"CPU":"GPU";int count=0,on=0,pending=0;for(const auto& card:cards)if(card.kind==kind&&(!property("pgn_source_only_control").toBool()||card.stableId.compare(property("pgn_managed_source_device").toString(),Qt::CaseInsensitive)==0||card.snapshot.raw.value("pgn_cpu_control").toBool())){++count;const auto control=m_deviceControls.value(card.stableId);on+=control.enabled;pending+=control.status==FrontierDeviceControlStatus::Pending;}const QRectF button(pod.right()-175+i*71,pod.top()+7,66,17);const QByteArray prefix=("pgn_total_"+kind.toLower()).toLatin1();setProperty((prefix+"_toggle_rect").constData(),button);setProperty((prefix+"_state").constData(),!count?"unavailable":pending?"pending":on==count?"on":on?"mixed":"off");const auto color=!count?QColor("#657f85"):pending?QColor("#ffbd69"):on==count?QColor("#69efc5"):accent;painter.setBrush(Alpha(color,28));painter.setPen(QPen(Alpha(color,180),1));painter.drawRoundedRect(button,7,7);painter.setFont(Font(7,QFont::DemiBold,true));painter.drawText(button,Qt::AlignCenter,kind+(!count?" —":pending?" …":on==count?" ON":on?" MIX":" OFF"));if(count&&m_deviceControlHandler)m_totalGroupHits.append({kind,button});m_uiTooltipHits.append({button,QString("%1 registered %2 device(s). Click to start all, or stop all when all are ON. Status waits for each backend acknowledgement.").arg(count).arg(kind)});}
+        const auto cards=miningLaneCards();
+        for(int i=0;i<2;++i){
+            const QString kind=i?"CPU":"GPU";int count=0,on=0,pending=0,unknown=0;
+            for(const auto& card:cards)if(card.kind==kind&&(!property("pgn_source_only_control").toBool()||card.stableId.compare(property("pgn_managed_source_device").toString(),Qt::CaseInsensitive)==0||card.snapshot.raw.value("pgn_cpu_control").toBool())){
+                ++count;const auto control=m_deviceControls.value(card.stableId);
+                on+=control.known&&control.enabled;unknown+=!control.known;
+                pending+=control.status==FrontierDeviceControlStatus::Pending;
+            }
+            const QRectF button(pod.right()-175+i*71,pod.top()+7,66,17);const QByteArray prefix=("pgn_total_"+kind.toLower()).toLatin1();
+            setProperty((prefix+"_toggle_rect").constData(),button);
+            setProperty((prefix+"_state").constData(),!count?"unavailable":pending?"pending":unknown?"unknown":on==count?"on":on?"mixed":"off");
+            const auto color=!count||unknown?QColor("#657f85"):pending?QColor("#ffbd69"):on==count?QColor("#69efc5"):accent;
+            painter.setBrush(Alpha(color,28));painter.setPen(QPen(Alpha(color,180),1));painter.drawRoundedRect(button,7,7);painter.setFont(Font(7,QFont::DemiBold,true));
+            painter.drawText(button,Qt::AlignCenter,kind+(!count?" —":pending?" …":unknown?" WAIT":on==count?" ON":on?" MIX":" OFF"));
+            if(count&&m_deviceControlHandler)m_totalGroupHits.append({kind,button});
+            m_uiTooltipHits.append({button,QString("%1 registered %2 device(s). Click to start all, or stop all when all are ON. Status waits for each backend acknowledgement.").arg(count).arg(kind)});
+        }
         painter.setFont(Font(10,QFont::DemiBold,true));painter.setPen(accent);const bool compactCard=property("pgn_compact_mining").toBool();painter.drawText(pod.adjusted(12,7,-182,-7),Qt::AlignTop|Qt::AlignLeft,QString("TOTAL · %1").arg(sum.running));
         painter.setFont(Font(8, QFont::Normal, true));
         if(expanded||!compactCard)painter.drawText(QPointF(pod.left() + 12, pod.top() + 36),
@@ -5185,6 +5252,8 @@ private:
     }
     void drawDashboard(QPainter& painter)
     {
+        setProperty("pgn_gauge_label_rects",QJsonArray{});
+        setProperty("pgn_cpu_footer_geometry",QJsonObject{});
         m_deviceControlHits.clear();
         m_deviceCollapseHits.clear();m_totalGroupHits.clear();
         const QColor mint(QStringLiteral("#69efc5"));
@@ -5216,6 +5285,9 @@ private:
             }
         }
         const auto cards=miningLaneCards();
+        // Synchronize every device before painting TOTAL, which precedes them.
+        // A first source frame must never show the previous/default aggregate.
+        for(const auto& card:cards)observeDeviceControl(card.stableId,card.snapshot);
         // Nine native PGN measures use the SAME Horizon gauges, with enough
         // horizontal space for full strokes, values and individual hitboxes.
         const qreal podWidth = m_pgnBookingModel
@@ -5223,7 +5295,7 @@ private:
             : std::clamp(scene.width()*0.34,400.0,440.0);
         constexpr qreal compactWidth = 270.0;
         bool expandedCard=!m_collapsedDevices.value("@total",true);if(compact)for(const auto& card:cards)if(!m_collapsedDevices.value(card.stableId,true))expandedCard=true;
-        bool cpuBudgetCard=false;for(const auto& card:cards)cpuBudgetCard|=card.kind=="CPU"&&card.snapshot.raw.value("pgn_cpu_control").toBool();
+        bool cpuBudgetCard=false;for(const auto& card:cards)cpuBudgetCard|=pgn::ui::hasCpuThreadBudget(card.kind,card.snapshot.raw);
         const qreal podHeight = compact&&!expandedCard?(cpuBudgetCard?128.0:112.0):m_pgnBookingModel ? 154.0 : 142.0;
         if(compact){layout.cards.setHeight(podHeight);const int required=int(podHeight)+16;if(height()!=required)QTimer::singleShot(0,this,[this,required]{setFixedHeight(required);});}
         const qreal cardGap = 14.0;
@@ -5256,9 +5328,9 @@ private:
         setProperty("pgn_device_strip_view_width",m_deviceStripRect.width());
         painter.save();painter.setClipRect(m_deviceStripRect);
         QJsonArray cardLayout;
-        const bool auditCardLayout=property("pgn_card_layout_audit").toBool();
+        const bool publishCardLayout=property("pgn_card_layout_audit").toBool()||property("pgn_card_geometry_enabled").toBool();
         const auto recordCard=[&](const QString& id,const QString& kind,const QRectF& rect,bool expanded){
-            if(!auditCardLayout)return;
+            if(!publishCardLayout)return;
             const auto bands=pgn::ui::deviceCardBands(rect,kind=="TOTAL"?(expanded?1:0):(expanded?2:1),kind=="TOTAL"?2:(expanded||kind=="CPU"&&rect.height()>112?2:0),expanded?20.:18.);
             cardLayout.append(QJsonObject{{"id",id},{"kind",kind},{"expanded",expanded},
                 {"rect",QJsonArray{rect.x(),rect.y(),rect.width(),rect.height()}},
@@ -5270,7 +5342,7 @@ private:
         if(summaryWidth>0)recordCard("@total","TOTAL",QRectF(cardX,m_deviceStripRect.top(),summaryWidth,compact?(m_collapsedDevices.value("@total",true)?112.:154.):podHeight),!m_collapsedDevices.value("@total",true));
         if(summaryWidth>0){drawPgnTotalCard(painter,QRectF(cardX,m_deviceStripRect.top(),summaryWidth,compact?(m_collapsedDevices.value("@total",true)?112.:154.):podHeight));cardX+=summaryWidth+(cards.isEmpty()?0:cardGap);}
         for(int i=0;i<cards.size();++i){const auto& card=cards[i];
-            const QRectF cardRect(cardX,m_deviceStripRect.top(),cardWidths[i],compact?(m_collapsedDevices.value(card.stableId,true)?(card.kind=="CPU"&&card.snapshot.raw.value("pgn_cpu_control").toBool()?128.:112.):154.):podHeight);
+            const QRectF cardRect(cardX,m_deviceStripRect.top(),cardWidths[i],compact?(m_collapsedDevices.value(card.stableId,true)?(pgn::ui::hasCpuThreadBudget(card.kind,card.snapshot.raw)?128.:112.):154.):podHeight);
             recordCard(card.stableId,card.kind,cardRect,!m_collapsedDevices.value(card.stableId,true));
             if(cardRect.intersects(m_deviceStripRect)){
                 if(m_collapsedDevices.value(card.stableId,true))
@@ -5279,7 +5351,7 @@ private:
             }
             cardX+=cardWidths[i]+cardGap;
         }
-        if(auditCardLayout)setProperty("pgn_card_layout",cardLayout);
+        if(publishCardLayout)setProperty("pgn_card_layout",cardLayout);
         painter.restore();
         if(cards.isEmpty()&&!m_pgnBookingModel){painter.setFont(Font(9,QFont::DemiBold,true));painter.setPen(QColor("#ff9a3d"));
             painter.drawText(m_deviceStripRect,Qt::AlignCenter,"NO RESOURCE DEVICE TELEMETRY EMITTED");}
@@ -7148,7 +7220,7 @@ void presentCpuInventory(QWidget* widget,const QJsonObject& inventory) {
     const auto host=inventory.value("host").toString();if(host.isEmpty())return;
     FrontierTelemetrySnapshot lane;
     lane.gpuUuid="CPU/"+host.toUpper()+"/"+QString::number(inventory.value("processor_group").toInt());
-    lane.gpuName=host+" · "+inventory.value("model").toString();lane.engineId="pgn-cpu-audit";
+    lane.gpuName=host+" · "+inventory.value("model").toString();lane.engineId="pgn-cpu-normal-executor";
     lane.state="idle";lane.producerStatus="idle";lane.authoritative=true;lane.stale=false;
     lane.observedUtc=QDateTime::currentDateTimeUtc();
     lane.raw={{"pgn_cpu_inventory",inventory},{"pgn_cpu_host",host},{"pgn_cpu_control",false},{"pgn_process_running",false},{"pgn_device_enabled",false}};
@@ -7157,7 +7229,7 @@ void presentCpuInventory(QWidget* widget,const QJsonObject& inventory) {
 void presentCpuController(QWidget* widget,const QJsonObject& inventory,const QJsonObject& status,bool connected) {
     const auto host=inventory.value("host").toString();if(host.isEmpty())return;
     FrontierTelemetrySnapshot lane;lane.gpuUuid="CPU/"+host.toUpper()+"/"+QString::number(inventory.value("processor_group").toInt());
-    lane.gpuName=host+" · "+inventory.value("model").toString();lane.engineId="pgn-cpu-audit";lane.sourceMode="live";
+    lane.gpuName=host+" · "+inventory.value("model").toString();lane.engineId="pgn-cpu-normal-executor";lane.sourceMode="live";
     const bool computing=pgn::mining::cpuCalculationActive(status,connected);
     lane.authoritative=connected;lane.stale=!connected;lane.observedUtc=QDateTime::currentDateTimeUtc();lane.state=computing?"running":"idle";
     lane.producerStatus=computing?"running":"idle";lane.runId=status.value("request_sha256").toString(status.value("session").toString());
@@ -7167,8 +7239,14 @@ void presentCpuController(QWidget* widget,const QJsonObject& inventory,const QJs
     lane.raw={{"pgn_cpu_inventory",inventory},{"pgn_cpu_host",host},{"pgn_cpu_control",connected},{"pgn_cpu_state",status.value("state")},
         {"pgn_cpu_maximum_workers",inventory.value("maximum_workers")},{"pgn_cpu_requested_threads",status.value("requested_threads")},
         {"pgn_cpu_active_threads",status.value("threads_active")},{"pgn_cpu_worker_pids",status.value("worker_pids")},
-        {"pgn_device_enabled",connected&&status.value("enabled").toBool()},{"pgn_process_running",computing},
+        {"pgn_device_enabled",connected&&status.value("resource_selected").toBool(status.value("enabled").toBool())},{"pgn_process_running",computing},
         {"pgn_cpu_status",status}};
+    const auto science=pgn::ui::cpuMiningRates(status,connected);
+    if(computing&&!science.isEmpty()){
+        lane.powmPerSecond=pgn::ui::cpuMetricNumber(science,"tests_per_second");
+        lane.raw.insert("pgn_processed_gaps_per_second",science.value("gaps_per_second"));
+        lane.raw.insert("pgn_retained_gaps_per_billion_positions",science.value("gaps_per_billion_positions"));
+    }
     auto devices=widget->property("pgn_cpu_control_devices").toStringList();if(!devices.contains(lane.gpuUuid))devices.append(lane.gpuUuid);widget->setProperty("pgn_cpu_control_devices",devices);
     auto statuses=widget->property("pgn_cpu_controller_states").toJsonObject();statuses.insert(lane.gpuUuid,status);widget->setProperty("pgn_cpu_controller_states",statuses);
     auto inventories=widget->property("pgn_cpu_controller_inventory").toJsonObject();inventories.insert(lane.gpuUuid,inventory);widget->setProperty("pgn_cpu_controller_inventory",inventories);

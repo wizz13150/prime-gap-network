@@ -3,7 +3,7 @@
 namespace arithmetic = pgn_euler68;
 constexpr int radixBits=68;
 #else
-#include "engine/cuda/euler96.cuh"
+#include "engine/prime_gap_native/euler96.cuh"
 namespace arithmetic = pgn_euler96;
 constexpr int radixBits=96;
 #endif

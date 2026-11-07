@@ -141,7 +141,8 @@ public:
     }
     bool allStopped()const{for(const auto& device:devices_)if(!device->client->stopped())return false;return true;}
     bool requestClose(){
-        if(allStopped())return true;
+        // A stopped process may still have a reconnect timer. Close every
+        // client before reporting the fleet drained, including inactive ones.
         if(!closing_){closing_=true;for(const auto& device:devices_)device->client->close();}
         return allStopped();
     }

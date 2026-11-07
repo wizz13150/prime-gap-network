@@ -29,5 +29,30 @@ int main(int argc,char** argv){
  auto missingHeight=chain;missingHeight.remove("blocks");
  if(projectChainObservation(epoch,profile,missingHeight,profile.genesisHash,utc).observation)return 7;
  auto invalid=value;invalid.genesis="unbound";if(invalid.valid()||invalid.freshAt(utc))return 8;
- std::cout<<"PASS owned mainnet identity, exact height zero, unknown sync, original time and explicit stale rejection\n";
+ auto quiet=chain;quiet.insert("blocks",10);quiet.insert("headers",10);quiet.insert("initialblockdownload",true);quiet.insert("time",utc.addDays(-2).toSecsSinceEpoch());
+ auto quietValue=projectChainObservation(epoch,profile,quiet,profile.genesisHash,utc);if(!quietValue.observation)return 9;
+ const QString endpoint="127.0.0.1:32100";
+ const QJsonObject peer{{"addr",endpoint},{"connection_type","manual"},{"pgn_announced_height",10},{"pgn_syncing",false}};
+ const auto caughtUp=projectNativeSynchronization(*quietValue.observation,QJsonArray{peer},endpoint);
+ if(caughtUp.synchronizing!=false||caughtUp.coreInitialBlockDownload!=true||!caughtUp.nativePeerCaughtUp||!caughtUp.oldTipAt(utc)||!caughtUp.owner.matches(epoch))return 10;
+ for(const auto& pendingPeer:{QJsonObject{{"addr",endpoint},{"connection_type","manual"},{"pgn_announced_height",11},{"pgn_syncing",false}},QJsonObject{{"addr",endpoint},{"connection_type","manual"},{"pgn_announced_height",10},{"pgn_syncing",true}}}){
+  const auto held=projectNativeSynchronization(*quietValue.observation,QJsonArray{pendingPeer},endpoint);if(held.synchronizing!=true||held.nativePeerCaughtUp)return 11;
+ }
+ auto headersAhead=*quietValue.observation;headersAhead.headerHeight=11;
+ if(projectNativeSynchronization(headersAhead,QJsonArray{peer},endpoint).synchronizing!=true)return 12;
+ auto noHeaders=*quietValue.observation;noHeaders.headerHeight.reset();
+ if(projectNativeSynchronization(noHeaders,QJsonArray{peer},endpoint).synchronizing)return 13;
+ for(const auto& badHeight:{QJsonValue(),QJsonValue("10"),QJsonValue(true),QJsonValue(-1),QJsonValue(.5),QJsonValue(9007199254740992.0)}){
+  auto bad=peer;bad.insert("pgn_announced_height",badHeight);const auto held=projectNativeSynchronization(*quietValue.observation,QJsonArray{bad},endpoint);if(held.synchronizing||held.nativePeerCaughtUp)return 14;
+ }
+ for(const auto& badSync:{QJsonValue(),QJsonValue("false"),QJsonValue(0)}){
+  auto bad=peer;bad.insert("pgn_syncing",badSync);if(projectNativeSynchronization(*quietValue.observation,QJsonArray{bad},endpoint).synchronizing)return 15;
+ }
+ if(projectNativeSynchronization(*quietValue.observation,{},endpoint).synchronizing!=true)return 16;
+ auto missingCoreFlag=*quietValue.observation;missingCoreFlag.coreInitialBlockDownload.reset();if(projectNativeSynchronization(missingCoreFlag,QJsonArray{peer},endpoint).synchronizing)return 17;
+ auto fresh=caughtUp;fresh.tipTime=utc.toSecsSinceEpoch();if(fresh.oldTipAt(utc))return 18;
+ auto inbound=peer;inbound.insert("connection_type","inbound");if(projectNativeSynchronization(*quietValue.observation,QJsonArray{inbound},endpoint).synchronizing)return 19;
+ if(projectNativeSynchronization(*quietValue.observation,QJsonArray{peer},{}).synchronizing)return 20;
+ auto other=peer;other.insert("addr","127.0.0.1:32101");if(projectNativeSynchronization(*quietValue.observation,QJsonArray{other},endpoint).synchronizing!=true)return 21;
+ std::cout<<"PASS owned chain identity, exact heights, stale rejection, quiet-native catchup preserving raw CoreIBD, pending/unknown/foreignbridge holds\n";
 }

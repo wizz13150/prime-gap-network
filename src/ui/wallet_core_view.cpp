@@ -1,5 +1,8 @@
+#include "wallet/exact_rpc_money.h"
 #include "ui/wallet_core_view.h"
 #include "ui/wallet_setup_wizard.h"
+#include "ui/wallet_management_panel.h"
+#include "ui/component_versions_dialog.h"
 #include "wallet/setup_deployment.h"
 #include "wallet/core_bundle.h"
 #include "wallet/runtime_paths.h"
@@ -7,8 +10,7 @@
 #include "ui/block_explorer_view.h"
 #include "ui/vanity_view.h"
 #include "wallet/core_runtime.h"
-#include "wallet/difficulty_history.h"
-#include "ui/difficulty_history_view.h"
+#include "ui/network_metrics_view.h"
 #include "ui/render/horizon_coin_navigation.h"
 #include <QWidget>
 #include <QWindow>
@@ -65,18 +67,18 @@ void hideOwnedCoreWindows(qint64 pid){
 // is used as a substitute for an integrated interface.
 class WalletAccountPanel final:public QWidget {
 public:
- explicit WalletAccountPanel(pgn::wallet::CoreRuntime* runtime,QWidget* parent):QWidget(parent),runtime_(runtime){
+ explicit WalletAccountPanel(pgn::wallet::CoreRuntime* runtime,NetworkMetricsHub* metrics,bool testnet,QWidget* parent):QWidget(parent),runtime_(runtime),unit_(pgn::wallet::currencyTicker(testnet)){
   setObjectName("pgn-wallet-account");auto* box=new QVBoxLayout(this);box->setContentsMargins(20,12,20,16);box->setSpacing(12);
   account_=new QLabel("Reading the verified wallet…");account_->setObjectName("pgn-wallet-account-status");account_->setWordWrap(true);box->addWidget(account_);
   tabs_=new QTabWidget;auto* overview=new QWidget;auto* overviewBox=new QVBoxLayout(overview);
   auto* cards=new QGridLayout;
   for(int i=0;i<3;++i){auto* frame=new QFrame;frame->setStyleSheet("QFrame{background:#08262d;border:1px solid #256573;border-radius:9px;}QLabel{border:0;background:transparent;}");auto* card=new QVBoxLayout(frame);
-   card->addWidget(new QLabel(QStringList{"AVAILABLE","PENDING","IMMATURE"}[i]));balances_[i]=new QLabel("— PGN");balances_[i]->setStyleSheet("font:700 23px monospace;color:#5ff2ce");card->addWidget(balances_[i]);cards->addWidget(frame,0,i);}
-  overviewBox->addLayout(cards);auto* controls=new QHBoxLayout;auto* refresh=new QPushButton("Refresh wallet");auto* unlock=new QPushButton("Unlock…");auto* lock=new QPushButton("Lock wallet");controls->addWidget(refresh);controls->addWidget(unlock);controls->addWidget(lock);controls->addStretch();overviewBox->addLayout(controls);overviewBox->addStretch();tabs_->addTab(overview,"Balances");
-  auto* sendPage=new QWidget;auto* sendBox=new QFormLayout(sendPage);recipient_=new QLineEdit;recipient_->setPlaceholderText("Recipient PGN address");amount_=new QLineEdit;amount_->setPlaceholderText("Amount in PGN");send_=new QPushButton("Review payment…");send_->setEnabled(false);sendBox->addRow("Recipient",recipient_);sendBox->addRow("Amount",amount_);sendBox->addRow(send_);tabs_->addTab(sendPage,"Send");
+   card->addWidget(new QLabel(QStringList{"AVAILABLE","PENDING","IMMATURE"}[i]));balances_[i]=new QLabel("— "+unit_);balances_[i]->setStyleSheet("font:700 23px monospace;color:#5ff2ce");card->addWidget(balances_[i]);cards->addWidget(frame,0,i);}
+  overviewBox->addLayout(cards);auto* controls=new QHBoxLayout;auto* refresh=new QPushButton("Refresh wallet");auto* unlock=new QPushButton("Unlock…");auto* lock=new QPushButton("Lock wallet");controls->addWidget(refresh);controls->addWidget(unlock);controls->addWidget(lock);controls->addStretch();overviewBox->addLayout(controls);overviewBox->addWidget(createNetworkMetricsView(metrics,true),1);tabs_->addTab(overview,"Balances");
+  auto* sendPage=new QWidget;auto* sendBox=new QFormLayout(sendPage);recipient_=new QLineEdit;recipient_->setPlaceholderText("Recipient "+unit_+" address");amount_=new QLineEdit;amount_->setPlaceholderText("Amount in "+unit_);send_=new QPushButton("Review payment…");send_->setEnabled(false);sendBox->addRow("Recipient",recipient_);sendBox->addRow("Amount",amount_);sendBox->addRow(send_);tabs_->addTab(sendPage,"Send");
   auto* receivePage=new QWidget;auto* receiveBox=new QVBoxLayout(receivePage);auto* receiveRow=new QHBoxLayout;label_=new QLineEdit;label_->setPlaceholderText("Optional address label");auto* generate=new QPushButton("Create receiving address");receiveRow->addWidget(label_,1);receiveRow->addWidget(generate);receiveBox->addLayout(receiveRow);auto* addressRow=new QHBoxLayout;address_=new QLineEdit;address_->setReadOnly(true);address_->setPlaceholderText("Select an address below, or create one");auto* copy=new QPushButton("Copy address");addressRow->addWidget(address_,1);addressRow->addWidget(copy);receiveBox->addLayout(addressRow);
-  addresses_=table({"Label","Receiving address","Received · PGN"});receiveBox->addWidget(addresses_,1);tabs_->addTab(receivePage,"Receive");
-  transactions_=table({"Date","Type","Address","Amount · PGN","Confirmations"});tabs_->addTab(transactions_,"History");box->addWidget(tabs_,1);
+  addresses_=table({"Label","Receiving address","Received · "+unit_});receiveBox->addWidget(addresses_,1);tabs_->addTab(receivePage,"Receive");
+  transactions_=table({"Date","Type","Address","Amount · "+unit_,"Confirmations"});tabs_->addTab(transactions_,"History");box->addWidget(tabs_,1);
   connect(refresh,&QPushButton::clicked,this,[this]{refreshWallet();});connect(copy,&QPushButton::clicked,this,[this]{if(!address_->text().isEmpty())QGuiApplication::clipboard()->setText(address_->text());});
   connect(addresses_,&QTableWidget::cellClicked,this,[this](int row,int){if(auto* item=addresses_->item(row,1))address_->setText(item->text());});
   connect(generate,&QPushButton::clicked,this,[this,generate]{generate->setEnabled(false);const QPointer<WalletAccountPanel> weak(this);runtime_->walletRequest("getnewaddress",{label_->text(),"bech32"},[weak,generate](QJsonValue value,QString error){if(!weak)return;generate->setEnabled(true);if(!error.isEmpty())return weak->showError(error);if(!value.isString()||value.toString().isEmpty())return weak->showError("Core did not return an address");weak->address_->setText(value.toString());weak->refreshWallet();});});
@@ -85,81 +87,113 @@ public:
   connect(send_,&QPushButton::clicked,this,[this]{reviewPayment();});clock_.setInterval(5000);connect(&clock_,&QTimer::timeout,this,[this]{if(isVisible())refreshWallet();});clock_.start();
  }
  int pageCount()const{return tabs_->count();}
+  void resetDisplayedWallet(){
+   ++refreshGeneration_;pending_=0;available_=0;send_->setEnabled(false);address_->clear();label_->clear();recipient_->clear();amount_->clear();addresses_->setRowCount(0);transactions_->setRowCount(0);for(auto* balance:balances_)balance->setText("— "+unit_);account_->setText("Reading the selected wallet…");refreshWallet();
+  }
  void refreshWallet(){
-  if(pending_||!runtime_->connected())return;pending_=4;const QPointer<WalletAccountPanel> weak(this);
-  runtime_->walletRequest("getwalletinfo",{},[weak](QJsonValue value,QString error){if(!weak)return;--weak->pending_;if(!error.isEmpty()){weak->account_->setText(error);weak->send_->setEnabled(false);return;}const auto data=value.toObject();const bool encrypted=data.contains("unlocked_until");const bool locked=encrypted&&data.value("unlocked_until").toInteger()==0;
+  if(pending_||!runtime_->connected()||runtime_->walletManager()->busy())return;pending_=4;const auto generation=++refreshGeneration_;const QPointer<WalletAccountPanel> weak(this);
+  runtime_->walletRequest("getwalletinfo",{},[weak,generation](QJsonValue value,QString error){if(!weak||weak->refreshGeneration_!=generation)return;--weak->pending_;if(!error.isEmpty()){weak->account_->setText(error);weak->send_->setEnabled(false);return;}const auto data=value.toObject();const bool encrypted=data.contains("unlocked_until");const bool locked=encrypted&&data.value("unlocked_until").toInteger()==0;
    weak->account_->setText(QString("Wallet %1 · %2 · %3 transactions").arg(data.value("walletname").toString(),locked?"Locked":encrypted?"Unlocked":"Not encrypted").arg(data.value("txcount").toInteger()));weak->setProperty("pgn_wallet_account_observed",true);
   });
-  runtime_->walletRequest("getbalances",{},[weak](QJsonValue value,QString error){if(!weak)return;--weak->pending_;if(!error.isEmpty()){weak->account_->setText(error);weak->send_->setEnabled(false);return;}const auto mine=value.toObject().value("mine").toObject();const QStringList keys{"trusted","untrusted_pending","immature"};
-   for(int i=0;i<3;++i)weak->balances_[i]->setText(mine.value(keys[i]).isDouble()?QString::number(mine.value(keys[i]).toDouble(),'f',10)+" PGN":"— PGN");
-   weak->available_=mine.value("trusted").isDouble()?mine.value("trusted").toDouble():0;weak->send_->setEnabled(weak->available_>0);
+  runtime_->walletRequest("getbalances",{},[weak,generation](QJsonValue value,QString error){if(!weak||weak->refreshGeneration_!=generation)return;--weak->pending_;if(!error.isEmpty()){weak->account_->setText(error);weak->send_->setEnabled(false);return;}const auto mine=value.toObject().value("mine").toObject();const QStringList keys{"trusted","untrusted_pending","immature"};
+   bool complete=true;for(int i=0;i<3;++i){const auto amount=pgn::wallet::exactAtomicField(mine,keys[i]);complete&=amount&&*amount>=0;weak->balances_[i]->setText(amount?pgn::wallet::formatAtomicPgn(*amount)+" "+weak->unit_:"— "+weak->unit_);}
+   weak->available_=complete?pgn::wallet::exactAtomicField(mine,"trusted").value_or(0):0;weak->send_->setEnabled(weak->available_>0);if(!complete)weak->account_->setText("Exact native wallet balances are unavailable");
   });
-  runtime_->walletRequest("listtransactions",{"*",50,0,true},[weak](QJsonValue value,QString error){if(!weak)return;--weak->pending_;if(!error.isEmpty())return;const auto rows=value.toArray();weak->transactions_->setRowCount(rows.size());for(int i=0;i<rows.size();++i){const auto v=rows[rows.size()-1-i].toObject();const QStringList columns{QDateTime::fromSecsSinceEpoch(v.value("time").toInteger()).toLocalTime().toString("yyyy-MM-dd HH:mm"),v.value("category").toString(),v.value("address").toString(),QString::number(v.value("amount").toDouble(),'f',10),QString::number(v.value("confirmations").toInteger())};for(int c=0;c<columns.size();++c)weak->transactions_->setItem(i,c,new QTableWidgetItem(columns[c]));}});
-  runtime_->walletRequest("listreceivedbyaddress",{0,true,true},[weak](QJsonValue value,QString error){if(!weak)return;--weak->pending_;if(!error.isEmpty())return;const auto rows=value.toArray();weak->addresses_->setRowCount(rows.size());for(int i=0;i<rows.size();++i){const auto v=rows[i].toObject();const QStringList columns{v.value("label").toString(),v.value("address").toString(),QString::number(v.value("amount").toDouble(),'f',10)};for(int c=0;c<columns.size();++c)weak->addresses_->setItem(i,c,new QTableWidgetItem(columns[c]));}});
+  runtime_->walletRequest("listtransactions",{"*",50,0,true},[weak,generation](QJsonValue value,QString error){if(!weak||weak->refreshGeneration_!=generation)return;--weak->pending_;if(!error.isEmpty())return;const auto rows=value.toArray();weak->transactions_->setRowCount(rows.size());for(int i=0;i<rows.size();++i){const auto v=rows[rows.size()-1-i].toObject();const QStringList columns{QDateTime::fromSecsSinceEpoch(v.value("time").toInteger()).toLocalTime().toString("yyyy-MM-dd HH:mm"),v.value("category").toString(),v.value("address").toString(),pgn::wallet::exactAtomicField(v,"amount").has_value()?pgn::wallet::formatAtomicPgn(*pgn::wallet::exactAtomicField(v,"amount")):QString("—"),QString::number(v.value("confirmations").toInteger())};for(int c=0;c<columns.size();++c)weak->transactions_->setItem(i,c,new QTableWidgetItem(columns[c]));}});
+  runtime_->walletRequest("listreceivedbyaddress",{0,true},[weak,generation](QJsonValue value,QString error){if(!weak||weak->refreshGeneration_!=generation)return;--weak->pending_;if(!error.isEmpty())return;const auto rows=value.toArray();weak->addresses_->setRowCount(rows.size());for(int i=0;i<rows.size();++i){const auto v=rows[i].toObject();const QStringList columns{v.value("label").toString(),v.value("address").toString(),pgn::wallet::exactAtomicField(v,"amount").has_value()?pgn::wallet::formatAtomicPgn(*pgn::wallet::exactAtomicField(v,"amount")):QString("—")};for(int c=0;c<columns.size();++c)weak->addresses_->setItem(i,c,new QTableWidgetItem(columns[c]));}});
  }
 private:
  static QTableWidget* table(const QStringList& labels){auto* out=new QTableWidget(0,labels.size());out->setHorizontalHeaderLabels(labels);out->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);out->horizontalHeader()->setStretchLastSection(true);out->verticalHeader()->hide();out->setEditTriggers(QAbstractItemView::NoEditTriggers);out->setSelectionBehavior(QAbstractItemView::SelectRows);return out;}
  void showError(const QString& error){QMessageBox::warning(this,"PGN wallet",error.left(500));}
  void reviewPayment(){
-  const auto recipient=recipient_->text().trimmed(),amount=amount_->text().trimmed();static const QRegularExpression decimal("^(0|[1-9][0-9]*)(\\.[0-9]{1,10})?$");bool okay=false;const double number=QLocale::c().toDouble(amount,&okay);
-  if(recipient.isEmpty()||!decimal.match(amount).hasMatch()||!okay||number<=0||number>available_)return showError("Enter a recipient and a positive amount within the available balance.");
-  send_->setEnabled(false);const QPointer<WalletAccountPanel> weak(this);runtime_->walletRequest("validateaddress",{recipient},[weak,recipient,amount](QJsonValue value,QString error){if(!weak)return;weak->send_->setEnabled(weak->available_>0);if(!error.isEmpty())return weak->showError(error);if(!value.toObject().value("isvalid").toBool())return weak->showError("Core rejected this PGN address.");
-   if(QMessageBox::question(weak,"Confirm PGN payment","Send "+amount+" PGN to\n"+recipient+"?\nThe native wallet determines the transaction fee.",QMessageBox::Yes|QMessageBox::Cancel,QMessageBox::Cancel)!=QMessageBox::Yes)return;
+  const auto recipient=recipient_->text().trimmed(),amount=amount_->text().trimmed();const auto number=pgn::wallet::parsePgnTransfer(amount);
+  if(recipient.isEmpty()||!number||*number<=0||*number>available_)return showError("Enter a recipient and a positive amount within the available balance.");
+  send_->setEnabled(false);const QPointer<WalletAccountPanel> weak(this);runtime_->walletRequest("validateaddress",{recipient},[weak,recipient,amount](QJsonValue value,QString error){if(!weak)return;weak->send_->setEnabled(weak->available_>0);if(!error.isEmpty())return weak->showError(error);if(!value.toObject().value("isvalid").toBool())return weak->showError("Core rejected this "+weak->unit_+" address.");
+   if(QMessageBox::question(weak,"Confirm "+weak->unit_+" payment","Send "+amount+" "+weak->unit_+" to\n"+recipient+"?\nThe native wallet determines the transaction fee.",QMessageBox::Yes|QMessageBox::Cancel,QMessageBox::Cancel)!=QMessageBox::Yes)return;
    weak->send_->setEnabled(false);weak->runtime_->walletRequest("sendtoaddress",{recipient,amount},[weak](QJsonValue result,QString failure){if(!weak)return;weak->send_->setEnabled(weak->available_>0);if(!failure.isEmpty())return weak->showError(failure);QMessageBox::information(weak,"Payment submitted","Transaction: "+result.toString());weak->refreshWallet();});
   });
  }
- pgn::wallet::CoreRuntime* runtime_{};QLabel* account_{};QLabel* balances_[3]{};QTabWidget* tabs_{};QLineEdit *recipient_{},*amount_{},*label_{},*address_{};QPushButton* send_{};QTableWidget *addresses_{},*transactions_{};QTimer clock_;int pending_{};double available_{};
+ pgn::wallet::CoreRuntime* runtime_{};const QString unit_;QLabel* account_{};QLabel* balances_[3]{};QTabWidget* tabs_{};QLineEdit *recipient_{},*amount_{},*label_{},*address_{};QPushButton* send_{};QTableWidget *addresses_{},*transactions_{};QTimer clock_;int pending_{};quint64 refreshGeneration_{};qint64 available_{};
 };
 class WalletCoreView final : public QWidget {
 public:
  pgn::wallet::CoreRuntime* networkRuntime()const{return runtime_;}
+ void observeNetworkMetrics(QWidget* owner,std::function<void(const QJsonObject&,const QString&)> receive){metrics_->subscribe(owner,std::move(receive));}
  void inspectBlock(const QString& hash){networkExplorer_->inspectHash(hash); }
  explicit WalletCoreView(const QString& root,WalletObservationSink observe,bool testnet){
   setObjectName("pgn-wallet-core-view");setProperty("pgn_wallet_frontend_loaded",false);
   auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,0);layout->setSpacing(0);
   auto* header=new QWidget(this);auto* headerBox=new QVBoxLayout(header);headerBox->setContentsMargins(20,18,20,8);layout->addWidget(header);
   auto* heading=new QLabel("PGN WALLET",this);
-  heading->setStyleSheet("font:700 22px monospace;color:#e9fffb");headerBox->addWidget(heading);
-  status_=new QLabel("CORE DEPLOYMENT PENDING · no fabricated balances, node or chain state",this);
+  heading->setStyleSheet("font:700 22px monospace;color:#e9fffb");auto* headingRow=new QHBoxLayout;headingRow->addWidget(heading);headingRow->addStretch();auto* manageWallets=new QPushButton("Manage wallets…");manageWallets->setObjectName("pgn-wallet-manage");headingRow->addWidget(manageWallets);headerBox->addLayout(headingRow);
+  status_=new QLabel("Use Manage wallets to set up PGN Core or open your existing wallet.",this);
   status_->setStyleSheet("color:#ffad4a;font:10px monospace");status_->setWordWrap(true);headerBox->addWidget(status_);
-  const auto configuration=pgn::wallet::coreRuntimeDirectory(root,testnet);
-  const bool legacyDeployment=QFileInfo::exists(root+(testnet?"/data/testnet/ui-runtime/wallet-core.json":"/data/runtime/wallet-core.json"));
-  historyFile_=legacyDeployment?root+"/data/runtime/wallet-difficulty.sqlite":configuration+"/wallet-difficulty.sqlite";
-  auto* workspace=new QTabWidget;workspace->setObjectName("pgn-wallet-subtabs");auto* walletPage=new QWidget;viewport_=new QVBoxLayout(walletPage);viewport_->setContentsMargins(0,0,0,0);workspace->addTab(walletPage,"Wallet");
-  runtime_=new pgn::wallet::CoreRuntime(root,this,testnet,pgn::wallet::coreRuntimeDirectory(root,testnet));networkExplorer_=new BlockExplorerView(runtime_);workspace->addTab(networkExplorer_,"Explorer");
-  auto* setup=new QPushButton("Set up wallet…",header);setup->setObjectName("pgn-wallet-setup");headerBox->addWidget(setup,0,Qt::AlignLeft);
-  setup->setVisible(!QFileInfo::exists(runtime_->runtimeDirectory()+"/wallet-core.json"));
-  connect(setup,&QPushButton::clicked,this,[this,root,testnet,setup]{
-   if(runtime_->processId()>0){status_->setText("Stop the current Core before changing wallet setup.");return;}
-   setup->setEnabled(false);status_->setText("Checking PGN Core files…");
-   auto* verification=new QFutureWatcher<pgn::wallet::CoreBundle>(this);
-   connect(verification,&QFutureWatcher<pgn::wallet::CoreBundle>::finished,this,[this,root,testnet,setup,verification]{
-    const auto bundle=verification->result();verification->deleteLater();setup->setEnabled(true);
-    if(!bundle.error.isEmpty()){status_->setText(bundle.error);return;}
-    const auto deployment=bundle.deployment;
-    auto* wizard=new WalletSetupWizard(root,testnet?QString("PGN testnet"):QString("PGN"),[this,root,deployment,setup](const auto& choice){
-     const auto selection=pgn::wallet::selectedWalletDeployment(deployment,choice,root);if(!selection.error.isEmpty())return selection.error;
-     const auto error=pgn::wallet::publishWalletSetup(runtime_->runtimeDirectory(),selection);if(!error.isEmpty())return error;
-     setup->hide();runtime_->launch();return QString{};
-    },this);wizard->setAttribute(Qt::WA_DeleteOnClose);wizard->open();
-   });
-   verification->setFuture(QtConcurrent::run([root,testnet]{return pgn::wallet::readCoreBundle(root,testnet?QString("test"):QString("main"));}));
-  });
-  historyView_=createDifficultyHistoryView(historyFile_);layout->addWidget(workspace,1);
-  auto* historyControls=new QHBoxLayout;auto* reloadHistory=new QPushButton("Retry verified history load");reloadHistory->setObjectName("pgn-wallet-difficulty-reload");
-  historyControls->addWidget(reloadHistory);historyControls->addStretch();headerBox->addLayout(historyControls);
-  connect(reloadHistory,&QPushButton::clicked,this,[this]{historyFailed_.clear();if(latestHistory_&&!historyBusy_)beginHistory(*latestHistory_);});
+  auto* workspace=new QTabWidget;workspace->setObjectName("pgn-wallet-subtabs");auto* walletPage=new QWidget;auto* walletPageBox=new QVBoxLayout(walletPage);walletPageBox->setContentsMargins(0,0,0,0);auto* walletScroll=new QScrollArea;walletScroll->setObjectName("pgn-wallet-content-scroll");walletScroll->setWidgetResizable(true);walletScroll->setFrameShape(QFrame::NoFrame);auto* walletContent=new QWidget;viewport_=new QVBoxLayout(walletContent);viewport_->setContentsMargins(0,0,0,0);walletScroll->setWidget(walletContent);auto* walletPages=new QStackedWidget(walletPage);walletPages->setObjectName("pgn-wallet-pages");walletPageBox->addWidget(walletPages);walletPages->addWidget(walletScroll);auto* managementScroll=new QScrollArea;managementScroll->setObjectName("pgn-wallet-management-scroll");managementScroll->setWidgetResizable(true);managementScroll->setFrameShape(QFrame::NoFrame);managementScroll->setAlignment(Qt::AlignTop|Qt::AlignHCenter);auto* managementContent=new QWidget;managementContent->setMaximumWidth(1100);auto* managementBox=new QVBoxLayout(managementContent);managementBox->setContentsMargins(0,8,0,16);auto* backToOverview=new QPushButton("← Back to overview");backToOverview->setObjectName("pgn-wallet-overview");managementBox->addWidget(backToOverview,0,Qt::AlignLeft);managementScroll->setWidget(managementContent);walletPages->addWidget(managementScroll);walletPages->setCurrentIndex(0);connect(manageWallets,&QPushButton::clicked,this,[walletPages]{walletPages->setCurrentIndex(1);});connect(backToOverview,&QPushButton::clicked,this,[walletPages]{walletPages->setCurrentIndex(0);});workspace->addTab(walletPage,"Wallet");
+  runtime_=new pgn::wallet::CoreRuntime(root,this,testnet,pgn::wallet::coreRuntimeDirectory(root,testnet));metrics_=new NetworkMetricsHub([this](int span,auto consume){runtime_->readNetworkMetrics(span,std::move(consume));},this);networkExplorer_=new BlockExplorerView(runtime_);workspace->addTab(networkExplorer_,"Explorer");
+   management_=new WalletManagementPanel(runtime_->walletManager(),managementContent);managementBox->addWidget(management_);managementBox->addStretch();
+   management_->onComponents=[this,root,testnet]{
+    if(componentDialog_){componentDialog_->raise();componentDialog_->activateWindow();return;}
+    componentDialog_=new ComponentVersionsDialog(walletComponentVersionsContext(root,runtime_->runtimeDirectory(),testnet),this);
+    componentDialog_->setAttribute(Qt::WA_DeleteOnClose);componentDialog_->open();
+   };
+   const auto presentSetup=[this]{
+    QFile file(runtime_->runtimeDirectory()+"/wallet-core.json");QJsonObject config;
+    if(file.open(QIODevice::ReadOnly)&&file.size()<=32768)config=QJsonDocument::fromJson(file.readAll()).object();
+    QFile pending(runtime_->runtimeDirectory()+"/wallet-pending-setup.json");QString scheduled;
+    if(pending.open(QIODevice::ReadOnly)&&pending.size()<=40000)scheduled=QJsonDocument::fromJson(pending.readAll()).object().value("profile").toObject().value("data_directory").toString();
+    management_->present(config.value("chain").toString(),config.value("data_directory").toString(),!config.isEmpty(),QFileInfo::exists(pending.fileName()),scheduled);
+   };presentSetup();
+   management_->onCancelChange=[this,presentSetup]{
+    const auto path=runtime_->runtimeDirectory()+"/wallet-pending-setup.json";
+    if(QFileInfo::exists(path)&&!QFile::remove(path)){status_->setText("Pending folder change could not be cancelled. Core and wallet data remain in their current folder.");return;}
+    presentSetup();status_->setText("Pending folder change cancelled. The current Core folder is unchanged.");
+   };
+   management_->onConfigure=[this,root,testnet,presentSetup]{
+    if(setupOpen_)return;setupOpen_=true;status_->setText("Checking PGN Core files…");
+    auto* verification=new QFutureWatcher<pgn::wallet::CoreBundle>(this);
+    connect(verification,&QFutureWatcher<pgn::wallet::CoreBundle>::finished,this,[this,root,testnet,presentSetup,verification]{
+     const auto bundle=verification->result();verification->deleteLater();
+     if(!bundle.error.isEmpty()){setupOpen_=false;status_->setText(bundle.error);return;}
+     QFile current(runtime_->runtimeDirectory()+"/wallet-core.json");QByteArray base;
+     if(current.exists()){
+      if(!current.open(QIODevice::ReadOnly)||current.size()>32768){setupOpen_=false;status_->setText("Current Core settings could not be read.");return;}base=current.readAll();
+     }
+     auto* wizard=new WalletSetupWizard(root,testnet?QString("PGN testnet"):QString("PGN"),[this,root,deployment=bundle.deployment,base,presentSetup](const auto& choice){
+      const auto selection=pgn::wallet::selectedWalletDeployment(deployment,choice,root);if(!selection.error.isEmpty())return selection.error;
+      const auto error=base.isEmpty()?pgn::wallet::publishWalletSetup(runtime_->runtimeDirectory(),selection):pgn::wallet::stageWalletSetupChange(runtime_->runtimeDirectory(),selection,base);
+      if(!error.isEmpty())return error;presentSetup();
+      if(base.isEmpty())runtime_->launch();
+      else status_->setText("Folder change saved. Pause mining and audits, then shut down PGN Core normally. The selection applies only after the owned Core has stopped and Horizon starts again.");
+      return QString{};
+     },this);
+     if(!base.isEmpty()){const auto config=QJsonDocument::fromJson(base).object();wizard->setDeferredChange(true);wizard->setSelection({config.value("data_directory").toString(),config.value("wallet").toString(),true});}
+     connect(wizard,&QDialog::finished,this,[this]{setupOpen_=false;});wizard->setAttribute(Qt::WA_DeleteOnClose);wizard->open();
+    });
+    verification->setFuture(QtConcurrent::run([root,testnet]{return pgn::wallet::readCoreBundle(root,testnet?QString("test"):QString("main"));}));
+   };
+  auto* historyView=createNetworkMetricsView(metrics_);layout->addWidget(workspace,1);
+  auto* reloadHistory=new QPushButton("Refresh network graphs");reloadHistory->setObjectName("pgn-wallet-difficulty-reload");
+  headingRow->addWidget(reloadHistory);
+  connect(reloadHistory,&QPushButton::clicked,this,[this]{metrics_->refresh();});
   placeholder_=new QLabel("Connecting the verified native wallet…",this);
   qobject_cast<QLabel*>(placeholder_)->setWordWrap(true);
   viewport_->addWidget(placeholder_,1);
-  workspace->addTab(createVanityView(root),"Vanity");workspace->addTab(historyView_,"Difficulty history");
+  workspace->addTab(createVanityView(root,runtime_,{},testnet),"Vanity");workspace->addTab(historyView,"Difficulty history");
   workspace->addTab(new AuditExplorerView(runtime_),"Audits");
+  const auto contextualHeader=[heading,reloadHistory,manageWallets,workspace,walletPages](int){const int page=workspace->currentIndex();const bool managing=page==0&&walletPages->currentIndex()==1;heading->setText(managing?"Wallet management":"PGN WALLET");heading->setVisible(page==0);manageWallets->setVisible(page==0&&!managing);reloadHistory->setVisible((page==0&&!managing)||page==3);};connect(workspace,&QTabWidget::currentChanged,this,contextualHeader);connect(walletPages,&QStackedWidget::currentChanged,this,contextualHeader);contextualHeader(workspace->currentIndex());
   auto* navigation=HorizonCoinNavigation(workspace,{
    {"01 WALLET","BALANCES + PAYMENTS"},{"02 NETWORK","BLOCKS + ACTIVITY"},
    {"03 VANITY","PERSONAL ADDRESS"},{"04 DIFFICULTY","CHAIN HISTORY"},{"05 AUDITS","REPORTS + VERIFICATION"}},this);
   navigation->setProperty("pgn_navigation_role","wallet");layout->insertWidget(0,navigation);
 
-  accountPanel_=new WalletAccountPanel(runtime_,walletPage);accountPanel_->setEnabled(false);viewport_->addWidget(accountPanel_,1);placeholder_->hide();
+  accountPanel_=new WalletAccountPanel(runtime_,metrics_,testnet,walletPage);accountPanel_->setEnabled(false);viewport_->addWidget(accountPanel_,1);placeholder_->hide();
+   displayGeneration_=runtime_->walletManager()->displayGeneration();
+   runtime_->walletManager()->onChanged=[this]{
+    management_->refresh();const auto generation=runtime_->walletManager()->displayGeneration();
+    if(generation!=displayGeneration_){displayGeneration_=generation;accountPanel_->resetDisplayedWallet();}
+     accountPanel_->setEnabled(runtime_->displayWalletReady()&&!runtime_->walletManager()->busy());
+     if(accountPanel_->isEnabled())accountPanel_->refreshWallet();
+   };
   setProperty("pgn_core_link_state","starting");
   runtime_->onLinkState=[this](pgn::wallet::CoreLinkState state,const QString& detail){
    const auto key=pgn::wallet::coreLinkKey(state);
@@ -169,15 +203,15 @@ public:
    while(history.size()>32)history.removeFirst();
    setProperty("pgn_core_link_transitions",history);
    if(state!=pgn::wallet::CoreLinkState::Ready)accountPanel_->setEnabled(false);
-   else accountPanel_->setEnabled(runtime_->walletReady());
+   else accountPanel_->setEnabled(runtime_->displayWalletReady()&&!runtime_->walletManager()->busy());
   };
   runtime_->onObservation=[this,observe=std::move(observe)](const auto& anchor){
-   if(observe)observe(anchor);latestHistory_=anchor;
+   if(observe)observe(anchor);
    if(anchor&&anchor->tipHash!=networkDone_&&!networkBusy_)refreshNetwork();
-   if(anchor&&!anchor->tipHash.isEmpty()&&!historyBusy_&&historyFingerprint(*anchor)!=historyFailed_&&anchor->tipHash!=historyDone_)beginHistory(*anchor);
+   if(anchor&&anchor->tipHash!=metricsTip_){metricsTip_=anchor->tipHash;metrics_->refresh();}
   };
-  runtime_->onStatus=[this,setup](const QString& text){status_->setText(!setup->isHidden()?QString("Choose Set up wallet to create or open your PGN wallet."):text);status_->setStyleSheet(runtime_->connected()?"color:#69efc5;font:11px monospace":"color:#ffbd69;font:11px monospace");};
-  runtime_->onReady=[this](qint64){attachClock_.start();attach();accountPanel_->setEnabled(true);accountPanel_->refreshWallet();};
+  runtime_->onStatus=[this](const QString& text){status_->setText(!QFileInfo::exists(runtime_->runtimeDirectory()+"/wallet-core.json")?QString("Use Manage wallets to set up PGN Core or open your existing wallet."):text);status_->setStyleSheet(runtime_->connected()?"color:#69efc5;font:11px monospace":"color:#ffbd69;font:11px monospace");};
+   runtime_->onReady=[this,presentSetup](qint64){presentSetup();attachClock_.start();attach();accountPanel_->setEnabled(!runtime_->walletManager()->busy());accountPanel_->refreshWallet();metrics_->refresh();};
   runtime_->onStopped=[this]{attachClock_.stop();accountPanel_->setEnabled(false);setProperty("pgn_wallet_embedded",false);setProperty("pgn_wallet_frontend_loaded",false);};
   attachClock_.setInterval(500);connect(&attachClock_,&QTimer::timeout,this,[this]{attach();});
   QTimer::singleShot(0,runtime_,[this]{runtime_->launch();});
@@ -186,30 +220,6 @@ public:
 private:
  void refreshNetwork(){
   networkBusy_=true;runtime_->readNetworkSnapshot([this](QJsonObject state,QString error){networkBusy_=false;networkExplorer_->presentSnapshot(state,error);if(!error.isEmpty())return;networkDone_=state.value("bestblockhash").toString();setProperty("pgn_network_block_rows",state.value("blocks"));setProperty("pgn_network_leases",state.value("leases"));setProperty("pgn_network_height",state.value("height"));setProperty("pgn_network_gold_blocks",state.value("gold_blocks"));setProperty("pgn_network_ticket_width",state.value("ticket_width").toString());});
- }
- QString historyFingerprint(const pgn::wallet::ChainObservation& anchor)const{return anchor.genesis+":"+anchor.tipHash+":"+QString::number(anchor.owner.pid)+":"+anchor.owner.birth+":"+QString::number(anchor.owner.generation);}
- void failHistory(const QString& error){historyBusy_=false;if(historyAnchor_)historyFailed_=historyFingerprint(*historyAnchor_);presentDifficultyHistoryError(historyView_,error);setProperty("pgn_wallet_difficulty_source_error",error);}
- void beginHistory(const pgn::wallet::ChainObservation& anchor){if(!historyStore_){try{historyStore_=std::make_shared<pgn::wallet::DifficultyHistoryStore>(historyFile_);}catch(const std::exception& error){failHistory(QString::fromUtf8(error.what()));return;}}historyAnchor_=anchor;historyCursor_=anchor.tipHash;historyHeight_=anchor.height;historyBusy_=true;historyStep();}
- void historyStep(){
-  if(!historyAnchor_)return;const auto anchor=*historyAnchor_;const auto cursor=historyCursor_;
-  try{if(const auto known=historyStore_->find(anchor.genesis,cursor)){
-   if(known->height!=historyHeight_){failHistory("Stored header height does not match the observed chain path");return;}
-   if(known->ancestryComplete){publishHistory(anchor);return;}
-   historyCursor_=known->previous;--historyHeight_;QTimer::singleShot(0,this,[this]{historyStep();});return;
-  }}catch(const std::exception& error){failHistory(QString::fromUtf8(error.what()));return;}
-  runtime_->readDifficultyHeader(anchor,cursor,[this,anchor,cursor](QJsonObject header,QString error,QDateTime observedUtc){
-   if(!error.isEmpty()){failHistory(error);return;}
-   if(header.value("height").toInteger(-1)!=historyHeight_){failHistory("Core historical header height differs from the expected parent path");return;}
-   auto* write=new QFutureWatcher<QString>(this);connect(write,&QFutureWatcher<QString>::finished,this,[this,write]{const auto error=write->result();write->deleteLater();if(!error.isEmpty()){failHistory(error);return;}historyStep();});
-   const auto store=historyStore_;write->setFuture(QtConcurrent::run([store,anchor,cursor,header,observedUtc]{return store->record(anchor.owner,anchor.genesis,cursor,header,observedUtc);}));
-  });
- }
- void publishHistory(const pgn::wallet::ChainObservation& anchor){
-  auto* publish=new QFutureWatcher<QString>(this);connect(publish,&QFutureWatcher<QString>::finished,this,[this,publish,anchor]{
-   const auto error=publish->result();publish->deleteLater();if(!error.isEmpty()){failHistory(error);return;}
-   historyBusy_=false;historyDone_=anchor.tipHash;historyFailed_.clear();presentDifficultyHistory(historyView_,historyStore_->summary(anchor.genesis));setProperty("pgn_wallet_difficulty_source_error",QVariant());
-   if(latestHistory_&&latestHistory_->tipHash!=anchor.tipHash)beginHistory(*latestHistory_);
-  });const auto store=historyStore_;publish->setFuture(QtConcurrent::run([store,anchor]{return store->activate(anchor,anchor.tipHash);}));
  }
  void attach(){
   if(!runtime_->connected())return;
@@ -220,21 +230,39 @@ private:
  }
  pgn::wallet::CoreRuntime* runtime_{};QLabel* status_{};QWidget* placeholder_{};
  BlockExplorerView* networkExplorer_{};bool networkBusy_{};QString networkDone_;
- QVBoxLayout* viewport_{};WalletAccountPanel* accountPanel_{};
+ QVBoxLayout* viewport_{};WalletAccountPanel* accountPanel_{};WalletManagementPanel* management_{};QPointer<ComponentVersionsDialog> componentDialog_;bool setupOpen_{};quint64 displayGeneration_{};
  QTimer attachClock_;int attempts_{};
 
- QString historyFile_;std::shared_ptr<pgn::wallet::DifficultyHistoryStore> historyStore_;QWidget* historyView_{};
- std::optional<pgn::wallet::ChainObservation> latestHistory_,historyAnchor_;QString historyCursor_,historyDone_,historyFailed_;qint64 historyHeight_{};bool historyBusy_{};
+ NetworkMetricsHub* metrics_{};QString metricsTip_;
 };
 }
 QWidget* createWalletCoreView(const QString& root,WalletObservationSink observe,bool testnet){return new WalletCoreView(root,std::move(observe),testnet);}
 void readWalletTicketPage(QWidget* widget,int offset,std::function<void(QJsonObject,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->readTicketPage(offset,std::move(consume));else consume({},"Wallet network view unavailable");}
 void readWalletTicketDetails(QWidget* widget,const QString& id,std::function<void(QJsonObject,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->readTicketDetails(id,std::move(consume));else consume({},"Wallet network view unavailable");}
+void readWalletTicketAtlas(QWidget* widget,const QString& start,const QString& end,int bins,std::function<void(QJsonObject,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->readTicketAtlas(start,end,bins,std::move(consume));else consume({},"Wallet network atlas unavailable");}
 void readWalletAuditDetails(QWidget* widget,const QString& id,std::function<void(QJsonObject,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->readAuditDetails(id,std::move(consume));else consume({},"Wallet audit view unavailable");}
 void readWalletLocalConnection(QWidget* widget,std::function<void(QJsonObject,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->readLocalConnection(std::move(consume));else consume({},"Local wallet connection unavailable");}
-void readWalletSigningIdentity(QWidget* widget,const QString& address,std::function<void(QJsonValue,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->walletRequest("getaddressinfo",{address},std::move(consume));else consume({},"Wallet signing identity unavailable");}
+void stopWalletCoreForUpdate(QWidget* widget,std::function<void(QString)> done){
+ auto* view=dynamic_cast<WalletCoreView*>(widget);if(!view){done("Wallet runtime is unavailable");return;}
+ const QPointer<pgn::wallet::CoreRuntime> core(view->networkRuntime());
+ if(core->startPending()){done("Core startup or ownership recovery is still in progress");return;}
+ if(!core->processId()){done({});return;}
+ if(!core->connected()){done("Core is not verified and connected; no shutdown was attempted");return;}
+ auto settled=std::make_shared<bool>(false);auto* timer=new QTimer(core);timer->setSingleShot(true);const auto previous=core->onStopped;
+ core->onStopped=[core,timer,settled,previous,done]{
+  if(*settled)return;*settled=true;timer->stop();timer->deleteLater();
+  // Restore after this std::function returns, so its captures stay alive.
+  QTimer::singleShot(0,core.data(),[core,previous,done]{if(core)core->onStopped=previous;if(previous)previous();done({});});
+ };
+ QObject::connect(timer,&QTimer::timeout,core.data(),[core,timer,settled,previous,done]{
+  if(*settled)return;*settled=true;timer->deleteLater();if(core)core->onStopped=previous;done("Core did not confirm a graceful shutdown; update was held");
+ });
+ timer->start(30000);core->stop();
+}
+void readWalletSigningIdentity(QWidget* widget,const QString& address,std::function<void(QJsonValue,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->serviceWalletRequest("getaddressinfo",{address},std::move(consume));else consume({},"Wallet signing identity unavailable");}
 void requestWalletAudit(QWidget* widget,const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->auditRequest(method,params,std::move(consume));else consume({},"Wallet audit view unavailable");}
 void signWalletAudit(QWidget* widget,const QString& address,const QString& challenge,std::function<void(QJsonValue,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->signAuditChallenge(address,challenge,std::move(consume));else consume({},"Wallet audit view unavailable");}
 void inspectWalletBlock(QWidget* widget,const QString& hash){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->inspectBlock(hash);}
+void bindWalletNetworkMetrics(QWidget* widget,QWidget* owner,std::function<void(const QJsonObject&,const QString&)> receive){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->observeNetworkMetrics(owner,std::move(receive));else receive({},"Wallet network view unavailable");}
 
 }

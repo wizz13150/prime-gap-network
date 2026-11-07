@@ -1,3 +1,4 @@
+#include "qt_offscreen_fixture.h"
 #include "memory_benchmark_fixture.h"
 #include "ui/engine_tools_view.h"
 #include "ui/memory_benchmark_view.h"
@@ -13,6 +14,8 @@
 #include <QPluginLoader>
 #include <QFileInfo>
 #include <QElapsedTimer>
+#include <QLabel>
+#include <QRegularExpression>
 #include <iostream>
 #define REQUIRE(x) do{if(!(x)){std::cerr<<"FAIL line "<<__LINE__<<": "<<#x<<'\n';return 1;}}while(0)
 class ClosedExecutor final:public pgn::ui::MemoryBenchmarkExecutor {
@@ -43,12 +46,7 @@ public:
     }
 };
 int main(int argc,char** argv) {
-    // Explicitly preload and verify the CLOSED offscreen plugin; never create
-    // a visible desktop window or attach to the user's running GUI/GPU.
-    const QString plugin="C:/Gapcoin/toolchain/msys64/ucrt64/share/qt6/plugins/platforms/qoffscreen.dll";
-    QPluginLoader loader(plugin);REQUIRE(loader.load());
-    REQUIRE(loader.metaData().value("MetaData").toObject().value("Keys").toArray().contains("offscreen"));
-    qputenv("QT_QPA_PLATFORM","offscreen");qputenv("QT_QPA_PLATFORM_PLUGIN_PATH",QFileInfo(plugin).absolutePath().toUtf8());
+    REQUIRE(pgn::test::prepareOffscreen());
     QApplication app(argc,argv);REQUIRE(QGuiApplication::platformName()=="offscreen");QTemporaryDir temp;REQUIRE(temp.isValid());
     std::unique_ptr<QWidget> bench(pgn::ui::createBenchmarkView(temp.path()));
     auto* memory=bench->findChild<QWidget*>("pgn-benchmark-memory-workspace");REQUIRE(memory);
@@ -74,7 +72,10 @@ int main(int argc,char** argv) {
     auto* selector=memory->findChild<QComboBox*>("pgn-benchmark-memory-device");REQUIRE(selector&&selector->count()==2&&selector->currentData()==source.gpuUuid);
     // Cancellation wins over a late measurement callback. The captured original
     // is restored and no new measurement is scheduled after the release barrier.
-    backend->hold=true;start->click();REQUIRE(cancel->isEnabled());const int before=backend->measures;cancel->click();
+    backend->hold=true;start->click();REQUIRE(cancel->isEnabled());
+    const auto workStatus=memory->findChild<QLabel*>("pgn-benchmark-memory-status")->text();
+    REQUIRE(workStatus.contains("positions + warmup")&&workStatus.count("2^")>=2&&QRegularExpression("[0-9]e[0-9]").match(workStatus).hasMatch());
+    const int before=backend->measures;cancel->click();
     REQUIRE(backend->setting==backend->original&&!cancel->isEnabled());
     REQUIRE(memory->property("pgn_benchmark_memory_receipt").toJsonObject().value("complete")==false);
     REQUIRE(memory->property("pgn_benchmark_memory_receipt").toJsonObject().value("restore_confirmed")==true);

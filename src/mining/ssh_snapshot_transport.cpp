@@ -113,12 +113,20 @@ QString nativeControlScriptForEndpoint(const SshObservationEndpoint& endpoint,co
     script.replace(entry,entry+" -RuntimeRoot '"+quoted(root)+"' -LeaseRoot '"+quoted(endpoint.gpuLeaseRoot)+"'");
     return script;
 }
-SshObservationCommand makeSshObservationCommand(const SshObservationEndpoint& endpoint,const SshObservationRequest& request){
+SshObservationCommand makeSshConnectionCommand(const SshObservationEndpoint& endpoint,const QString& remoteCommand){
     existingAbsoluteFile(endpoint.executable);existingAbsoluteFile(endpoint.keyFile);
     if(!QFileInfo(endpoint.executable).isExecutable())fail("SSH executable is not executable");
     if(!endpoint.port||!QRegularExpression("^[A-Za-z0-9_][A-Za-z0-9_.\\\\-]{0,127}$").match(endpoint.user).hasMatch()||
        endpoint.host.isEmpty()||endpoint.host.size()>253||endpoint.host.startsWith('-')||
        !QRegularExpression("^[A-Za-z0-9.:%\\[\\]_-]+$").match(endpoint.host).hasMatch())fail("Explicit direct SSH user/host/port invalid");
+    if(!endpoint.hostKeyAlias.isEmpty()&&(endpoint.hostKeyAlias.size()>253||!QRegularExpression("^[A-Za-z0-9][A-Za-z0-9_.-]*$").match(endpoint.hostKeyAlias).hasMatch()))fail("Explicit SSH host-key alias invalid");
+    if(remoteCommand.isEmpty()||remoteCommand.size()>65536||remoteCommand.contains(QChar(0))||remoteCommand.contains('\r')||remoteCommand.contains('\n'))fail("Bounded remote command required");
+    QStringList args{"-F","none","-i",endpoint.keyFile,"-p",QString::number(endpoint.port),"-l",endpoint.user};
+    for(const auto option:{"BatchMode=yes","StrictHostKeyChecking=yes","UpdateHostKeys=no","CheckHostIP=no","ClearAllForwardings=yes","PermitLocalCommand=no","RequestTTY=no","ConnectTimeout=5","ServerAliveInterval=5","ServerAliveCountMax=2"})args<<"-o"<<option;
+    if(!endpoint.hostKeyAlias.isEmpty())args<<"-o"<<"HostKeyAlias="+endpoint.hostKeyAlias;
+    args<<"--"<<endpoint.host<<remoteCommand;return {endpoint.executable,args};
+}
+SshObservationCommand makeSshObservationCommand(const SshObservationEndpoint& endpoint,const SshObservationRequest& request){
     if(request.offset<0||(!request.expectedRun.isEmpty()&&!runValid(request.expectedRun))||
        (request.expectedRun.isEmpty()&&request.offset!=0))fail("Exact source run/offset invalid");
     if(request.startupTimeoutMs<=0||request.idleTimeoutMs<=0||request.snapshotTimeoutMs<=0)fail("Positive SSH observation timeouts required");
@@ -150,10 +158,7 @@ if($LASTEXITCODE -ne 0 -or $rows.Count -eq 0){throw 'Driver observation unavaila
     // the receiver must continue rejecting malformed byte sequences.
     script="[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;"+nativeControlScriptForEndpoint(endpoint,script);
     const auto remote="powershell.exe -NoProfile -NonInteractive -EncodedCommand "+QString::fromLatin1(utf16le(script).toBase64());
-    QStringList args{"-F","none","-i",endpoint.keyFile,"-p",QString::number(endpoint.port),"-l",endpoint.user};
-    for(const auto option:{"BatchMode=yes","StrictHostKeyChecking=yes","UpdateHostKeys=no","CheckHostIP=no","ClearAllForwardings=yes","PermitLocalCommand=no","RequestTTY=no","ConnectTimeout=5","ServerAliveInterval=5","ServerAliveCountMax=2"})args<<"-o"<<option;
-    if(!endpoint.hostKeyAlias.isEmpty())args<<"-o"<<"HostKeyAlias="+endpoint.hostKeyAlias;
-    args<<"--"<<endpoint.host<<remote;return {endpoint.executable,args};
+    return makeSshConnectionCommand(endpoint,remote);
 }
 SshObservationFrame decodeSshSnapshot(const QByteArray& document){
     if(document.isEmpty()||document.size()>SshSnapshotTransport::FrameLimit)fail("Snapshot document bound exceeded/empty");

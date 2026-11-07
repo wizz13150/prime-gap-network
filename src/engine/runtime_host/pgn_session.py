@@ -4,6 +4,7 @@ from pathlib import Path
 import datetime as dt
 import hashlib
 import json
+import errno
 import os
 import struct
 import uuid
@@ -17,6 +18,27 @@ from pgn_native_contract import (
     module_metadata,
     file_sha,
 )
+
+# The append and recovery boundary must be identical. A committed record that
+# the next startup refuses is a self-inflicted loss of resumability.
+MAX_JOURNAL_EVENT_BYTES = 1024 * 1024
+# Authoritative history cannot be rotated as a diagnostic log. Stop before
+# growing this file beyond its budget; replay and the committed prefix remain
+# available. This is a per-session bound, not a whole-workspace quota.
+MAX_SESSION_JOURNAL_BYTES = 256 * 1024 * 1024
+
+
+class SessionJournalBudgetExceeded(BufferError):
+    code = 'SESSION_JOURNAL_BUDGET_REACHED'
+
+
+class SessionIndexRecoveryRequired(RuntimeError):
+    code = 'SESSION_INDEX_RECOVERY_REQUIRED'
+
+
+class SessionControllerBusy(RuntimeError):
+    """Another writer still owns the session; never bypass or remove its lock."""
+    code = 'SESSION_CONTROLLER_BUSY'
 
 
 class SessionControllerLock:
@@ -40,12 +62,14 @@ class SessionControllerLock:
                 import fcntl
 
                 fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except OSError as error:
             os.close(self.fd)
             self.fd = None
-            raise RuntimeError(
-                "This session already has a controller; use its existing window"
-            )
+            if error.errno in (errno.EACCES, errno.EAGAIN):
+                raise SessionControllerBusy(
+                    "Waiting for the existing controller to release this session"
+                ) from error
+            raise
 
     def release(self):
         if self.fd is None:
@@ -192,6 +216,7 @@ class SessionStore:
         require_new_configuration(metadata["configuration"])
         self._writer_thread = threading.get_ident()
         self.cache_error = None
+        self._index_recovery_required = False
         self._writer_key = os.path.normcase(str(self.folder))
         self._configuration_hash = self.configuration_hash()
         config = metadata["configuration"]
@@ -298,7 +323,7 @@ class SessionStore:
         with folder_lock(self.folder):
             # Full identity/configuration is authoritative in SQLite before the
             # optional JSON cache. Do not catch journal/DB/CP/owner failures.
-            with self.gaps.db:
+            with self.gaps.write_transaction():
                 self.gaps.put_meta("session_metadata", self.meta)
             try:
                 atomic_bytes(self.path, data)
@@ -327,10 +352,10 @@ class SessionStore:
         with self.journal.open("rb") as stream:
             stream.seek(valid_bytes)
             while True:
-                line = stream.readline(1024 * 1024 + 1)
+                line = stream.readline(MAX_JOURNAL_EVENT_BYTES + 1)
                 if not line:
                     break
-                if len(line) > 1024 * 1024:
+                if len(line) > MAX_JOURNAL_EVENT_BYTES:
                     raise ValueError("Oversized session journal record")
                 if not line.endswith(b"\n"):
                     # Preserve an interrupted final write separately, then keep
@@ -341,7 +366,6 @@ class SessionStore:
                 event = json.loads(line)
                 if event["sequence"] != self.sequence + 1:
                     raise ValueError("Session journal sequence is discontinuous")
-                self.sequence += 1
                 valid_bytes += len(line)
                 if event["type"] == "session":
                     if (
@@ -352,12 +376,13 @@ class SessionStore:
                             "Session metadata does not match its durable journal binding"
                         )
                 self.gaps.apply(event, valid_bytes)
+                self.sequence += 1
         if torn:
             backup = self.folder / ("journal-interrupted-" + uuid.uuid4().hex + ".bin")
             with self.journal.open("rb") as source:
                 source.seek(valid_bytes)
-                interrupted = source.read(1024 * 1024 + 1)
-            if len(interrupted) > 1024 * 1024:
+                interrupted = source.read(MAX_JOURNAL_EVENT_BYTES + 1)
+            if len(interrupted) > MAX_JOURNAL_EVENT_BYTES:
                 raise ValueError("Oversized interrupted journal tail")
             backup.write_bytes(interrupted)
             with self.journal.open("r+b") as stream:
@@ -381,14 +406,38 @@ class SessionStore:
 
     @coordinator_only
     def append(self, kind, **values):
+        if self._index_recovery_required:
+            raise SessionIndexRecoveryRequired(
+                "Session write/index interrupted; close and reopen for journal recovery"
+            )
+        if "sequence" in values or "type" in values:
+            raise ValueError("Session journal identity is assigned by its writer")
         event = {"sequence": self.sequence + 1, "type": kind, **values}
-        data = (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
-        with self.journal.open("ab") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-            offset = stream.tell()
-        self.gaps.apply(event, offset)
+        data = (json.dumps(event, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+        if len(data) > MAX_JOURNAL_EVENT_BYTES:
+            raise ValueError("Oversized session journal record")
+        attempted_write = False
+        try:
+            self.gaps.reserve_write()
+            with self.journal.open("ab") as stream:
+                stream.seek(0, os.SEEK_END)
+                if stream.tell() > MAX_SESSION_JOURNAL_BYTES - len(data):
+                    raise SessionJournalBudgetExceeded(
+                        "Session journal storage budget reached; durable history retained"
+                    )
+                attempted_write = True
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+                offset = stream.tell()
+            self.gaps.apply(event, offset)
+        except BaseException:
+            # A complete record may already exist even when fsync or SQLite
+            # failed. Reusing the old sequence could corrupt the journal.
+            # Only reopening and replaying the saved prefix resolves that state.
+            if attempted_write:
+                self._index_recovery_required = True
+            raise
         self.sequence += 1
 
     @coordinator_only

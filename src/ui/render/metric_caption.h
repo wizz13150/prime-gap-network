@@ -5,6 +5,16 @@
 #include <optional>
 
 namespace pgn::ui {
+// A future producer UTC timestamp cannot establish a negative data age.
+// Preserve the raw measurement; presentation reports it as unavailable.
+inline QString telemetryAgeCaption(const std::optional<qint64>& milliseconds,
+                                   bool lowerBound = false)
+{
+    if (!milliseconds || *milliseconds < 0) return QStringLiteral("—");
+    return (lowerBound ? QStringLiteral("≥") : QString{}) +
+        QString::number(*milliseconds) + QStringLiteral("ms");
+}
+
 // Presentation only: never replace, average or write the measured rate.
 // Expanded, compact and TOTAL cards use exactly the same caption policy.
 inline QString compactMetricCaption(const std::optional<double>& value)

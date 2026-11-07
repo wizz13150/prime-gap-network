@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying COPYING file.
 #pragma once
 #include <pgn/issuance_budget.h>
+#include <pgn/audit_settlement_state.h>
 #include <serialize.h>
 #include <uint256.h>
 #include <ios>
@@ -58,31 +59,36 @@ struct IssuanceSnapshot {
     std::optional<OrdinaryRewardPools> pools{}; // Explicit v3 only; absence is never inferred zero.
     std::optional<GoldEpochBalances> epochs{}; // Explicit v4; authenticated Gold counters and separate tier obligations.
 
+    std::optional<AuditSettlementBalances> audit_settlement{}; // Explicit v5, genesis-opted V1 only.
+
     bool Valid() const
     {
         return !tip.IsNull() && cap == PGN_MAX_SUPPLY_ATOMIC &&
             IssuanceBudgetState::Create(cap, minted, promised).has_value()&&(!partition||partition->Valid(minted,promised))&&
             (!pools||(partition&&pools->Valid(partition->ordinary_promised)))&&
-            (!epochs||(pools&&epochs->Valid(pools->near_miss)));
+            (!epochs||(pools&&epochs->Valid(pools->near_miss)))&&
+            (!audit_settlement||(epochs&&audit_settlement->Valid(pools->audit)));
     }
     bool operator==(const IssuanceSnapshot&) const = default;
     template <typename Stream> void Serialize(Stream& stream) const
     {
         if (!Valid()) throw std::ios_base::failure("Invalid PGN issuance snapshot");
-        stream << uint8_t(epochs?4:pools?3:partition?2:1) << tip << cap << minted << promised;
+        stream << uint8_t(audit_settlement?5:epochs?4:pools?3:partition?2:1) << tip << cap << minted << promised;
         if(partition)stream<<*partition;
         if(pools)stream<<*pools;
         if(epochs)stream<<*epochs;
+        if(audit_settlement)stream<<*audit_settlement;
     }
     template <typename Stream> void Unserialize(Stream& stream)
     {
         uint8_t version{};
         IssuanceSnapshot next;
         stream >> version >> next.tip >> next.cap >> next.minted >> next.promised;
-        if(version==2||version==3||version==4){IssuanceBudgetPartition value;stream>>value;next.partition=value;}
-        if(version==3||version==4){OrdinaryRewardPools value;stream>>value;next.pools=value;}
-        if(version==4){GoldEpochBalances value;stream>>value;next.epochs=value;}
-        if ((version != 1&&version != 2&&version != 3&&version != 4) || !next.Valid())
+        if(version==2||version==3||version==4||version==5){IssuanceBudgetPartition value;stream>>value;next.partition=value;}
+        if(version==3||version==4||version==5){OrdinaryRewardPools value;stream>>value;next.pools=value;}
+        if(version==4||version==5){GoldEpochBalances value;stream>>value;next.epochs=value;}
+        if(version==5){AuditSettlementBalances value;stream>>value;next.audit_settlement=value;}
+        if ((version != 1&&version != 2&&version != 3&&version != 4&&version != 5) || !next.Valid())
             throw std::ios_base::failure("Invalid PGN issuance snapshot");
         *this = next;
     }

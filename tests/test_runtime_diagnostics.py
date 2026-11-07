@@ -18,4 +18,13 @@ class DiagnosticTests(unittest.TestCase):
   value={}
   for _ in range(14):value=dict(next=value)
   with self.assertRaises(ValueError):export(self.capture([value]))
+ def test_native_prv_in_free_text_is_refused_without_a_private_field_name(self):
+  for message in ('prv'+'a'*64,'Cannot import descriptor wpkh(prv'+'b'*64+')#checksum','prefix PRV'+'C'*64+' suffix'):
+   with self.subTest(kind='native private key'),self.assertRaises(ValueError):export(self.capture([dict(message=message)]))
+ def test_credential_and_seed_fields_are_refused(self):
+  for key in ('seed','encrypted_seed','owner_token','access_token','credential','api_key','apikey'):
+   with self.subTest(key=key),self.assertRaises(ValueError):export(self.capture([dict(nested={key:'synthetic-sensitive-value'})]))
+ def test_public_hashes_are_not_mistaken_for_native_private_keys(self):
+  with zipfile.ZipFile(io.BytesIO(export(self.capture([dict(block_hash='a'*64,phase='Searching')]))))as archive:
+   self.assertIn(('a'*64).encode(),archive.read('diagnostics.json'))
 if __name__=='__main__':unittest.main()

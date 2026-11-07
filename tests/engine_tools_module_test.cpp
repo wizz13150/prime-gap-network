@@ -1,3 +1,4 @@
+#include "qt_offscreen_fixture.h"
 #include "ui/engine_tools_view.h"
 #include "telemetry.h"
 #include <QApplication>
@@ -50,11 +51,7 @@ static int lateCatalogue(const QString& root){
  return 0;
 }
 int main(int argc,char** argv){
- const QString plugin=argc>1?QString::fromLocal8Bit(argv[1]):QStringLiteral("C:/Gapcoin/toolchain/msys64/ucrt64/share/qt6/plugins/platforms/qoffscreen.dll");
- if(!QFileInfo(plugin).isFile())return 80;QPluginLoader preflight(plugin);
- if(!preflight.load()){std::cerr<<preflight.errorString().toStdString()<<'\n';return 81;}
- const auto keys=preflight.metaData().value("MetaData").toObject().value("Keys").toArray();if(!keys.contains("offscreen"))return 82;
- qputenv("QT_QPA_PLATFORM","offscreen");qputenv("QT_QPA_PLATFORM_PLUGIN_PATH",QFileInfo(plugin).absolutePath().toUtf8());
+ if(!pgn::test::prepareOffscreen(argc>1?QString::fromLocal8Bit(argv[1]):QString{}))return 80;
  QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);QApplication app(argc,argv);if(QGuiApplication::platformName()!="offscreen")return 83;
  QTemporaryDir temp;REQUIRE(temp.isValid());
  const QString mode=argc>2?QString::fromLocal8Bit(argv[2]):QString{};
@@ -121,7 +118,8 @@ int main(int argc,char** argv){
  REQUIRE(file.open(QIODevice::WriteOnly|QIODevice::Truncate));file.write(QJsonDocument(QJsonObject{{"schema","pgn-source-profile-v1"},{"profile",QJsonObject{{"number_bits",QJsonValue()},{"version",false},{"start","0"}}}}).toJson());file.close();
  REQUIRE(pgn::ui::importEngineProfile(config.get(),path));REQUIRE(!pgn::ui::importEngineProfile(bench.get(),path));
  const auto tables=config->findChildren<QTableWidget*>();QTableWidget* imported=nullptr;for(auto* t:tables)if(t!=module&&t->horizontalHeaderItem(1)->text()=="Imported local profile")imported=t;
- REQUIRE(imported);REQUIRE(cell(imported,"number_bits")=="Unavailable");REQUIRE(cell(imported,"version")=="false");REQUIRE(cell(imported,"start")=="0");
+ REQUIRE(imported);REQUIRE(cell(imported,"number_bits")=="Unavailable");REQUIRE(cell(imported,"version")=="false");REQUIRE(cell(imported,"start")=="0\n0\n0e0\n0");
+ REQUIRE(config->property("pgn_engine_imported_profile").toJsonObject().value("start")=="0");
  auto* measure=bench->findChild<QPushButton*>("pgn-benchmark-measure");
  v.observedUtc=QDateTime::currentDateTimeUtc().addSecs(1);pgn::ui::presentEngineTools(bench.get(),v);REQUIRE(!measure->isEnabled());
  v=source();pgn::ui::presentEngineTools(bench.get(),v);REQUIRE(measure->isEnabled());measure->click();
@@ -138,6 +136,11 @@ int main(int argc,char** argv){
  // Incomplete saved records stay visibly incomplete, not zero-rate successes.
  QFile incomplete(temp.path()+"/data/runtime/benchmarks/incomplete.json");REQUIRE(incomplete.open(QIODevice::WriteOnly));incomplete.write(QJsonDocument(QJsonObject{{"schema","pgn-source-window-benchmark-v1"}}).toJson());incomplete.close();
  bench->findChild<QPushButton*>("pgn-benchmark-refresh")->click();auto* history=bench->findChild<QTableWidget*>("pgn-benchmark-history");bool missing=false;
- for(int r=0;r<history->rowCount();++r)if(history->item(r,0)->text()=="Unavailable"){missing=true;REQUIRE(history->item(r,2)->text()=="Unavailable");REQUIRE(history->item(r,3)->text()=="Unavailable");REQUIRE(history->item(r,5)->text()=="Unavailable");}REQUIRE(missing);
+ for(int r=0;r<history->rowCount();++r)if(history->item(r,0)->text()=="Unavailable"){
+  missing=true;for(const auto& name:QStringList{"Searched positions","Positions/s","Tests/s","Retained gaps","Source seconds"}){
+   int column=-1;for(int c=0;c<history->columnCount();++c)if(history->horizontalHeaderItem(c)->text()==name)column=c;
+   REQUIRE(column>=0);REQUIRE(history->item(r,column)->text()=="Unavailable");
+  }
+ }REQUIRE(missing);
  std::cout<<"PASS checks="<<checks<<" failures=0; closed offscreen module catalogue/import, selection correlation/stable status/stale-page guards, evidence separation, raw absence/zero, benchmark artifact/clock guards; no physical GPU claim\n";
 }

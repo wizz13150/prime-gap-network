@@ -432,13 +432,17 @@ void nativeInventoryPhases(const QString& nativePhase){
  check(bridge.acceptNativeRuntimePacket(lifetime.get(),begin)&&callbacks==1,"actual native profile phase delivered once");
  check(!bridge.acceptNativeRuntimePacket(lifetime.get(),begin)&&callbacks==1,"duplicate active phase cannot renew timer");
  check(bridge.acceptNativeRuntimePacket(lifetime.get(),packet(phaseUuid(1),"profile",false)),"profile end exact pairing");
- timer->setInterval(25);check(bridge.acceptNativeRuntimePacket(lifetime.get(),packet(phaseUuid(2),nativePhase,true)),"actual lineage begins before shortened UI deadline");
+ // Compare the conserved observed budget: a CoarseTimer may coalesce its
+ // scheduled timeout beyond the requested 25 ms interval on some platforms.
+ timer->setInterval(25);const int observedBudget=timer->remainingTime();
+ check(bridge.acceptNativeRuntimePacket(lifetime.get(),packet(phaseUuid(2),nativePhase,true)),"actual lineage begins before shortened UI deadline");
  check(!timer->isActive(),"only UI deadline suspended, no physical fact emitted");phaseLoop(60);
  check(!start.status().contains("deadline expired")&&!timer->isActive(),"RAW lineage may outlast UI budget without false timeout");
  check(!bridge.acceptNativeRuntimePacket(lifetime.get(),packet(phaseUuid(3),nativePhase,false)),"unmatched phase end cannot release lease");
  check(!bridge.acceptNativeRuntimePacket(lifetime.get(),packet(phaseUuid(4),"snapshot",true)),"new phase cannot overwrite an active lineage lease");
  check(bridge.acceptNativeRuntimePacket(lifetime.get(),packet(phaseUuid(2),nativePhase,false)),"real lineage end accepted");
- check(timer->isActive()&&timer->interval()>0&&timer->interval()<=25,"end resumes saved budget, not fresh45s");
+ std::cout<<"TIMER_BUDGET phase="<<nativePhase.toStdString()<<" requested_ms=25 observed_ms="<<observedBudget<<" resumed_ms="<<timer->interval()<<'\n';
+ check(timer->isActive()&&timer->interval()>0&&timer->interval()<=observedBudget,"end resumes saved observed budget, not fresh45s");
  const auto snapshot=packet(phaseUuid(4),"snapshot",true);check(bridge.acceptNativeRuntimePacket(lifetime.get(),snapshot)&&timer->interval()==45000,"new actual snapshot phase resumes45s lifecycle budget only");
  timer->setInterval(25);check(!bridge.acceptNativeRuntimePacket(lifetime.get(),snapshot)&&timer->interval()==25,"replayed snapshot cannot postpone actual short timer");phaseLoop(60);
  check(start.status().contains("deadline expired")&&!timer->isActive(),"without a genuine next phase actual deadline holds");

@@ -63,4 +63,10 @@ inline NativeAddressPolicy BasePgnAddressPolicy() {
     return {"pgn",NativeWitnessChecksum::Bip173And350,NativeWitnessCase::Lower,90,
             NativeKeyHashAlias{{0x0c,0x89},"PGN"}};
 }
+inline NativeAddressPolicy PgnTestnetAddressPolicy() {
+    // Full HASH160+checksum integer interval lies inside the37-character
+    // Base58 prefix tpgn for this one fixed version; no per-name version.
+    return {"tpgn",NativeWitnessChecksum::Bip173And350,NativeWitnessCase::Lower,90,
+            NativeKeyHashAlias{{0x01,0x7f,0x6d,0xab},"tpgn"}};
+}
 } // namespace pgn::core

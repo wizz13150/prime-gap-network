@@ -60,11 +60,22 @@ PrimeBuildResult buildSuppliedPrimeCertificate(const Integer& n,PrimeBuildBudget
         // An opportunistic MR12 residual leaf is admitted only after exact
         // primality verification; no probable residual becomes a factor.
         std::uint64_t divisor=2;
+        std::optional<Integer> classified_remaining;
+        PrimeVerdict remaining_verdict=PrimeVerdict::UnsupportedDomain;
         while(factored*factored<=n){
             if(stop())return fail(PrimeBuildVerdict::Cancelled);
-            if(remaining<mr12ExclusiveBound()&&deterministicPrimeBelowMr12Bound(remaining)==PrimeVerdict::Prime){
-                if(!append(remaining,1))return fail(PrimeBuildVerdict::BudgetExceeded);
-                factored*=remaining;remaining=1;break;
+            if(remaining<mr12ExclusiveBound()){
+                // A failed trial division leaves the residual unchanged.
+                // Reuse only that exact integer's classification; division
+                // invalidates the key on the next iteration automatically.
+                if(!classified_remaining||*classified_remaining!=remaining){
+                    remaining_verdict=deterministicPrimeBelowMr12Bound(remaining);
+                    classified_remaining=remaining;
+                }
+                if(remaining_verdict==PrimeVerdict::Prime){
+                    if(!append(remaining,1))return fail(PrimeBuildVerdict::BudgetExceeded);
+                    factored*=remaining;remaining=1;break;
+                }
             }
             std::uint32_t exponent{};
             while(true){

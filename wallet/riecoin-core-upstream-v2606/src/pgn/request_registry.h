@@ -35,6 +35,20 @@ public:
     uint256 Tip()const{return m_blocks.empty()?uint256{}:m_blocks.back().hash;}
     int32_t Height()const{return m_blocks.empty()?-1:int32_t(m_blocks.size()-1);}
     size_t Size()const{return m_entries.size();}
+    // RPC retention charge only, never a network admission or consensus limit.
+    // Count allocated vector capacities and conservative fixed map-node costs.
+    // Overflow or a charge outside budget declines caching, not history access.
+    std::optional<size_t> RpcCacheCharge(size_t budget)const{
+        size_t used=0;
+        const auto charge=[&](size_t count,size_t width){
+            if(!width||count>(budget-used)/width)return false;
+            used+=count*width;return true;
+        };
+        if(!charge(1,sizeof(*this)+1024)||!charge(m_entries.size(),256)
+                ||!charge(m_blocks.capacity(),sizeof(Block)+32))return {};
+        for(const auto& block:m_blocks)if(!charge(block.requests.capacity(),sizeof(uint256)+16))return {};
+        return used;
+    }
 };
 struct RequestRegistryStart {RequestRegistryVerdict verdict;std::optional<VerifiedRequestRegistry> registry;};
 struct RequestRegistryLookup {

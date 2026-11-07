@@ -1,0 +1,61 @@
+#include "ui/network_work_view.h"
+#include "ui/panel_style.h"
+#include <iostream>
+#include <stdexcept>
+#include <QTreeWidgetItemIterator>
+using pgn::ui::NetworkWorkView;
+int main(int argc,char** argv){QApplication app(argc,argv);app.setStyleSheet(pgn::ui::dataPanelStyle());int checks=0;const auto need=[&](bool b,const char* why){++checks;if(!b)throw std::runtime_error(why);};try{
+ QJsonArray leases,reports,audits;for(int i=1;i<=100;++i){const auto id=QString::number(i,16).rightJustified(64,'0');leases.append(QJsonObject{{"request",id},{"ticket_number",QString::number(i)},{"start","150000000000000000000"},{"end","150000200000000000000"},{"state","reported"},{"issued",i},{"report_root",QString(64,'c')}});reports.append(QJsonObject{{"request_id",id},{"report_root",QString(64,'c')},{"block",QString(64,'d')},{"height",120}});audits.append(QJsonObject{{"request_id",id},{"jobs",QJsonArray{QJsonObject{{"slot",0},{"attempt",0},{"state","assigned"}}}}});}
+ QJsonObject page{{"leases",leases},{"reports",reports},{"audits",audits},{"genesis",QString(64,'a')},{"bestblockhash",QString(64,'b')},{"height",150},{"active_lease_count",100}};int pageReads=0,detailReads=0;QString error;
+ NetworkWorkView view([&](int,NetworkWorkView::Result consume){++pageReads;consume(page,error);},[&](const QString&,NetworkWorkView::Result consume){++detailReads;consume({},"Unexpected per-ticket RPC");});view.resize(1280,800);view.show();app.processEvents();
+ auto* table=view.findChild<QTableWidget*>("pgn-network-ticket-table");auto* tree=view.findChild<QTreeWidget*>();QPushButton* refresh=nullptr;for(auto* b:view.findChildren<QPushButton*>())if(b->text()=="Refresh work")refresh=b;need(table&&tree&&refresh,"real work controls");need(table->rowCount()==100,"100 real widget rows");
+ for(int i=0;i<100;++i){table->setCurrentCell(i,0);table->selectRow(i);app.processEvents();const auto selected=view.property("pgn_selected_ticket_evidence").toJsonObject();need(selected.value("leases").toArray().size()==1,"page projection owns exactly one lease");need(selected.value("reports").toArray().size()==1&&selected.value("audits").toArray().size()==1,"matching report/audit projected from same page");need(selected.value("leases").toArray().first().toObject().value("request")==leases[i].toObject().value("request"),"selected identity exact");need(selected.value("bestblockhash")==page.value("bestblockhash"),"one coherent tip");}
+ need(detailReads==0,"all100 page selections immediate without extra detail RPC");
+ auto named=audits[99].toObject();named.insert("public_attribution",QJsonObject{{"schema","PGN_PUBLIC_ATTRIBUTION_V1"},{"name","Alice"}});audits[99]=named;page.insert("audits",audits);page.insert("bestblockhash",QString(64,'9'));refresh->click();app.processEvents();bool sawName=false,sawOwner=false;for(int i=0;i<tree->topLevelItemCount();++i){const auto* item=tree->topLevelItem(i);if(item->text(0)=="Public discoverer name")sawName=item->text(1)=="Alice";if(item->text(0)=="Owner signing script")sawOwner=true;}need(sawName&&sawOwner,"public name shown beside retained signing identity");
+ auto* cell=table->item(99,0);auto* evidence=tree->topLevelItem(0);const auto rebuilds=view.property("pgn_ticket_detail_rebuilds").toInt();page.insert("height",151);page.insert("bestblockhash",QString(64,'e'));refresh->click();app.processEvents();
+ need(table->item(99,0)==cell&&tree->topLevelItem(0)==evidence,"anchor-only refresh keeps actual row and evidence objects");need(view.property("pgn_ticket_detail_rebuilds").toInt()==rebuilds,"anchor-only refresh does not rebuild detail tree");need(table->currentRow()==99,"selection preserved");need(view.property("pgn_selected_ticket_evidence").toJsonObject().value("height")==151,"anchor metadata still advances");
+ for(int n=0;n<3;++n){page.insert("height",152+n);refresh->click();app.processEvents();need(tree->topLevelItem(0)==evidence&&table->item(99,0)==cell,"repeated clock-only refresh stable");}
+ auto changedLease=leases[99].toObject();changedLease.insert("audited",true);leases[99]=changedLease;page.insert("leases",leases);auto changed=audits[99].toObject();changed.insert("audited",true);auto jobs=changed.value("jobs").toArray();auto job=jobs[0].toObject();job.insert("state","passed");jobs[0]=job;changed.insert("jobs",jobs);audits[99]=changed;page.insert("audits",audits);page.insert("bestblockhash",QString(64,'f'));refresh->click();app.processEvents();need(table->item(99,0)==cell,"real data delta updates existing row");need(table->item(99,3)->text()=="Passed","stage genuinely updated");need(view.property("pgn_ticket_detail_rebuilds").toInt()==rebuilds+1,"real audit delta rebuilds details once");
+ error="Injected Core transport loss";evidence=tree->topLevelItem(0);refresh->click();app.processEvents();need(table->rowCount()==100&&tree->topLevelItem(0)==evidence,"transport failure retains verified content");need(detailReads==0,"no hidden per-row RPC fallback");
+ QJsonObject thin=page;thin.insert("reports",QJsonArray{});thin.insert("audits",QJsonArray{});int thinReads=0;
+ NetworkWorkView partial([&](int,NetworkWorkView::Result consume){consume(thin,{});},[&](const QString& id,NetworkWorkView::Result consume){++thinReads;auto value=page;QJsonArray one;for(const auto& row:leases)if(row.toObject().value("request").toString()==id)one.append(row);value.insert("leases",one);for(const auto* key:{"reports","audits"}){QJsonArray found;for(const auto& row:page.value(key).toArray())if(row.toObject().value("request_id").toString()==id)found.append(row);value.insert(key,found);}consume(value,{});});
+ partial.resize(1280,800);partial.show();for(int n=0;n<30;++n)app.processEvents();need(thinReads>=2&&thinReads<=9,"partial page uses bounded visible prefetch, not100detailRPC");
+ auto* partialTable=partial.findChild<QTableWidget*>("pgn-network-ticket-table");const int prefetched=thinReads;partialTable->setCurrentCell(1,0);partialTable->selectRow(1);app.processEvents();need(thinReads==prefetched,"prefetched visible selection is immediate without another RPC");const auto exact=partial.property("pgn_selected_ticket_evidence").toJsonObject();need(exact.value("reports").toArray().size()==1&&exact.value("audits").toArray().size()==1,"omitted page report/audit is fetched, never labeled absent");need(partial.property("pgn_ticket_detail_cache_size").toInt()<=64,"detail cache remains bounded");
+ const QString first="39614081257132168796771975127",last="39614081257132168796771975167";
+ auto preciseLease=leases[0].toObject();preciseLease.insert("start",first);preciseLease.insert("end",last);
+ auto preciseAudit=audits[0].toObject();auto preciseJobs=preciseAudit["jobs"].toArray();auto preciseJob=preciseJobs[0].toObject();preciseJob.insert("ranges",QJsonArray{QJsonObject{{"index",0},{"start",first},{"end",last}}});preciseJobs[0]=preciseJob;preciseAudit.insert("jobs",preciseJobs);
+ auto precisePage=page;precisePage.insert("leases",QJsonArray{preciseLease});precisePage.insert("reports",QJsonArray{reports[0]});precisePage.insert("audits",QJsonArray{preciseAudit});
+ NetworkWorkView precise([&](int,NetworkWorkView::Result consume){consume(precisePage,{});},[&](const QString&,NetworkWorkView::Result){need(false,"coherent precise page needs no detail RPC");});precise.resize(1280,800);precise.show();app.processEvents();
+ auto* preciseTree=precise.findChild<QTreeWidget*>();QString startText,endText;QTreeWidgetItem* partition=nullptr;
+ for(QTreeWidgetItemIterator item(preciseTree);*item;++item){if((*item)->text(0)=="Start · scientific / binary")startText=(*item)->text(1);if((*item)->text(0)=="End · scientific / binary")endText=(*item)->text(1);if((*item)->text(0)=="Partition 0")partition=*item;}
+ const auto coordinates=pgn::ui::positionRangeFormats(first,last);
+ need(startText.contains(coordinates.start.decimal)&&endText.contains(coordinates.end.decimal)&&startText!=endText,"close95bit scientific bounds remain visibly distinct");
+ need(partition&&partition->text(1)==pgn::ui::positionFormats("40").inlineText()+" positions","audit partition uses common three-notation quantity");need(partition->childCount()==3&&partition->child(0)->text(1)=="["+first+", "+last+")","audit exact bounds remain selectable below compact quantity");
+ // Resizing is a presentation-only operation: retain all three visible quantity
+ // notations, the selected ticket and its evidence without another reader call.
+ const auto count=pgn::ui::positionFormats("200000000000000");
+ const auto selectedBefore=view.property("pgn_selected_ticket_evidence");
+ auto* detailBefore=tree->topLevelItem(0);const int readsBefore=pageReads,detailsBefore=detailReads;
+ bool sawSingle=false,sawDouble=false;
+ for(int width:{640,900,1400,1920,640,1920}){
+  view.resize(width,800);for(int n=0;n<6;++n)app.processEvents();
+  auto* value=table->item(99,2);const auto text=value->text();const int lines=text.count('\n')+1;
+  need(lines<=2,"ticket positions never need three lines");sawSingle|=lines==1;sawDouble|=lines==2;
+  need(text.contains(count.human)&&text.contains(count.decimal)&&text.contains(count.binary),"all quantity notations remain visible");
+  need(table->rowHeight(99)<table->fontMetrics().lineSpacing()*3+10,"row is denser than old three-line layout");
+  need(table->rowHeight(99)>=table->fontMetrics().lineSpacing()*lines+4,"compact row still fits its text");
+  for(const auto& line:text.split('\n'))need(table->columnWidth(2)>=table->fontMetrics().horizontalAdvance(line)+12,"quantity text fits its column");
+  for(int col:{0,1,2,3,4,5})need(table->columnWidth(col)>=table->sizeHintForIndex(table->model()->index(99,col)).width(),"actual themed delegate fits complete cell including status icon");
+  need(table->currentRow()==99&&table->selectionModel()->isRowSelected(99,QModelIndex()),"resize retains full-row selection");
+  need(tree->topLevelItem(0)==detailBefore&&view.property("pgn_selected_ticket_evidence")==selectedBefore,"resize retains exact evidence without rebuilding");
+  std::cout<<"density width="<<width<<" row_px="<<table->rowHeight(99)<<" lines="<<lines<<'\n';
+ }
+ need(sawSingle&&sawDouble,"responsive table uses both compact one-line and two-line layouts");
+ need(pageReads==readsBefore&&detailReads==detailsBefore,"resizing adds no network or detail reads");
+ auto broadLease=preciseLease;broadLease.insert("start","0");auto broadPage=precisePage;broadPage.insert("leases",QJsonArray{broadLease});
+ NetworkWorkView broad([&](int,NetworkWorkView::Result consume){consume(broadPage,{});},[&](const QString&,NetworkWorkView::Result){need(false,"wide95bit page needs no detail read");});broad.resize(640,800);broad.show();for(int n=0;n<6;++n)app.processEvents();
+ auto* broadTable=broad.findChild<QTableWidget*>("pgn-network-ticket-table");const auto broadCount=pgn::ui::positionFormats(last);const auto broadText=broadTable->item(0,2)->text();
+ need(broadText.contains(broadCount.human)&&broadText.contains(broadCount.decimal)&&broadText.contains(broadCount.binary)&&broadText.count('\n')<=1,"95bit quantity stays complete in narrow layout");
+ need(broadTable->item(0,1)->text()=="0 → "+last,"compact row leaves exact95bit interval unchanged");
+ std::cout<<"PASS "<<checks<<" real NetworkWorkView checks;completepage100selections/0detailRPC,partialpageboundedprefetch/exactfallback,stable row+detail identities across advancing anchors,real audit delta,selection and transport recovery,distinct95bitbounds/sharedauditquantity,responsivecompactrows\n";return 0;
+ }catch(const std::exception& e){std::cerr<<"FAIL after "<<checks<<": "<<e.what()<<'\n';return 1;}}

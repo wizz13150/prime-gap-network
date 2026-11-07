@@ -1,6 +1,8 @@
+#include "app/horizon_user_paths.h"
 #include "ui/engine_tools_view.h"
 #include "ui/memory_benchmark_view.h"
 #include "ui/panel_style.h"
+#include "ui/position_formats.h"
 #include "telemetry.h"
 #include "horizon_coin_navigation.h"
 #include <QVBoxLayout>
@@ -31,7 +33,8 @@ QTableWidget* table(QWidget* owner,const QStringList& columns){
  t->verticalHeader()->hide();t->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
  t->horizontalHeader()->setStretchLastSection(true);t->setAlternatingRowColors(true);return t;
 }
-void row(QTableWidget* t,const QStringList& cells){int n=t->rowCount();t->insertRow(n);for(int i=0;i<cells.size();++i)t->setItem(n,i,new QTableWidgetItem(cells[i]));}
+void rowHeight(QTableWidget* t,int row,const QStringList& cells){int lines=1;for(const auto& text:cells)lines=std::max(lines,int(text.count('\n'))+1);const int height=std::max(30,lines*t->fontMetrics().lineSpacing()+8);if(t->rowHeight(row)!=height)t->setRowHeight(row,height);}
+void row(QTableWidget* t,const QStringList& cells){int n=t->rowCount();t->insertRow(n);for(int i=0;i<cells.size();++i)t->setItem(n,i,new QTableWidgetItem(cells[i]));rowHeight(t,n,cells);}
 void stableRows(QTableWidget* t,const QList<QStringList>& rows){
  t->setUpdatesEnabled(false);
  if(t->rowCount()!=rows.size())t->setRowCount(rows.size());
@@ -39,11 +42,19 @@ void stableRows(QTableWidget* t,const QList<QStringList>& rows){
   auto* item=t->item(r,c);if(!item)t->setItem(r,c,new QTableWidgetItem(rows[r][c]));
   else if(item->text()!=rows[r][c])item->setText(rows[r][c]);
  }
+ for(int r=0;r<rows.size();++r)rowHeight(t,r,rows[r]);
  t->setUpdatesEnabled(true);
 }
 QString jsonText(const QJsonValue& value){
  if(value.isNull()||value.isUndefined()||(value.isString()&&value.toString().trimmed().isEmpty()))return "Unavailable";
  return value.isString()?value.toString():QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact).mid(1).chopped(1);
+}
+QString positionText(const PositionFormats& value){return value.human=="—"?QString("Unavailable"):value.exact+"\n"+value.stackedText();}
+QString profileText(const QString& key,const QJsonObject& profile){
+ if(key!="start"&&key!="end")return jsonText(profile.value(key));
+ const auto range=positionRangeFormats(profile.value("start").toString(),profile.value("end").toString());
+ const auto value=range.valid?(key=="start"?range.start:range.end):positionFormats(profile.value(key).toString());
+ return value.human=="—"?jsonText(profile.value(key)):positionText(value);
 }
 bool save(const QString& path,const QJsonObject& object,QString& error){
  QSaveFile file(path);if(!file.open(QIODevice::WriteOnly)){error=file.errorString();return false;}
@@ -104,10 +115,10 @@ public:
   tabs_=new QTabWidget;tabs_->setObjectName("pgn-engine-tools-tabs");
   source_=table(this,{"Property","Actual source value"});source_->setObjectName("pgn-engine-source");tabs_->addTab(source_,"Source");
   if(bench){hardware_=table(this,{"Device","SM MHz","GPU%","Memory%","Power W","Temperature°C","Raw observed UTC"});hardware_->setObjectName("pgn-benchmark-hardware");tabs_->addTab(hardware_,"Hardware");
-   history_=table(this,{"Observed UTC","GPU","Positions/s","Tests/s","Retained gaps","Source seconds","Scope"});history_->setObjectName("pgn-benchmark-history");tabs_->addTab(history_,"Measurements");
+   history_=table(this,{"Observed UTC","GPU","Searched positions","Positions/s","Tests/s","Retained gaps","Source seconds","Scope"});history_->setObjectName("pgn-benchmark-history");tabs_->addTab(history_,"Measurements");
    memory_=createMemoryBenchmarkView(root_,this);tabs_->addTab(memory_,"Memory search");
    box->addWidget(HorizonCoinNavigation(tabs_,{{"01 SOURCE","RUN + PARAMETERS"},{"02 HARDWARE","RAW DRIVER"},{"03 MEASUREMENTS","LOCAL EVIDENCE"},{"04 MEMORY SEARCH","CONTROLLED NATIVE WORK"}},this));history();
-  }else{imported_=table(this,{"Property","Imported local profile"});tabs_->addTab(imported_,"Imported profile");
+  }else{imported_=table(this,{"Property","Imported local profile"});imported_->setObjectName("pgn-engine-imported-profile");tabs_->addTab(imported_,"Imported profile");
    module_=table(this,{"Property","Module declaration / observation"});module_->setObjectName("pgn-engine-module-capabilities");tabs_->addTab(module_,"Module capabilities");
    stableRows(module_,{{"status","No module capabilities received"},{"applied","No application evidence received"}});
    auto* catalogue=new QHBoxLayout;moduleSelector_=new QComboBox;moduleSelector_->setObjectName("pgn-engine-module-selector");moduleSelector_->setMinimumContentsLength(18);catalogue->addWidget(moduleSelector_,1);
@@ -131,7 +142,7 @@ public:
  }
  void device(const FrontierTelemetrySnapshot& v){
   if(memory_)presentMemoryBenchmarkSource(memory_,v);
-  latest_=v;const auto p=profile(v);QList<QStringList> profileRows;for(auto i=p.begin();i!=p.end();++i)profileRows.append({i.key(),jsonText(i.value())});stableRows(source_,profileRows);
+  latest_=v;const auto p=profile(v);QList<QStringList> profileRows;for(auto i=p.begin();i!=p.end();++i)profileRows.append({i.key(),profileText(i.key(),p)});stableRows(source_,profileRows);
   setProperty("pgn_engine_actual_run",v.runId);setProperty("pgn_engine_profile",p);
   const auto next=counter(v);if(!first_){if(bench_)measure_->setEnabled(bool(next));if(!property("pgn_benchmark_last_receipt").isValid()&&!property("pgn_benchmark_error").isValid())status_->setText(next?"Actual source counters available · mining is unchanged":"Waiting for fresh authoritative source counters");return;}
   if(!next)return;
@@ -146,7 +157,7 @@ public:
    {"profile",profile(v)},{"begin",first_->raw},{"end",next->raw},{"source_seconds",seconds},{"positions",QString::number(positions)},
    {"tests",QString::number(tests)},{"retained_gaps",QString::number(retained)},{"positions_per_second",double(positions)/seconds},{"tests_per_second",double(tests)/seconds},
    {"hardware_begin",firstHardware_},{"hardware_end",hardwareSnapshot_},{"scope","LOCAL_CURRENT_RUN_SOURCE_WINDOW"},{"controlled_comparison",false},{"network_published",false},{"cpu_mining",false}};
-  const QString directory=root_+"/data/runtime/benchmarks";QString error;
+  const QString directory=pgn::app::mutableDataRoot(root_)+"/runtime/benchmarks";QString error;
   if(!QDir().mkpath(directory)||!save(directory+"/"+QUuid::createUuid().toString(QUuid::WithoutBraces)+".json",receipt,error)){finishError("Measurement was complete but could not be saved: "+error);return;}
   first_.reset();timeout_->stop();cancel_->setEnabled(false);measure_->setEnabled(true);setProperty("pgn_benchmark_last_receipt",receipt);status_->setText(QString("Saved actual%1s source interval ·%2 positions/s · local only, not published").arg(seconds,0,'f',3).arg(double(positions)/seconds,0,'g',8));history();tabs_->setCurrentWidget(history_);
  }
@@ -161,7 +172,7 @@ public:
   // SSH credentials can never become a runtime command or an applied setting.
   const auto source=input.value("profile").toObject();importedProfile_={};
   for(const auto* key:{"engine","profile","version","gpu_uuid","gpu_name","start","end","number_bits","engine_artifact_sha256","source_observed_utc"})if(source.contains(key))importedProfile_.insert(key,source.value(key));
-  imported_->setRowCount(0);for(auto i=importedProfile_.begin();i!=importedProfile_.end();++i)row(imported_,{i.key(),jsonText(i.value())});
+  imported_->setRowCount(0);for(auto i=importedProfile_.begin();i!=importedProfile_.end();++i)row(imported_,{i.key(),profileText(i.key(),importedProfile_)});
   setProperty("pgn_engine_imported_profile",importedProfile_);status_->setText("Local profile imported for comparison. Running engine and next reservation are unchanged.");tabs_->setCurrentWidget(imported_);return true;
  }
  bool module(const QJsonObject& input,const QString& observedUtc,const QString& artifact){
@@ -241,8 +252,8 @@ private:
  }
  void begin(){const auto s=counter(latest_);if(!s){status_->setText("No fresh authoritative counters: measurement not started.");return;}setProperty("pgn_benchmark_error",QVariant());first_=s;firstHardware_=hardwareSnapshot_;measure_->setEnabled(false);cancel_->setEnabled(true);timeout_->start(45000);status_->setText("Measuring a30-second source interval. The GPU keeps its current job.");}
  void finishError(const QString& error){first_.reset();timeout_->stop();if(bench_){cancel_->setEnabled(false);measure_->setEnabled(bool(counter(latest_)));}status_->setText(error);setProperty("pgn_benchmark_error",error);}
- void history(){if(!bench_)return;history_->setRowCount(0);receipts_={};QDir directory(root_+"/data/runtime/benchmarks");const auto files=directory.entryInfoList({"*.json"},QDir::Files,QDir::Time);
-  for(int n=0;n<std::min(int(files.size()),200);++n){QString error;const auto r=readSmall(files[n].absoluteFilePath(),error);if(r.value("schema")!="pgn-source-window-benchmark-v1")continue;receipts_.append(r);row(history_,{jsonText(r.value("observed_utc")),jsonText(r.value("profile").toObject().value("gpu_name")),jsonText(r.value("positions_per_second")),jsonText(r.value("tests_per_second")),jsonText(r.value("retained_gaps")),jsonText(r.value("source_seconds")),"Local current-run window · not public"});}
+ void history(){if(!bench_)return;history_->setRowCount(0);receipts_={};QDir directory(pgn::app::mutableDataRoot(root_)+"/runtime/benchmarks");const auto files=directory.entryInfoList({"*.json"},QDir::Files,QDir::Time);
+  for(int n=0;n<std::min(int(files.size()),200);++n){QString error;const auto r=readSmall(files[n].absoluteFilePath(),error);if(r.value("schema")!="pgn-source-window-benchmark-v1")continue;receipts_.append(r);row(history_,{jsonText(r.value("observed_utc")),jsonText(r.value("profile").toObject().value("gpu_name")),positionText(positionFormats(r.value("positions").toString())),jsonText(r.value("positions_per_second")),jsonText(r.value("tests_per_second")),jsonText(r.value("retained_gaps")),jsonText(r.value("source_seconds")),"Local current-run window · not public"});}
   setProperty("pgn_benchmark_saved_count",receipts_.size());
  }
  void exportSelected(){QJsonObject object;if(bench_){const int selected=history_->currentRow();if(selected<0||selected>=receipts_.size()){status_->setText("Select a saved measurement to export.");return;}object=receipts_[selected].toObject();}

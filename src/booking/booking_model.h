@@ -1,3 +1,4 @@
+#include "app/horizon_user_paths.h"
 #pragma once
 #include "booking/booking_store.h"
 #include "booking/bit_length_catalog.h"
@@ -38,7 +39,7 @@ public:
     QString setAutomaticAfterManual(const QString& device,bool enabled);
     const QString& completedPositions()const{return completedPositions_;}
     QString error()const{return observationError_.isEmpty()?error_:error_.isEmpty()?observationError_:error_+"\n"+observationError_;}
-    QString historyDatabase()const{return root_+"/data/runtime/local-bookings.sqlite";}
+    QString historyDatabase()const{return pgn::app::mutableDataRoot(root_)+"/runtime/local-bookings.sqlite";}
     void subscribe(QObject* owner,std::function<void()> changed);
     QString queue(const QString& start,const QString& end,const QString& device);
     int availableBlocks(const QString& start,const QString& end,const QString& zoneStart,const QString& zoneEnd) const {

@@ -271,6 +271,7 @@ add_library(riecoin_node STATIC EXCLUDE_FROM_ALL
   rpc/node.cpp
   rpc/output_script.cpp
   rpc/rawtransaction.cpp
+  rpc/pgn_explorer.cpp
   rpc/server.cpp
   rpc/server_util.cpp
   rpc/signmessage.cpp
@@ -328,6 +329,11 @@ if(BUILD_DAEMON)
     riecoind.cpp
     init/riecoind.cpp
   )
+  set(PGN_DAEMON_OUTPUT_NAME riecoind CACHE STRING "PGN daemon candidate filename, without extension")
+  if(NOT PGN_DAEMON_OUTPUT_NAME MATCHES "^[A-Za-z0-9_-]+$")
+    message(FATAL_ERROR "Invalid PGN daemon output name")
+  endif()
+  set_target_properties(riecoind PROPERTIES OUTPUT_NAME "${PGN_DAEMON_OUTPUT_NAME}")
   add_windows_resources(riecoind riecoind-res.rc)
   add_windows_application_manifest(riecoind)
   target_link_libraries(riecoind
@@ -443,5 +449,23 @@ add_executable(pgn-native-range-reader-test EXCLUDE_FROM_ALL
   pgn/candidate_range_reader_test.cpp)
 target_link_libraries(pgn-native-range-reader-test PRIVATE core_interface riecoin_node univalue)
 
+add_executable(pgn-native-rpc-history-cache-test EXCLUDE_FROM_ALL pgn/rpc_history_cache_test.cpp)
+target_link_libraries(pgn-native-rpc-history-cache-test PRIVATE core_interface riecoin_node univalue)
+
+add_executable(pgn-native-ticket-atlas-test EXCLUDE_FROM_ALL pgn/ticket_atlas_projection_test.cpp)
+target_link_libraries(pgn-native-ticket-atlas-test PRIVATE core_interface)
+
 add_executable(pgn-native-recheck-snapshot-test EXCLUDE_FROM_ALL pgn/native_recheck_snapshot_test.cpp)
 target_link_libraries(pgn-native-recheck-snapshot-test PRIVATE core_interface riecoin_node univalue)
+
+add_executable(pgn-native-retarget-history-test EXCLUDE_FROM_ALL pgn/native_retarget_history_test.cpp)
+target_link_libraries(pgn-native-retarget-history-test PRIVATE core_interface riecoin_node univalue)
+
+# Isolated signed-receipt/UTXO/issuance/SQLite-wallet financial-seam fixture.
+if(ENABLE_WALLET)
+  add_executable(pgn-native-audit-settlement-test EXCLUDE_FROM_ALL pgn/native_audit_settlement_test.cpp)
+  target_link_libraries(pgn-native-audit-settlement-test PRIVATE core_interface riecoin_wallet riecoin_node univalue SQLite3::SQLite3)
+endif()
+
+add_executable(pgn-native-audit-activation-test EXCLUDE_FROM_ALL pgn/audit_settlement_activation_test.cpp)
+target_link_libraries(pgn-native-audit-activation-test PRIVATE core_interface riecoin_common riecoin_util riecoin_consensus)

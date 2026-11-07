@@ -1,4 +1,5 @@
 #pragma once
+#include "composite_device_pages.h"
 // Fused class30 sieve with full high/low origin phases.
 // The bitmap representation and wheel profile match candidate_walk.cuh.
 #ifndef SCOUT_CANDIDATE_WALK_CUH
@@ -20,7 +21,7 @@ body(const uint64_t *__restrict__ primes, const uint64_t *__restrict__ invp,
      uint64_t tileSlots, uint64_t ntiles, uint64_t *__restrict__ g_bm, uint32_t tileWords,
      const uint32_t *__restrict__ wpidx, int wheel_on,
      const uint32_t *__restrict__ rootSteps = nullptr, uint32_t logicalX = 0, uint32_t logicalY = 0,
-     uint32_t logicalGridX = 0) {
+     uint32_t logicalGridX = 0, pgn_composite_device::Bank complement = {}) {
     static_assert(CacheRoots && EventWheel && WordPresieve && TinyWheel,
                   "Segmented sieve fixed retained profile only");
     const uint32_t sieveX = logicalGridX ? logicalX : blockIdx.x;
@@ -39,6 +40,11 @@ body(const uint64_t *__restrict__ primes, const uint64_t *__restrict__ invp,
     if constexpr (WordPresieve)
         if (tileSlots != (1ULL << 19) || blockDim.x != 512)
             __trap();
+    const uint64_t delta=Alo-complement.low;
+    const uint64_t deltaHigh=Ahi-complement.high-uint64_t(Alo<complement.low);
+    constexpr uint64_t TileSpan=(1ull<<19)/8*30;
+    if(complement.pages&&(deltaHigh||delta%TileSpan))__trap();
+    const uint64_t complementTile=delta/TileSpan;
     extern __shared__ uint64_t sh[];
     __shared__ uint32_t lowPhase[WordPresieve ? 7 : 1];
     __shared__ uint64_t wpat[TinyWheel ? 1 : 127];
@@ -574,6 +580,10 @@ body(const uint64_t *__restrict__ primes, const uint64_t *__restrict__ invp,
                 }
                 sh[w] |= val;
             }
+            __syncthreads();
+        }
+        if(complement.pages) {
+            pgn_composite_device::apply(sh,complement,complementTile+tile);
             __syncthreads();
         }
         uint64_t *out = g_bm + tile * tileWords;

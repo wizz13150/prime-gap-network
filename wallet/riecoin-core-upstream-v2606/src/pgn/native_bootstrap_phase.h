@@ -9,6 +9,11 @@
 
 namespace pgn::core {
 enum class NativeBootstrapPhaseVerdict {Bootstrap,Scientific,InvalidParent,HistoryHeld,BudgetExceeded};
+// The same pinned continuation rule governs template creation and body acceptance.
+inline bool NativeLedgerAllowsCoordination(NativeBootstrapPhaseVerdict phase,bool continuation){
+    return phase==NativeBootstrapPhaseVerdict::Bootstrap||
+        (phase==NativeBootstrapPhaseVerdict::Scientific&&continuation);
+}
 class NativeBootstrapPhaseCursor;
 NativeBootstrapPhaseVerdict InspectNativeBootstrapPhaseSlice(
     const CCoinsView&,const CBlockIndex&,uint32_t,NativeBootstrapPhaseCursor&);

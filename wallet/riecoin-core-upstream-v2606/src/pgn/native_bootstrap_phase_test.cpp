@@ -54,6 +54,12 @@ NativeBootstrapPhaseVerdict Finish(View& view,const CBlockIndex& tip,NativeBoots
 }
 }
 int main(){
+    for(const auto phase:{NativeBootstrapPhaseVerdict::Bootstrap,NativeBootstrapPhaseVerdict::Scientific,
+                         NativeBootstrapPhaseVerdict::InvalidParent,NativeBootstrapPhaseVerdict::HistoryHeld,
+                         NativeBootstrapPhaseVerdict::BudgetExceeded}){
+        assert(NativeLedgerAllowsCoordination(phase,false)==(phase==NativeBootstrapPhaseVerdict::Bootstrap));
+        assert(NativeLedgerAllowsCoordination(phase,true)==(phase==NativeBootstrapPhaseVerdict::Bootstrap||phase==NativeBootstrapPhaseVerdict::Scientific));
+    }
     LOCK(cs_main);Fixture fixture;auto* genesis=&fixture.Append(nullptr,1);auto* tip=genesis;
     for(unsigned id=2;id<=5001;++id)tip=&fixture.Append(tip,id);
     NativeBootstrapPhaseCursor cursor;

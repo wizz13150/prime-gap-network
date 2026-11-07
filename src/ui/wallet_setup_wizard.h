@@ -13,12 +13,13 @@ public:
     WalletSetupWizard(QString applicationDirectory,QString network,Commit,QWidget* parent=nullptr);
     pgn::wallet::WalletSetupSelection selection()const;
     void setSelection(const pgn::wallet::WalletSetupSelection&);
+    void setDeferredChange(bool enabled);
 protected:
     void accept()override;
     bool validateCurrentPage()override;
 private:
     QString applicationDirectory_,network_;Commit commit_;
-    QLineEdit *directory_{},*wallet_{};QRadioButton *create_{},*existing_{};QLabel *review_{},*error_{};
+    QLineEdit *directory_{},*wallet_{};QRadioButton *create_{},*existing_{};QLabel *review_{},*error_{},*finishNote_{};bool deferred_{};
     void review();
 };
 }

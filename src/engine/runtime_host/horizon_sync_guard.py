@@ -6,14 +6,24 @@ def synchronized(rpc,height,expected_hash):
   raise ValueError('Explicit testnet bootstrap checkpoint required')
  chain=rpc.call('getblockchaininfo')
  blocks=chain.get('blocks');headers=chain.get('headers')
- if type(blocks)is not int or type(headers)is not int or blocks<height or headers!=blocks or chain.get('initialblockdownload')is not False:return False
+ # Core's IBD heuristic also includes tip age. A quiet native chain may have
+ # every validated block and still report IBD after a restart. Admit work only
+ # through the explicit checkpoint and complete native-download guards below;
+ # never change Core's flag or its validation/chain selection rules.
+ if type(blocks)is not int or type(headers)is not int or blocks<height or headers!=blocks or type(chain.get('initialblockdownload'))is not bool:return False
  peers=rpc.call('getconnectioncount')
  if type(peers)is not int or peers<1:return False
  announcements=rpc.call('getpeerinfo')
  if not isinstance(announcements,list)or not announcements or len(announcements)>512:return False
  bootstrap_peers=[peer for peer in announcements if isinstance(peer,dict)and peer.get('connection_type')=='manual']
- heights=[peer.get('pgn_announced_height')for peer in bootstrap_peers if type(peer.get('pgn_announced_height'))is int and peer['pgn_announced_height']>=0 and type(peer.get('pgn_syncing'))is bool]
- if not heights or blocks<max(heights)or any(peer.get('pgn_syncing')is not False for peer in bootstrap_peers):return False
+ # A listening seed can have only inbound connections (desktop clients need
+ # no public listener). Accept that topology only after Core itself left IBD;
+ # the exact checkpoint and every native download/height check still apply.
+ if not bootstrap_peers and chain['initialblockdownload']is False:
+  bootstrap_peers=[peer for peer in announcements if isinstance(peer,dict)and peer.get('connection_type')=='inbound'and peer.get('inbound')is True]
+ if not bootstrap_peers:return False
+ if any(type(peer.get('pgn_announced_height'))is not int or peer['pgn_announced_height']<0 or type(peer.get('pgn_syncing'))is not bool for peer in bootstrap_peers):return False
+ if blocks<max(peer['pgn_announced_height']for peer in bootstrap_peers)or any(peer['pgn_syncing']for peer in bootstrap_peers):return False
  if rpc.call('getblockhash',[height])!=expected_hash:raise ValueError('Connected chain differs from the approved testnet checkpoint')
  return True
 

@@ -1,3 +1,4 @@
+#include "qt_offscreen_fixture.h"
 #include "ui/mining_canvas.h"
 #include "ui/catalog_projection.h"
 #include "ui/catalog_frame_presentation.h"
@@ -30,27 +31,7 @@
 #include <iostream>
 #include <memory>
 int main(int argc,char** argv){
- // Closed fixture only: refuse BEFORE QApplication if the actual SDK offscreen
- // plugin is missing/mismatched. Never fall back to Windows/the desktop.
- QString plugins=QLibraryInfo::path(QLibraryInfo::PluginsPath);
-#ifdef Q_OS_WIN
- // QLibraryInfo's relocatable prefix points into this build directory. Resolve
- // provenance from the ACTUALLY loaded SDK QtCore DLL, not a guessed install.
- wchar_t coreImage[32768];const auto module=GetModuleHandleW(L"Qt6Core.dll");
- const auto length=module?GetModuleFileNameW(module,coreImage,32768):0;
- if(!length||length>=32768){std::cerr<<"OFFSCREEN PREFLIGHT: loaded QtCore image unavailable\n";return 80;}
- const auto coreFile=QString::fromWCharArray(coreImage,int(length));
- const auto coreDirectory=QFileInfo(coreFile).absolutePath();
- plugins=QFileInfo::exists(coreDirectory+"/platforms/qoffscreen.dll")?coreDirectory:
-  QDir::cleanPath(coreDirectory+"/../share/qt6/plugins");
-#endif
- const auto offscreen=plugins+"/platforms/qoffscreen.dll";
- QPluginLoader plugin(offscreen);
- if(!QFileInfo::exists(offscreen)||!plugin.metaData().value("MetaData").toObject().value("Keys").toArray().contains("offscreen")||!plugin.load()){
-  std::cerr<<"OFFSCREEN PREFLIGHT FAILED: "<<offscreen.toStdString()<<" "<<plugin.errorString().toStdString()<<"\n";return 80;
- }
- qputenv("QT_QPA_PLATFORM","offscreen");QCoreApplication::addLibraryPath(plugins);
- std::cout<<"OFFSCREEN PREFLIGHT plugin="<<offscreen.toStdString()<<"; Windows desktop forbidden\n";
+ if(!pgn::test::prepareOffscreen())return 80;
  QApplication app(argc,argv);if(app.platformName()!="offscreen")return 81;
  QTemporaryDir temporary;const auto file=temporary.path()+"/native.sqlite";
  {const FrontierGraphView requested{201,451,19.125,33.375};
@@ -185,7 +166,7 @@ int main(int argc,char** argv){
  pgn::ui::beginHistoryBatch(canvas.get());
  for(int i=4000;i<5000;++i){FrontierGapEvent e;e.runId=b;e.gpuUuid=lane.gpuUuid;e.domainId="pgn-durable-native-history";
   e.endpointLeft=QString::number(1000000+i*2000);e.gap=QString::number(1000+(i%8)*2);e.endpointRight=QString::number(1000000+i*2000+e.gap.toInt());
-  e.candidateId=e.endpointLeft+":"+e.endpointRight;e.merit=QString::number(19+i%15);e.observedUtc=QDateTime::fromMSecsSinceEpoch(base+i*1000,QTimeZone::UTC);
+  e.candidateId=e.endpointLeft+":"+e.endpointRight;e.merit=QString::number(19+i%15);e.observedUtc=QDateTime::fromMSecsSinceEpoch(base+i*1000,QTimeZone::utc());
   e.proofState="prp_pending";pgn::ui::presentGap(canvas.get(),e);}
  pgn::ui::endHistoryBatch(canvas.get());
  if(canvas->property("pgn_rich_cache_points").toInt()!=512||canvas->property("pgn_archive_pairs").toLongLong()!=5000)return 6;

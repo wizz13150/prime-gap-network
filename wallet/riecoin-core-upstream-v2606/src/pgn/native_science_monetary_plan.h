@@ -4,6 +4,7 @@
 #include <pgn/native_zero_issuance.h>
 #include <consensus/merkle.h>
 #include <pgn/candidate_block_science.h>
+#include <pgn/native_audit_settlement.h>
 namespace pgn::core {
 class NativeScienceMonetaryPlan {
     uint256 m_block;
@@ -11,20 +12,22 @@ class NativeScienceMonetaryPlan {
     ChainMonetaryPolicy m_policy;
     CScript m_recipient;
     CAmount m_gross,m_winner;
+    AuditSettlementPage m_audit;
     NativeScienceMonetaryPlan(uint256 block,IssuanceHistoryStep forward,ChainMonetaryPolicy policy,
-        CScript recipient,CAmount gross,CAmount winner):m_block(block),m_forward(std::move(forward)),
-        m_policy(std::move(policy)),m_recipient(std::move(recipient)),m_gross(gross),m_winner(winner){}
+        CScript recipient,CAmount gross,CAmount winner,AuditSettlementPage audit):m_block(block),m_forward(std::move(forward)),
+        m_policy(std::move(policy)),m_recipient(std::move(recipient)),m_gross(gross),m_winner(winner),m_audit(std::move(audit)){}
     friend std::optional<NativeScienceMonetaryPlan> PrepareNativeScienceMonetaryPlan(
-        const CCoinsView&,const CBlockIndex&,const CBlock&,const VerifiedNativeBlockScience&,const ChainMonetaryPolicy&);
+        const CCoinsView&,const CBlockIndex&,const CBlock&,const VerifiedNativeBlockScience&,const ChainMonetaryPolicy&,const NativeAuditSettlementContext*);
 public:
     const uint256& Block()const{return m_block;}
     const IssuanceHistoryStep& Forward()const{return m_forward;}
     const ChainMonetaryPolicy& Policy()const{return m_policy;}
     const CScript& Recipient()const{return m_recipient;}
+    const AuditSettlementPage& Audit()const{return m_audit;}
     CAmount Gross()const{return m_gross;}CAmount WinnerSubsidy()const{return m_winner;}
 };
 inline std::optional<NativeScienceMonetaryPlan> PrepareNativeScienceMonetaryPlan(
-    const CCoinsView& view,const CBlockIndex& parent,const CBlock& block,const VerifiedNativeBlockScience& science,const ChainMonetaryPolicy& policy){
+    const CCoinsView& view,const CBlockIndex& parent,const CBlock& block,const VerifiedNativeBlockScience& science,const ChainMonetaryPolicy& policy,const NativeAuditSettlementContext* context=nullptr){
     if(!NativeMonetaryPolicyOnBranch(view,parent,policy)||block.hashPrevBlock!=parent.GetBlockHash()||
        science.Block()!=block.GetHash()||BlockMerkleRoot(block)!=block.hashMerkleRoot)return {};
     const auto& reservation=science.Science().Science().Reservation();
@@ -68,9 +71,10 @@ inline std::optional<NativeScienceMonetaryPlan> PrepareNativeScienceMonetaryPlan
     auto after=*before;after.epochs=epochs;after.tip=block.GetHash();after.minted=total_after->CumulativeMinted();after.promised=total_after->Promised();
     after.partition->ordinary_minted=ordinary_after->CumulativeMinted();after.partition->ordinary_promised=ordinary_after->Promised();
     after.pools->near_miss+=split->near_miss;after.pools->audit+=split->audit;
+    const auto audit=PrepareNativeAuditSettlement(view,parent,policy,context,after);if(!audit)return {};
     IssuanceHistoryStep forward{IssuanceDirection::Forward,IssuanceCommit{before,after}};
     if(!forward.Valid()||after.minted-before->minted+after.promised-before->promised!=gross)return {};
-    return NativeScienceMonetaryPlan{block.GetHash(),forward,policy,request.reward,gross,split->winner};
+    return NativeScienceMonetaryPlan{block.GetHash(),forward,policy,request.reward,gross,split->winner,*audit};
 }
 // actual_fees MUST come only from maintained native CheckTxInputs, never an RPC,
 // block sender or this arithmetic object. This check alone never writes coins.
@@ -78,12 +82,6 @@ inline bool VerifyNativeScienceCoinbase(const NativeScienceMonetaryPlan& plan,co
     if(block.GetHash()!=plan.Block()||BlockMerkleRoot(block)!=block.hashMerkleRoot||block.vtx.empty()||!block.vtx.front()||!block.vtx.front()->IsCoinBase())return false;
     const auto fees=QuoteNativeWinnerFees(actual_fees,plan.Policy().Definition());
     if(!fees||*fees>PGN_MAX_SUPPLY_ATOMIC-plan.WinnerSubsidy())return false;
-    const CAmount expected=plan.WinnerSubsidy()+*fees;unsigned paid{};
-    for(const auto& output:block.vtx.front()->vout){
-        if(output.nValue<0)return false;
-        if(output.nValue==0)continue;
-        if(++paid>1||output.scriptPubKey!=plan.Recipient()||output.nValue!=expected)return false;
-    }
-    return paid==(expected>0?1U:0U);
+    return VerifyAuditSettlementOutputs(plan.Audit(),*block.vtx.front(),plan.Recipient(),plan.WinnerSubsidy()+*fees);
 }
 }

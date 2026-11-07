@@ -1,9 +1,8 @@
 """Canonical native Gold proof assembly; Core alone verifies and accepts payment."""
 import base64
 import json
-import os
-import subprocess
 from pathlib import Path
+from horizon_bounded_child import run as bounded_child
 
 def compact(number):
     if not 0 <= number < 1 << 64:
@@ -55,10 +54,13 @@ def build(builder, work, computed, lower):
     if not builder.is_file():
         raise RuntimeError("The native exact evidence builder is unavailable")
     request = dict(work=work, computed=computed, lower_prime=str(lower))
-    result = subprocess.run([str(builder)], input=json.dumps(request).encode(), capture_output=True, timeout=40, creationflags=0x08000000 if os.name == "nt" else 0)
-    if len(result.stdout) > 4 * 1024 * 1024 or len(result.stderr) > 16384:
-        raise ValueError("Native proof output exceeds budget")
-    evidence = json.loads(result.stdout)
+    result = bounded_child([str(builder)], json.dumps(request,allow_nan=False).encode())
+    try:
+        evidence = json.loads(result.stdout)
+    except (ValueError,UnicodeError) as error:
+        raise RuntimeError("The native proof helper returned no valid evidence") from error
+    if not isinstance(evidence,dict):
+        raise ValueError("Native proof evidence must be an object")
     if result.returncode or evidence.get("verified") is not True:
         raise RuntimeError(evidence.get("error", "Exact gap proof was not produced"))
     return evidence

@@ -2,7 +2,7 @@
 import ctypes,hashlib,json,os,queue,subprocess,threading,time
 from collections import deque
 from runtime_metrics import system_cpu_counters
-HASHES={'nt':('cfec984d67fa4e4df54baf7421a7925c12b0453bfe900a675f72cf5a61b78a04','6df31ea78036ed3ef8ab0b5b8f70401252fdfaa9cd940ccdca6a445a2ac619f0'),'posix':('5b53608ec75e72763aa1b747c2e107d00f32a1413fb2e98ea7d5401dc7f5f1a1','4f853f8ac6bd6466f109d6538c2a85c5c046994b6323283f7340afb41877fa4e')}
+HASHES={'nt':('2745fd47c0bfd9314bb97fb4f666252c3aebd62ea3d2b40460fa21d3f18acf70','6df31ea78036ed3ef8ab0b5b8f70401252fdfaa9cd940ccdca6a445a2ac619f0'),'posix':('e7002438518160cbfdc3eeb12f702a3183c93432340ca2a4cb1378d6ac76c0d3','4f853f8ac6bd6466f109d6538c2a85c5c046994b6323283f7340afb41877fa4e')}
 def verify(path,sha):
  if hashlib.sha256(path.read_bytes()).hexdigest()!=sha:raise ValueError('Native payload hash mismatch')
 def inventory(path):
@@ -40,9 +40,10 @@ class Job:
  def close(self):
   if self.handle:self.k.CloseHandle(self.handle);self.handle=None
 class Worker:
- def __init__(self,path,cpu,simd,events,job):
+ def __init__(self,path,cpu,simd,events,job,page_mode='off'):
   self.cpu=cpu;self.task=None;self.ready=False;self.stopped=False;self.positions=0;self.native_seconds=0.0
-  self.p=subprocess.Popen([str(path),'--audit-only','--cpu',str(cpu)]+(['--simd4']if simd else [])+['--tiled'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,creationflags=(0x08000000|0x00004000) if os.name=='nt'else 0)
+  self.memory_pages={};self.memory_sample_time=0.;self.memory_query_pending=False
+  self.p=subprocess.Popen([str(path),'--owned-piece','--cpu',str(cpu)]+(['--simd4']if simd else [])+['--tiled','--large-pages='+page_mode],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,creationflags=(0x08000000|0x00004000) if os.name=='nt'else 0)
   job.assign(self.p)
   def read():
    try:

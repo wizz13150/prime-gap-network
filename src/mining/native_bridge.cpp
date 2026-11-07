@@ -433,7 +433,7 @@ void NativeBridge::receive(const QJsonObject& packet,std::optional<qint64> resou
    event.runId=row.value("run").toString();event.gpuUuid=uuid;event.domainId="pgn-durable-native-history";
    event.sequence=row.value("id").toInteger();event.endpointLeft=row.value("p").toString();event.endpointRight=row.value("q").toString();
    event.gap=row.value("gap").toString();event.merit=row.value("merit").toString();event.meritDecimal=event.merit;
-   if(row.value("unix_ts").isDouble())event.observedUtc=QDateTime::fromSecsSinceEpoch(row.value("unix_ts").toInteger(),Qt::UTC);
+   if(row.value("unix_ts").isDouble())event.observedUtc=QDateTime::fromSecsSinceEpoch(row.value("unix_ts").toInteger(),QTimeZone::utc());
    event.candidateId=event.endpointLeft+":"+event.endpointRight;event.proofState="prp_pending";
    event.epistemicStatus="DURABLE_SOURCE_GMP_PRP_ASSERTION_INDEPENDENT_PROOF_PENDING";
    if(onGap)onGap(event);
@@ -573,7 +573,7 @@ void NativeBridge::receive(const QJsonObject& packet,std::optional<qint64> resou
    FrontierGapEvent event;event.runId=run;event.gpuUuid=uuid;event.domainId="pgn-live-source";event.sequence=++sequence_;
    static const QRegularExpression sourceTime("(?:^| )unix_ts=(\\d+)(?: |$)");
    const auto timestamp=sourceTime.match(line);
-   if(timestamp.hasMatch())event.observedUtc=QDateTime::fromSecsSinceEpoch(timestamp.captured(1).toLongLong(),Qt::UTC);
+   if(timestamp.hasMatch())event.observedUtc=QDateTime::fromSecsSinceEpoch(timestamp.captured(1).toLongLong(),QTimeZone::utc());
    event.gap=match.captured(2);event.merit=match.captured(1);event.meritDecimal=event.merit;event.endpointLeft=match.captured(3);event.endpointRight=match.captured(4);
    event.candidateId=event.endpointLeft+":"+event.endpointRight;event.proofState="prp_pending";event.epistemicStatus="SOURCE_GMP_PRP_ASSERTION_INDEPENDENT_PROOF_PENDING";
    if(onGap)onGap(event);

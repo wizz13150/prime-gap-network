@@ -148,6 +148,8 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "getresult", 1, "detailed" },
     { "getchaintxstats", 0, "nblocks" },
     { "gettransaction", 1, "verbose" },
+    { "getpgnexplorerview", 3, "offset" },
+    { "getpgnexplorerview", 4, "limit" },
     { "getrawtransaction", 1, "verbosity" },
     { "getrawtransaction", 1, "verbose" },
     { "createrawtransaction", 0, "inputs" },

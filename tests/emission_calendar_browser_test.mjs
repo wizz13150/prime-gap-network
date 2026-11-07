@@ -3,10 +3,10 @@ import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {createRequire} from 'node:module';
 import assert from 'node:assert/strict';
-const require=createRequire(import.meta.url);
+const require=createRequire('C:/Users/toto/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/');
 const {chromium}=require('playwright');
 const source=path.resolve(process.argv[2]),image=path.resolve(process.argv[3]);
-const browser=await chromium.launch({headless:true,...(process.env.HORIZON_BROWSER_EXECUTABLE?{executablePath:process.env.HORIZON_BROWSER_EXECUTABLE}:{})});
+const browser=await chromium.launch({headless:true,executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'});
 const page=await browser.newPage({viewport:{width:760,height:1200}});
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
 try {

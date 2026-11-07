@@ -6,25 +6,27 @@ from pgn_session import atomic_bytes
 from report_commitment import canonical_bytes, seal_report, verify_report_reveal, validate_computed_report
 
 class ReportOutbox:
-    def __init__(self, root, maximum=4):
+    def __init__(self, root, maximum=4, *, discoverer=None):
         self.root = Path(root)
         self.file = self.root / "report-outbox.json"
         self.maximum = maximum
+        self.discoverer = discoverer
         self.lock = threading.RLock()
         self.condition = threading.Condition(self.lock)
 
     def _read(self):
-        if not self.file.exists():
-            return []
-        if self.file.stat().st_size > 32768:
-            raise ValueError("Report outbox exceeds its byte budget")
-        entries = json.loads(self.file.read_bytes())
-        if not isinstance(entries, list) or len(entries) > self.maximum:
-            raise ValueError("Report outbox exceeds its item budget")
-        ids = [entry["work"]["request_id"] for entry in entries]
-        if len(ids) != len(set(ids)):
-            raise ValueError("Duplicated report outbox identity")
-        return entries
+        with self.lock:
+            if not self.file.exists():
+                return []
+            if self.file.stat().st_size > 32768:
+                raise ValueError("Report outbox exceeds its byte budget")
+            entries = json.loads(self.file.read_bytes())
+            if not isinstance(entries, list) or len(entries) > self.maximum:
+                raise ValueError("Report outbox exceeds its item budget")
+            ids = [entry["work"]["request_id"] for entry in entries]
+            if len(ids) != len(set(ids)):
+                raise ValueError("Duplicated report outbox identity")
+            return entries
 
     def _save(self, entries):
         raw = canonical_bytes(entries) + b"\n"
@@ -50,7 +52,8 @@ class ReportOutbox:
             if sealed["body"]["request_id"] != work["request_id"] or sealed["body"]["ticket"] != ticket:
                 raise ValueError("Retained report belongs to another request")
         else:
-            sealed = seal_report(computed, work)
+            name = self.discoverer() if self.discoverer is not None else None
+            sealed = seal_report(computed, work, discoverer=name)
             atomic_bytes(file, canonical_bytes(sealed) + b"\n")
         entry = dict(work=work, report_root=sealed["report_root"])
         with self.condition:

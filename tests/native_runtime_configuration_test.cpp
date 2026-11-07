@@ -25,6 +25,7 @@ struct Fixture {
     QTemporaryDir temp;QString program,key,config;NativeRuntimePaths paths;
     Fixture(){check(temp.isValid(),"OWN temporary fixture only");program=temp.filePath("fake-ssh-NOT-EXECUTED.exe");key=temp.filePath("PUBLIC-DATA-key-path-standin");config=temp.filePath("config.json");
         write(program,"PUBLIC FIXTURE NOT AN EXECUTABLE");write(key,"PUBLIC FIXTURE NOT A PRIVATE KEY");
+        check(QFile::setPermissions(program,QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner),"own fixture executable bit, image is never run");
         paths={temp.filePath("missing/booking.sqlite"),temp.filePath("missing/history.sqlite"),temp.filePath("missing/mirror"),temp.filePath("missing/modules.sqlite"),"C:\\REMOTE-LABEL-NOT-LOCAL\\current-job\\checkpoint"};
     }
     QJsonObject object(){return {{"schema","pgn-existing-host-transport-recovery-1"},{"research",QJsonObject{{"cuda",QJsonObject{{"host","wizz@wizz"},{"key",key}}}}},{"qualification","ORIGINAL opaque claim; NOT current connection/admission $(never-execute)"}};}
@@ -43,7 +44,7 @@ void successAndProvenance(){
     Fixture f;const auto raw=" \n"+json(f.object())+"\r\n";const auto r=decodeNativeRuntimeConfiguration(raw,f.program,f.paths,"ORIGINAL source reference");
     check(r.available()&&r.error.isEmpty()&&r.errorCode.isEmpty(),"strict actual recovery schema available as data, not Ready");const auto& c=*r.configuration;
     check(c.endpoint.executable==f.program&&c.endpoint.keyFile==f.key&&c.endpoint.host=="wizz"&&c.endpoint.user=="wizz"&&c.endpoint.port==22,"exact explicit DIRECT endpoint, only legacy port22");
-    check(c.sourceUtf8==raw&&c.sourceSha256==sha(raw)&&c.sourcePath=="ORIGINAL source reference"&&c.qualificationOpaque==f.object().value("qualification"),"original bytes/hash/opaque historical qualification unchanged");
+    check(c.sourceUtf8==raw&&c.sourceSha256==sha(raw)&&c.sourcePath=="ORIGINAL source reference"&&QJsonValue(c.qualificationOpaque)==f.object().value("qualification"),"original bytes/hash/opaque historical qualification unchanged");
     check(c.paths.bookingDatabase==f.paths.bookingDatabase&&c.paths.sourceHistoryDatabase==f.paths.sourceHistoryDatabase&&c.paths.moduleRegistryDatabase==f.paths.moduleRegistryDatabase&&c.paths.sourceMirrorDirectory==f.paths.sourceMirrorDirectory&&c.paths.checkpointLabel==f.paths.checkpointLabel,"all5paths explicit, remote label not local-opened/statrequired");
     const auto command=makeSshObservationCommand(c.endpoint,SshObservationRequest{});const auto args=command.arguments;
     for(const auto& token:QStringList{"none","StrictHostKeyChecking=yes","UpdateHostKeys=no","CheckHostIP=no","ClearAllForwardings=yes","PermitLocalCommand=no","RequestTTY=no","BatchMode=yes"})check(args.contains(token),"existing DIRECT/trust/forwarding constraints unchanged");

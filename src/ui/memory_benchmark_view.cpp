@@ -1,4 +1,6 @@
+#include "app/horizon_user_paths.h"
 #include "ui/memory_benchmark_view.h"
+#include "ui/position_formats.h"
 #include "telemetry.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -130,7 +132,7 @@ private:
     }
     void step() {
         const auto point=search_.next();if(!point){finish({});return;}
-        timer_->start(90000);status_->setText(QString("%1 · point %2 · %3 · fixed work %4 positions + warmup %5").arg(point->phase==mining::MemoryBenchmarkPhase::Probe?"SHORT NATIVE PROBE":"NATIVE A-B-B-A CONFIRMATION").arg(point->sequence+1).arg(point->control?"original-policy control":QString::number(point->memoryMhz)+" MHz").arg(point->measuredPositions).arg(point->warmupPositions));
+        timer_->start(90000);status_->setText(QString("%1 · point %2 · %3 · fixed work %4 positions + warmup %5").arg(point->phase==mining::MemoryBenchmarkPhase::Probe?"SHORT NATIVE PROBE":"NATIVE A-B-B-A CONFIRMATION").arg(point->sequence+1).arg(point->control?"original-policy control":QString::number(point->memoryMhz)+" MHz").arg(positionFormats(QString::number(point->measuredPositions)).inlineText()).arg(positionFormats(QString::number(point->warmupPositions)).inlineText()));
         const auto session=session_;const int sequence=point->sequence;QPointer<MemoryView> guard(this);
         executor_->measure(session,*point,[guard,session,sequence](mining::MemoryBenchmarkSample sample,QString error){
             if(!guard||guard->session_!=session||guard->state_!=Measuring)return;
@@ -191,11 +193,11 @@ private:
             {"minimum_memory_mhz",sessionTarget_.minimumMemoryMhz},{"maximum_memory_mhz",sessionTarget_.maximumMemoryMhz},{"point_count",sessionTarget_.pointCount},{"core_policy","AUTO"}});
         receipt.insert("session_state",restored?"RESTORED":state_==Acquiring?"ACQUIRING":state_==Measuring?"MEASURING":"RESTORE_PENDING");
         setProperty("pgn_benchmark_memory_receipt",receipt);setProperty("pgn_benchmark_memory_error",error_);
-        const QString directory=root_+"/data/runtime/benchmarks/memory";
+        const QString directory=pgn::app::mutableDataRoot(root_)+"/runtime/benchmarks/memory";
         if(!QDir().mkpath(directory)){saveError_="Cannot create benchmark evidence directory";return;}
         saveError_=writeReceipt(receiptPath(),receipt);
     }
-    QString receiptPath() const {return root_+"/data/runtime/benchmarks/memory/"+session_+".json";}
+    QString receiptPath() const {return pgn::app::mutableDataRoot(root_)+"/runtime/benchmarks/memory/"+session_+".json";}
     QString root_,session_,error_,saveError_;State state_{Idle};MemoryBenchmarkTarget target_,sessionTarget_;
     struct ObservedTarget {MemoryBenchmarkTarget target;QDateTime utc;};QHash<QString,ObservedTarget> sources_;QComboBox* devices_{};
     QSpinBox *minimum_{},*maximum_{},*count_{};

@@ -1,5 +1,17 @@
+#include "app/horizon_user_paths.h"
+#include "app/horizon_startup.h"
+#include "app/horizon_update_selector.h"
+#include "app/horizon_ui_lease.h"
+#include "update/update_paths.h"
+#include "mining/cpu_normal_resources.h"
+#include "ui/mining_frame_selection.h"
+#include "mining/network_controller_recovery.h"
+#include "mining/network_control_phase.h"
+#include <QElapsedTimer>
+#include "ui/vanity_view.h"
 #include "ui/mining_canvas.h"
 #include "ui/public_profile_button.h"
+#include "ui/public_profile_control.h"
 #include "ui/mining_results_view.h"
 #include "ui/mining_ticket_progress.h"
 #include "ui/mining_worker_close_guard.h"
@@ -18,6 +30,8 @@
 #include "ui/archive_browser.h"
 #include "ui/wallet_core_view.h"
 #include "wallet/core_link_state.h"
+#include "wallet/runtime_paths.h"
+#include "ui/component_status_strip.h"
 #include "ui/community_view.h"
 #include "ui/network_work_view.h"
 #include "ui/engine_tools_view.h"
@@ -94,25 +108,32 @@ int main(int argc,char** argv) {
  // Owned-process lifecycle endpoint. Normal close preserves the user's STOP
  // contract; developer maintenance is a DISTINCT observer-only drain, never
  // an implicit normal Close/Quit interception during UI replacement.
- if((argc==4&&(QString::fromLocal8Bit(argv[1])=="--show-owned"||QString::fromLocal8Bit(argv[1])=="--start-owned"))||(argc==3&&(QString::fromLocal8Bit(argv[1])=="--close-owned"||QString::fromLocal8Bit(argv[1])=="--maintenance-close-owned"||QString::fromLocal8Bit(argv[1])=="--inspect-owned"||QString::fromLocal8Bit(argv[1])=="--audit-graph-owned"||QString::fromLocal8Bit(argv[1])=="--audit-values-owned"))){
+ const auto ownedVerb=argc>1?QString::fromLocal8Bit(argv[1]):QString{};
+ const bool ownedArgument=QStringList{"--show-owned","--start-owned","--stop-owned"}.contains(ownedVerb);
+ const bool ownedSimple=QStringList{"--close-owned","--update-close-owned","--maintenance-close-owned","--inspect-owned","--audit-graph-owned","--audit-values-owned"}.contains(ownedVerb);
+ if(ownedArgument||ownedSimple){
+  // Malformed control commands must not fall through into a normal GUI launch.
+  if(argc!=(ownedArgument?4:3))return 2;
   // IPC clients need no GUI/platform plugin. This is still the same program;
   // only the actual window owner initializes QApplication below.
   QCoreApplication app(argc,argv);
   bool ok=false;const auto pid=QString::fromLocal8Bit(argv[2]).toLongLong(&ok);if(!ok||pid<=0)return 2;
   const bool start=QString::fromLocal8Bit(argv[1])=="--start-owned";
+  const bool stop=QString::fromLocal8Bit(argv[1])=="--stop-owned";
   const bool maintenance=QString::fromLocal8Bit(argv[1])=="--maintenance-close-owned";
-  if(start){const auto id=QString::fromLocal8Bit(argv[3]);const QUuid parsed(id);if(parsed.isNull()||parsed.toString(QUuid::WithoutBraces)!=id)return 2;}
+  const bool updateClose=QString::fromLocal8Bit(argv[1])=="--update-close-owned";
+  if(start||stop){const auto id=QString::fromLocal8Bit(argv[3]);const QUuid parsed(id);if(parsed.isNull()||parsed.toString(QUuid::WithoutBraces)!=id)return 2;}
   QLocalSocket socket;socket.connectToServer("pgn-horizon-"+QString::number(pid));
   if(!socket.waitForConnected(2000))return 3;
   const bool inspect=QString::fromLocal8Bit(argv[1])=="--inspect-owned";
   const bool audit=QString::fromLocal8Bit(argv[1])=="--audit-graph-owned";
   const bool valuesAudit=QString::fromLocal8Bit(argv[1])=="--audit-values-owned";
   const bool show=QString::fromLocal8Bit(argv[1])=="--show-owned";
-  const QByteArray command=start?QByteArray("start:")+QByteArray(argv[3])+"\n":show?QByteArray("show:")+QByteArray(argv[3])+"\n":maintenance?QByteArray("maintenance_close\n"):valuesAudit?QByteArray("audit_values\n"):audit?QByteArray("audit_graph\n"):inspect?QByteArray("inspect\n"):QByteArray("close\n");
-  if(command.size()>63)return 2;socket.write(command);socket.flush();if(!socket.waitForReadyRead(start?15000:(audit||valuesAudit)?8000:2000))return 4;
+  const QByteArray command=(start||stop)?QByteArray(start?"start:":"stop:")+QByteArray(argv[3])+"\n":show?QByteArray("show:")+QByteArray(argv[3])+"\n":maintenance?QByteArray("maintenance_close\n"):updateClose?QByteArray("update_close\n"):valuesAudit?QByteArray("audit_values\n"):audit?QByteArray("audit_graph\n"):inspect?QByteArray("inspect\n"):QByteArray("close\n");
+  if(command.size()>63)return 2;socket.write(command);socket.flush();if(!socket.waitForReadyRead((start||stop)?15000:(audit||valuesAudit)?8000:2000))return 4;
   auto response=socket.readAll();
   while(!response.endsWith('\n')&&response.size()<131072){if(!socket.waitForReadyRead(2000))return 4;response+=socket.readAll();}
-  if(inspect||audit||valuesAudit||show||start||maintenance){QFile out;if(!out.open(stdout,QIODevice::WriteOnly))return 7;out.write(response);return response.startsWith('{')?0:5;}
+  if(inspect||audit||valuesAudit||show||start||stop||maintenance||updateClose){QFile out;if(!out.open(stdout,QIODevice::WriteOnly))return 7;out.write(response);return response.startsWith('{')?0:5;}
   return response.startsWith("closing")?0:5;
  }
 #ifdef _WIN32
@@ -123,8 +144,8 @@ int main(int argc,char** argv) {
   QWidget* inspectCanvas=nullptr;QWidget* inspectArchive=nullptr;QWidget* inspectWallet=nullptr;QWidget* inspectEngineConfiguration=nullptr;QWidget* inspectRecords=nullptr;
  QLabel* inspectRuntimeStatus=nullptr;
  std::function<QJsonObject(const QString&)> showOwned;
- std::function<QJsonObject(const QString&)> startOwned;
- std::function<QJsonObject()> maintenanceOwned;
+ std::function<QJsonObject(const QString&)> startOwned,stopOwned;
+ std::function<QJsonObject()> maintenanceOwned,updateOwned;
  std::function<void()> closeOwned;
  QLocalServer lifecycle;lifecycle.setSocketOptions(QLocalServer::UserAccessOption);
  struct OwnedIpcAudit {unsigned events{};qsizetype bytes{};quint64 connections{};} ownedIpcAudit;
@@ -153,13 +174,17 @@ int main(int argc,char** argv) {
    const auto command=socket->readLine(64);
    if(command=="maintenance_close\n"&&maintenanceOwned){
     const auto response=maintenanceOwned();socket->write(QJsonDocument(response).toJson(QJsonDocument::Compact)+"\n");socket->flush();
+   }else if(command=="update_close\n"&&updateOwned){
+    socket->write(QJsonDocument(updateOwned()).toJson(QJsonDocument::Compact)+"\n");socket->flush();
    }else if(command=="close\n"){
     if(!closeOwned){socket->write("not-ready\n");socket->flush();return;}
     socket->write("closing\n");socket->flush();QTimer::singleShot(50,&app,[&closeOwned]{closeOwned();});
-   }else if(command.startsWith("start:")&&startOwned){
-    const auto id=QString::fromUtf8(command.mid(6)).trimmed();const QUuid parsed(id);
+   }else if(command.startsWith("start:")||command.startsWith("stop:")){
+    const bool start=command.startsWith("start:");const auto id=QString::fromUtf8(command.mid(start?6:5)).trimmed();const QUuid parsed(id);
+    const auto& action=start?startOwned:stopOwned;
     const auto result=parsed.isNull()||parsed.toString(QUuid::WithoutBraces)!=id
-        ?QJsonObject{{"request_delivered",false},{"error","Canonical request UUID required"}}:startOwned(id);
+        ?QJsonObject{{"request_delivered",false},{"error","Canonical request UUID required"}}
+        :!action?QJsonObject{{"request_delivered",false},{"error","Mining controller is not ready"}}:action(id);
     socket->write(QJsonDocument(result).toJson(QJsonDocument::Compact)+"\n");socket->flush();
    }else if(command.startsWith("show:")&&showOwned){
     const auto result=showOwned(QString::fromUtf8(command.mid(5)).trimmed());socket->write(QJsonDocument(result).toJson(QJsonDocument::Compact)+"\n");socket->flush();
@@ -204,7 +229,7 @@ int main(int argc,char** argv) {
     if(auto* results=inspectCanvas->window()->findChild<QWidget*>("pgn-mining-results")){
      QJsonArray tables;for(const auto* name:{"pgn-results-best","pgn-results-recent","pgn-results-gap-statistics","pgn-results-merit-statistics"})if(auto* table=results->findChild<QTableWidget*>(name)){int pixels=0;for(int i=0;i<table->rowCount();++i)pixels+=table->rowHeight(i);int columns=0;for(int i=0;i<table->columnCount();++i)columns+=table->columnWidth(i);tables.append(QJsonObject{{"name",name},{"rows",table->rowCount()},{"viewport_height",table->viewport()->height()},{"row_pixels",pixels},{"viewport_width",table->viewport()->width()},{"column_pixels",columns}});}receipt.insert("responsive_tables",tables);receipt.insert("auto_rows",results->property("pgn_results_fitted_rows").toInt());
     }
-    if(auto* rail=inspectCanvas->window()->findChild<QWidget*>("pgn-ticket-progress-rail")){receipt.insert("ticket_progress",QJsonValue::fromVariant(rail->property("pgn_ticket_progress_fraction")));receipt.insert("ticket_animation_active",rail->property("pgn_ticket_animation_active").toBool());receipt.insert("ticket_animation_phase",QJsonValue::fromVariant(rail->property("pgn_ticket_animation_phase")));}
+    if(auto* rail=inspectCanvas->window()->findChild<QWidget*>("pgn-ticket-progress-rail")){receipt.insert("ticket_progress",QJsonValue::fromVariant(rail->property("pgn_ticket_progress_fraction")));receipt.insert("ticket_animation_active",rail->property("pgn_ticket_animation_active").toBool());receipt.insert("ticket_animation_phase",QJsonValue::fromVariant(rail->property("pgn_ticket_animation_phase")));for(const auto* name:{"pgn_ticket_flow_received","pgn_ticket_flow_coalesced","pgn_ticket_animation_paint_ns","pgn_ticket_animation_paint_max_ns","pgn_ticket_collection_size","pgn_ticket_collection_departing","pgn_ticket_deliveries","pgn_ticket_landing_error"})receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(rail->property(name)));}
     if(auto* work=inspectCanvas->window()->findChild<QWidget*>("pgn-network-work-explorer"))receipt.insert("selected_ticket_evidence",work->property("pgn_selected_ticket_evidence").toJsonObject());
     if(auto* explorer=inspectCanvas->window()->findChild<QWidget*>("pgn-block-explorer"))receipt.insert("selected_explorer_block",explorer->property("pgn_explorer_selected_block").toJsonObject());
     const auto frame=inspectCanvas->window()->frameGeometry();
@@ -220,7 +245,9 @@ int main(int argc,char** argv) {
     receipt.insert("card_layout",inspectCanvas->property("pgn_card_layout").toJsonArray());
     if(auto* tab=inspectCanvas->window()->findChild<QPushButton*>("pgn-primary-mining-tab"))receipt.insert("pgn_tab_device_states",QJsonValue::fromVariant(tab->property("miningCardStates")));
     receipt.insert("cpu_controllers",inspectCanvas->property("pgn_cpu_controller_states").toJsonObject());
-    for(const auto* name:{"pgn_cpu_validation_result","pgn_cpu_validation_result_saved","pgn_cpu_audit_network_status","pgn_worker_stream_state","pgn_worker_stream_bytes","pgn_worker_stream_packets","pgn_worker_stream_phase","pgn_worker_stream_notice","pgn_worker_stream_error","pgn_total_expanded","pgn_total_gpu_state","pgn_total_cpu_state","pgn_cpu_inventory_error","pgn_cpu_card_metrics","pgn_cpu_control_devices"})receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(inspectCanvas->property(name)));
+    if(auto* capture=inspectCanvas->window()->findChild<QWidget*>("pgn-test-diagnostics"))receipt.insert("diagnostic_capture",QJsonObject{{"samples",capture->property("pgn_capture_samples").toInt()},{"bytes",capture->property("pgn_capture_bytes").toInt()},{"saved",QJsonValue::fromVariant(capture->property("pgn_capture_saved"))},{"status",capture->property("pgn_capture_status").toString()}});
+    if(auto* summary=inspectCanvas->window()->findChild<QWidget*>("pgn-session-statistics"))receipt.insert("mining_network_summary",summary->property("pgn_network_summary").toJsonObject());
+    for(const auto* name:{"pgn_cpu_validation_result","pgn_cpu_validation_result_saved","pgn_cpu_audit_network_status","pgn_worker_stream_state","pgn_worker_stream_pid","pgn_worker_reconnect_count","pgn_network_desired_on","pgn_worker_stream_bytes","pgn_worker_stream_packets","pgn_worker_stream_phase","pgn_worker_stream_notice","pgn_worker_stream_error","pgn_total_expanded","pgn_total_gpu_state","pgn_total_cpu_state","pgn_cpu_inventory_error","pgn_cpu_card_metrics","pgn_cpu_footer_geometry","pgn_gauge_label_rects","pgn_cpu_memory_pages","pgn_cpu_control_devices"})receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(inspectCanvas->property(name)));
     if(inspectRuntimeStatus)receipt.insert("pgn_runtime_status",inspectRuntimeStatus->text());
     for(const auto* name:{"pgn_native_runtime_started","pgn_native_inventory_type","pgn_native_inventory_accepted","pgn_native_inventory_error","pgn_native_inventory_lineage","pgn_native_hardware_availability","pgn_native_hardware_notice","pgn_native_source_attempt","pgn_application_close_ready","pgn_application_close_status","pgn_application_start_status","pgn_native_timing_events","pgn_native_timing_bytes","pgn_native_timing_dropped"})
      receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(inspectCanvas->property(name)));
@@ -233,12 +260,16 @@ int main(int argc,char** argv) {
      if(auto* results=inspectCanvas->window()->findChild<QWidget*>("pgn-mining-results"))for(const auto* name:{"pgn_results_points","pgn_results_runs","pgn_results_best_rows","pgn_results_recent_rows","pgn_results_scope","pgn_results_loading","pgn_results_error"})receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(results->property(name)));
      if(auto* summary=inspectCanvas->window()->findChild<QWidget*>("pgn-session-statistics"))for(const auto* name:{"pgn_ticket_productivity","pgn_productivity_regions","pgn_summary_scope","pgn_summary_range_regions"})receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(summary->property(name)));
      if(auto* network=inspectCanvas->window()->findChild<QLabel*>("pgn-global-network-status"))receipt.insert("pgn_global_network_status",network->text());
+     receipt.insert("pgn_update_shutdown_error",inspectCanvas->window()->property("pgn_update_shutdown_error").toString());
+     for(const auto* name:{"pgn_update_application_root","pgn_update_data_root","pgn_update_genesis","pgn_update_explicit_root"})receipt.insert(name,QJsonValue::fromVariant(inspectCanvas->window()->property(name)));
     for(const auto* name:{"pgn_wallet_connected","pgn_wallet_height","pgn_wallet_genesis","pgn_wallet_observed_utc"})
      receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(inspectCanvas->property(name)));
     if(inspectWallet)for(const auto* name:{"pgn_core_link_state","pgn_core_link_detail","pgn_core_link_transitions","pgn_wallet_frontend_loaded","pgn_wallet_frontend_error","pgn_wallet_genuine_page_count","pgn_wallet_embedded","pgn_wallet_embedded_pid","pgn_network_block_rows","pgn_network_leases","pgn_network_height","pgn_network_selected_transactions","pgn_network_ticket_width"})
      receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(inspectWallet->property(name)));
     if(inspectWallet){
-     const auto* history=inspectWallet->findChild<QWidget*>("pgn-wallet-difficulty-history");receipt.insert("pgn_wallet_difficulty_view_present",history!=nullptr);
+     const auto* history=inspectWallet->findChild<QWidget*>("pgn-wallet-difficulty-history");if(!history)history=inspectWallet->findChild<QWidget*>("pgn-network-metrics-history");
+     if(history){auto source=history->property("pgn_network_metrics_snapshot").toJsonObject();const auto points=source.take("points").toArray();receipt.insert("pgn_network_metrics_summary",source);receipt.insert("pgn_network_metrics_points",points.size());receipt.insert("pgn_network_metrics_last",points.isEmpty()?QJsonObject{}:points.last().toObject());receipt.insert("pgn_network_metrics_error",history->property("pgn_network_metrics_error").toString());receipt.insert("pgn_merit_plot_bounds",QJsonValue::fromVariant(history->property("pgn_merit_plot_bounds")));receipt.insert("pgn_rate_plot_bounds",QJsonValue::fromVariant(history->property("pgn_rate_plot_bounds")));}
+     receipt.insert("pgn_wallet_difficulty_view_present",history!=nullptr);
      if(history)for(const auto* name:{"pgn_wallet_difficulty_points","pgn_wallet_difficulty_missing","pgn_wallet_difficulty_frame_points","pgn_wallet_difficulty_observed_utc","pgn_wallet_difficulty_source_error"})receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(history->property(name)));
     }
     if(inspectEngineConfiguration){
@@ -260,21 +291,77 @@ int main(int argc,char** argv) {
  });
  if(!lifecycle.listen("pgn-horizon-"+QString::number(QCoreApplication::applicationPid())))return 6;
  const auto applicationDirectory=QCoreApplication::applicationDirPath();
- const QString root=argc>1&&!QString::fromLocal8Bit(argv[1]).startsWith("--")?QString::fromLocal8Bit(argv[1]):
-  QFileInfo::exists(applicationDirectory+"/Core/core-template.json")?applicationDirectory:applicationDirectory+"/..";
- QString config=argc>2&&!QString::fromLocal8Bit(argv[2]).startsWith("--")?QString::fromLocal8Bit(argv[2]):QString{};
- // Old service/viewer coordination is retired, not silently redirected to a
- // writable runtime. A historical service receipt is never a live backend.
- QFile installedCore(root+"/Core/core-template.json");
- const bool installedTestnet=installedCore.open(QIODevice::ReadOnly)&&installedCore.size()<=32768&&
-  QJsonDocument::fromJson(installedCore.readAll()).object().value("deployment").toObject().value("chain")=="test";
- installedCore.close();
- const bool testnetMode=QCoreApplication::arguments().contains("--testnet")||installedTestnet;
- const bool legacyResidentViewer=QCoreApplication::arguments().contains("--resident-viewer")||QCoreApplication::arguments().contains("--observe-only");
- if(config.isEmpty()&&QFile::exists(root+"/evidence/native-transport-recovered-20261012.json"))
+ const auto startupArguments=QCoreApplication::arguments();
+ const QString root=pgn::app::resolveHorizonApplicationRoot(startupArguments,applicationDirectory);
+ QFile installedCore(root+"/Core/core-template.json");std::optional<QByteArray> installedTemplate;
+ if(installedCore.exists())installedTemplate=installedCore.open(QIODevice::ReadOnly)?installedCore.read(32769):QByteArray{};
+ const auto startup=pgn::app::resolveHorizonStartup(startupArguments,installedTemplate);installedCore.close();
+ const bool testnetMode=startup.testnet;
+ const bool explicitLegacyRoot=startupArguments.size()>1&&!startupArguments[1].startsWith("--");
+ if(!pgn::app::bindMutableDataRoot(root,pgn::wallet::installedCoreGenesis(root),explicitLegacyRoot)){std::cerr<<"User-data path binding unavailable\n";return 7;}
+ const auto updateState=pgn::update::updateStateDirectory(pgn::wallet::installedCoreGenesis(root));
+ const auto updateSelection=updateState.isEmpty()?pgn::app::SelectedCohort{}:pgn::app::selectedUpdateCohort(applicationDirectory,updateState+"/installation",testnetMode?"testnet":"main",pgn::wallet::installedCoreGenesis(root),startupArguments.contains("--update-healthcheck"));
+ if(!updateSelection.executable.isEmpty()){
+  if(QProcess::startDetached(updateSelection.executable,startupArguments.mid(1),QFileInfo(updateSelection.executable).absolutePath()))return 0;
+  std::cerr<<"Selected update could not be launched; opening the previous client\n";
+ }
+ // The instance identity follows the user's data/network, not the replaceable
+ // executable directory. Old shortcuts must never open a second wallet owner.
+ QLocalServer scopeLifecycle;scopeLifecycle.setSocketOptions(QLocalServer::UserAccessOption);
+ const auto scopeName="pgn-horizon-scope-"+QString::fromLatin1(QCryptographicHash::hash((pgn::app::mutableDataRoot(root)+"/"+pgn::wallet::installedCoreGenesis(root)).toUtf8(),QCryptographicHash::Sha256).toHex());
+ QPointer<QWidget> scopeWindow;
+ pgn::app::HorizonUiLease scopeLease(pgn::app::mutableDataRoot(root)+"/.horizon-ui-"+pgn::wallet::installedCoreGenesis(root)+".lock");
+ if(!scopeLease.error().isEmpty()){std::cerr<<scopeLease.error().toStdString()<<"\n";return 8;}
+ if(!scopeLease.owned()){
+  QLocalSocket existing;existing.connectToServer(scopeName);
+  if(!existing.waitForConnected(1500)){std::cerr<<"The existing Horizon session could not be contacted\n";return 8;}
+  existing.write(startupArguments.contains("--start-minimized")?"running\n":"activate\n");existing.flush();if(existing.bytesToWrite())existing.waitForBytesWritten(1000);return 0;
+ }
+ #ifndef Q_OS_WIN
+ QLocalServer::removeServer(scopeName); // Safe only after exclusive ownership.
+ #endif
+ if(!scopeLifecycle.listen(scopeName)){std::cerr<<"Application activation listener is unavailable\n";return 8;}
+ QObject::connect(&scopeLifecycle,&QLocalServer::newConnection,&app,[&]{
+  while(scopeLifecycle.hasPendingConnections()){
+   auto* socket=scopeLifecycle.nextPendingConnection();socket->setReadBufferSize(16);QTimer::singleShot(2000,socket,&QLocalSocket::disconnectFromServer);
+   const auto activate=[socket,&scopeWindow]{if(!socket->canReadLine())return;const auto line=socket->readLine(16);if(line=="activate\n"&&scopeWindow){scopeWindow->showNormal();scopeWindow->raise();scopeWindow->activateWindow();}socket->disconnectFromServer();};
+   QObject::connect(socket,&QLocalSocket::readyRead,&app,activate);QObject::connect(socket,&QLocalSocket::disconnected,socket,&QObject::deleteLater);if(socket->canReadLine())QTimer::singleShot(0,socket,activate);
+  }
+ });
+ const bool legacyResidentViewer=startup.developerLegacy&&(startupArguments.contains("--resident-viewer")||startupArguments.contains("--observe-only"));
+ QString config=startup.developerLegacy&&argc>2&&!QString::fromLocal8Bit(argv[2]).startsWith("--")?QString::fromLocal8Bit(argv[2]):QString{};
+ if(startup.developerLegacy&&config.isEmpty()&&QFile::exists(root+"/evidence/native-transport-recovered-20261012.json"))
   config=root+"/evidence/native-transport-recovered-20261012.json";
- QMainWindow window;window.setWindowTitle(testnetMode?"PGN Horizon · TESTNET":"PGN Horizon · Prime Gap Network");window.setWindowIcon(QIcon(":/frontier/app-icon.png"));
+ QMainWindow window;window.setProperty("pgn_startup_profile_state",startup.profileState);window.setProperty("pgn_startup_testnet",testnetMode);window.setProperty("pgn_startup_developer_legacy",startup.developerLegacy);window.setProperty("pgn_startup_root",root);window.setWindowTitle(testnetMode?"PGN Horizon · TESTNET":"PGN Horizon · Prime Gap Network");window.setWindowIcon(QIcon(":/frontier/app-icon.png"));
  closeOwned=[&window,&app]{if(window.close())QTimer::singleShot(0,&app,&QCoreApplication::quit);};
+ scopeWindow=&window;
+ window.setProperty("pgn_update_application_root",pgn::app::cleanApplicationRoot(root));
+ window.setProperty("pgn_update_data_root",pgn::app::mutableDataRoot(root));
+ window.setProperty("pgn_update_genesis",pgn::wallet::installedCoreGenesis(root));
+ window.setProperty("pgn_update_explicit_root",explicitLegacyRoot);
+ struct CoreUpdateDrain {bool pending{},ready{};};
+ const auto coreUpdate=std::make_shared<CoreUpdateDrain>();
+ new pgn::ui::MiningWorkerCloseGuard(&window,[&window,&inspectWallet,closeOwned,coreUpdate]{
+  if(!window.property("pgn_update_shutdown").toBool()||coreUpdate->ready)return true;
+  if(!coreUpdate->pending){
+   coreUpdate->pending=true;const QPointer<QWidget> alive(&window);
+   pgn::ui::stopWalletCoreForUpdate(inspectWallet,[alive,closeOwned,coreUpdate](QString error){
+    coreUpdate->pending=false;if(!alive)return;
+    if(!error.isEmpty()){alive->setProperty("pgn_update_shutdown_error",error);alive->setProperty("pgn_update_shutdown",false);return;}
+    coreUpdate->ready=true;QTimer::singleShot(0,alive.data(),closeOwned);
+   });
+  }
+  return false;
+ });
+ updateOwned=[&window,&inspectWallet,closeOwned,coreUpdate]{
+  if(!inspectWallet)return QJsonObject{{"accepted",false},{"error","Wallet lifecycle is not ready"}};
+  if(!window.property("pgn_update_shutdown").toBool()){
+   coreUpdate->ready=false;window.setProperty("pgn_update_shutdown_error",QString{});window.setProperty("pgn_update_shutdown",true);
+   QTimer::singleShot(50,&window,closeOwned);
+  }
+  return QJsonObject{{"accepted",true},{"scope","ORDERED_MINING_DRAIN_THEN_OWNED_CORE_STOP"}};
+ };
+
  if(const auto* screen=window.screen()){const auto size=screen->availableGeometry().size();window.resize(qMin(1380,qMax(800,size.width()-32)),qMin(970,qMax(600,size.height()-48)));}
  else window.resize(1380,970);
  window.setStyleSheet("QMainWindow,QWidget{background:#010b10;color:#c9eee7;}"+HorizonWorkspaceControlStyle());
@@ -294,7 +381,7 @@ int main(int argc,char** argv) {
    const bool online=pgn::wallet::verifiedCoreOnline(link,anchor,now);
    const auto light=[](const QColor& color){QPixmap pixels(14,14);pixels.fill(Qt::transparent);QPainter p(&pixels);p.setRenderHint(QPainter::Antialiasing);p.setPen(Qt::NoPen);p.setBrush(color);p.drawEllipse(QRectF(3,3,8,8));return QIcon(pixels);};
    static const auto green=light(QColor("#39dc8a")),red=light(QColor("#ff5d6c"));
-   walletButton->setText("WALLET\nPGN CORE CLIENT");walletButton->setIcon(online?green:red);walletButton->setIconSize(QSize(14,14));
+   walletButton->setText("WALLET\nPGN CORE CLIENT");const auto& walletLight=online?green:red;if(walletButton->icon().cacheKey()!=walletLight.cacheKey())walletButton->setIcon(walletLight);walletButton->setIconSize(QSize(14,14));
    walletButton->setToolTip(online?"Verified Core connected":"Waiting for a fresh, verified Core response");
    walletButton->setProperty("pgn_core_online",online);
    if(!online){
@@ -310,10 +397,12 @@ int main(int argc,char** argv) {
     return;
    }
    const auto peers=anchor->peers?QString::number(*anchor->peers):QStringLiteral("—");
-   const auto state=!anchor->synchronizing?QStringLiteral("SYNC UNKNOWN"):*anchor->synchronizing?QStringLiteral("SYNCING"):anchor->peers&&*anchor->peers==0?QStringLiteral("NO PEERS"):!anchor->peers?QStringLiteral("PEER STATUS UNAVAILABLE"):QStringLiteral("UP TO DATE");
-   networkSummary->setStyleSheet(QString("QLabel{color:%1;font:12px Consolas;padding:3px 8px;}").arg(anchor->synchronizing&&*anchor->synchronizing?"#8dccff":"#69efc5"));
+   const bool idleChain=anchor->nativePeerCaughtUp&&anchor->oldTipAt(QDateTime::currentDateTimeUtc());
+   const auto state=!anchor->synchronizing?QStringLiteral("SYNC UNKNOWN"):*anchor->synchronizing?QStringLiteral("SYNCING"):anchor->peers&&*anchor->peers==0?QStringLiteral("NO PEERS"):!anchor->peers?QStringLiteral("PEER STATUS UNAVAILABLE"):idleChain?QStringLiteral("CHAIN IDLE"):QStringLiteral("UP TO DATE");
+   const auto networkStyle=QString("QLabel{color:%1;font:12px Consolas;padding:3px 8px;}").arg(idleChain?"#ffbd69":anchor->synchronizing&&*anchor->synchronizing?"#8dccff":"#69efc5");
+   if(networkSummary->styleSheet()!=networkStyle)networkSummary->setStyleSheet(networkStyle);
    networkSummary->setText(QString(testnetMode?"%4 TESTNET QA · TECHNICAL HEIGHT %1 · %2 PEERS · %3":"%4 NETWORK · HEIGHT %1 · %2 PEERS · %3").arg(anchor->height).arg(peers,state).arg(anchor->synchronizing&&*anchor->synchronizing?QStringList{"◴","◷","◶","◵"}.at((QDateTime::currentMSecsSinceEpoch()/500)%4):QString("●")));
-   if(testnetMode&&inspectWallet&&inspectWallet->property("pgn_network_gold_blocks").isValid())networkSummary->setText(QString("%5 TESTNET · GOLD %1 · LEDGER %2 · %3 PEERS · %4").arg(inspectWallet->property("pgn_network_gold_blocks").toLongLong()).arg(anchor->height).arg(peers,state).arg(anchor->synchronizing&&*anchor->synchronizing?QStringList{"◴","◷","◶","◵"}.at((QDateTime::currentMSecsSinceEpoch()/500)%4):QString("●")));
+   if(testnetMode&&inspectWallet&&inspectWallet->property("pgn_network_gold_blocks").isValid())networkSummary->setText(QString("%5 TESTNET · GOLD BLOCKS %1 · LEDGER HEIGHT %2 · %3 PEERS · %4").arg(inspectWallet->property("pgn_network_gold_blocks").toLongLong()).arg(anchor->height).arg(peers,state).arg(anchor->synchronizing&&*anchor->synchronizing?QStringList{"◴","◷","◶","◵"}.at((QDateTime::currentMSecsSinceEpoch()/500)%4):QString("●")));
    networkSummary->setToolTip(QString("Verified Core observation: %1\nChain: %2\nTip: %3").arg(anchor->observedUtc.toUTC().toString(Qt::ISODateWithMs),anchor->genesis,anchor->tipHash));
   };
   auto* networkClock=new QTimer(&window);networkClock->setInterval(1000);QObject::connect(networkClock,&QTimer::timeout,&window,displayNetwork);networkClock->start();
@@ -322,31 +411,34 @@ int main(int argc,char** argv) {
  auto* identity=new QLabel("PRIME GAP NETWORK · GPU SOURCE / INDEPENDENT PROOF · WALLET SERVICE NOT CONNECTED");identity->setStyleSheet("color:#7dacb5;font:8px monospace;");identity->setWordWrap(true);identity->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);topBox->addWidget(identity,1);
   auto* tabs=new QTabWidget;auto* canvas=pgn::ui::createMiningCanvas();
   auto* miningPage=new QWidget;miningPage->setObjectName("pgn-mining-page");auto* miningLayout=new QVBoxLayout(miningPage);miningLayout->setContentsMargins(0,0,0,0);miningLayout->setSpacing(0);
-  pgn::ui::configureMiningDashboard(canvas);miningLayout->addWidget(canvas);auto* ticketProgressRail=new pgn::ui::MiningTicketProgress;miningLayout->addWidget(ticketProgressRail);
-  auto* testnetSummary=new QLabel("TESTNET · connecting to the owned WIZZ engine",miningPage);testnetSummary->setObjectName("pgn-testnet-mining-summary");testnetSummary->setStyleSheet("font:12px monospace;color:#69efc5;padding:14px 18px;");testnetSummary->setWordWrap(true);auto* miningToggle=new QPushButton("Start mining",miningPage);miningToggle->setObjectName("pgn-testnet-mining-toggle");miningToggle->setCheckable(true);miningToggle->setMinimumHeight(36);miningToggle->hide();auto* testnetProgress=new QProgressBar(miningPage);testnetProgress->setObjectName("pgn-testnet-ticket-progress");testnetProgress->setRange(0,1000);testnetProgress->setFormat("Ticket progress · %p%");testnetSummary->hide();testnetProgress->hide();
-  auto* miningResults=pgn::ui::createMiningResultsView(root);auto* resultScroll=new QScrollArea;resultScroll->setObjectName("pgn-mining-results-scroll");resultScroll->setWidgetResizable(true);resultScroll->setFrameShape(QFrame::NoFrame);resultScroll->setWidget(miningResults);miningLayout->addWidget(resultScroll,1);
-  auto* records=pgn::ui::createRecordSubmissionView(root,nullptr,testnetMode);inspectRecords=records;pgn::ui::bindRecordEligibility(records,[miningResults](const QJsonArray& pairs){pgn::ui::presentMiningRecordEligibility(miningResults,pairs);});miningLayout->addWidget(records);tabs->addTab(miningPage,"Mining");
+  pgn::ui::configureMiningDashboard(canvas);miningLayout->addWidget(canvas);auto* ticketProgressRail=new pgn::ui::MiningTicketProgress;miningLayout->addWidget(ticketProgressRail);ticketProgressRail->bindSourceCanvas(canvas);
+  auto* testnetSummary=new QLabel("TESTNET · connecting to the mining engine",miningPage);testnetSummary->setObjectName("pgn-testnet-mining-summary");testnetSummary->setStyleSheet("font:12px monospace;color:#69efc5;padding:14px 18px;");testnetSummary->setWordWrap(true);auto* miningToggle=new QPushButton("Start mining",miningPage);miningToggle->setObjectName("pgn-testnet-mining-toggle");miningToggle->setCheckable(true);miningToggle->setMinimumHeight(36);miningToggle->hide();auto* testnetProgress=new QProgressBar(miningPage);testnetProgress->setObjectName("pgn-testnet-ticket-progress");testnetProgress->setRange(0,1000);testnetProgress->setFormat("Ticket progress · %p%");testnetSummary->hide();testnetProgress->hide();
+  auto* miningResults=pgn::ui::createMiningResultsView(root);ticketProgressRail->bindResultsView(miningResults);auto* resultScroll=new QScrollArea;resultScroll->setObjectName("pgn-mining-results-scroll");resultScroll->setWidgetResizable(true);resultScroll->setFrameShape(QFrame::NoFrame);resultScroll->setWidget(miningResults);
+  // In a short window the content keeps its readable minimum and scrolls;
+  // the viewport itself may shrink so expanded Records never crosses footer.
+  resultScroll->setMinimumHeight(0);resultScroll->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Ignored);miningLayout->addWidget(resultScroll,1);
+  auto* records=pgn::ui::createRecordSubmissionView(root,nullptr,testnetMode);inspectRecords=records;pgn::ui::bindRecordEligibility(records,[miningResults,ticketProgressRail](const QJsonArray& pairs){pgn::ui::presentMiningRecordEligibility(miningResults,pairs);ticketProgressRail->setRecordEligibility(pairs);});miningLayout->addWidget(records);tabs->addTab(miningPage,"Mining");
  auto* productivityTimer=new QTimer(&window);productivityTimer->setInterval(1000);QObject::connect(productivityTimer,&QTimer::timeout,&window,[canvas,miningResults,&inspectWallet]{const auto width=inspectWallet?inspectWallet->property("pgn_network_ticket_width").toString():QString{};pgn::ui::presentMiningProductivity(miningResults,pgn::ui::miningDeviceRates(canvas),width);});productivityTimer->start();
  auto* bookings=new pgn::booking::BookingModel(root,&window);
  if(bookings->source().localValidation)identity->setText("PGN HORIZON · LOCAL ENGINE VALIDATION · NO NETWORK ACCEPTANCE");
  pgn::ui::bindBookingModel(canvas,bookings);
  inspectCanvas=canvas;
- if(!testnetMode)pgn::ui::bindObservationCatalog(canvas,root+"/data/runtime/prototype-observations.sqlite");
- if(!testnetMode)pgn::ui::bindNativeCatalog(canvas,root+"/data/runtime/scientific-history.sqlite");
+ if(!testnetMode)pgn::ui::bindObservationCatalog(canvas,pgn::app::mutableDataRoot(root)+"/runtime/prototype-observations.sqlite");
+ if(!testnetMode)pgn::ui::bindNativeCatalog(canvas,pgn::app::mutableDataRoot(root)+"/runtime/scientific-history.sqlite");
  // New source gaps have no UTC dates. LENGTH opens the whole retained archive;
  // TIME remains available explicitly without inventing dates for those gaps.
  pgn::ui::selectNativeGraphAxis(canvas,"length");
  QWidget* community=nullptr;QTableWidget* testnetTickets=nullptr;
  pgn::ui::NetworkWorkView* networkWork=nullptr;
- if(testnetMode){networkWork=new pgn::ui::NetworkWorkView([&inspectWallet](int offset,auto consume){pgn::ui::readWalletTicketPage(inspectWallet,offset,std::move(consume));},[&inspectWallet](const QString& id,auto consume){pgn::ui::readWalletTicketDetails(inspectWallet,id,std::move(consume));});community=networkWork;}else community=pgn::ui::createCommunityView(bookings,nullptr,[canvas](const QString& id){return pgn::ui::miningDeviceAccent(canvas,id);});tabs->addTab(community,testnetMode?"Network work":"Community");
+ if(testnetMode){networkWork=new pgn::ui::NetworkWorkView([&inspectWallet](int offset,auto consume){pgn::ui::readWalletTicketPage(inspectWallet,offset,std::move(consume));},[&inspectWallet](const QString& id,auto consume){pgn::ui::readWalletTicketDetails(inspectWallet,id,std::move(consume));},nullptr,[&inspectWallet](const QString& start,const QString& end,int bins,auto consume){pgn::ui::readWalletTicketAtlas(inspectWallet,start,end,bins,std::move(consume));});community=networkWork;}else community=pgn::ui::createCommunityView(bookings,nullptr,[canvas](const QString& id){return pgn::ui::miningDeviceAccent(canvas,id);});tabs->addTab(community,testnetMode?"Network work":"Community");
  bookings->onSelect=[tabs,community](const QString& id){tabs->setCurrentWidget(community);pgn::ui::selectCommunityBooking(community,id);};
   bookings->onMining=[tabs,miningPage]{tabs->setCurrentWidget(miningPage);};
  auto* lensGraph=pgn::ui::createNumberLensCanvas();
- pgn::ui::bindObservationCatalog(lensGraph,root+"/data/runtime/prototype-observations.sqlite");
- pgn::ui::bindNativeCatalog(lensGraph,root+"/data/runtime/scientific-history.sqlite");
+ pgn::ui::bindObservationCatalog(lensGraph,pgn::app::mutableDataRoot(root)+"/runtime/prototype-observations.sqlite");
+ pgn::ui::bindNativeCatalog(lensGraph,pgn::app::mutableDataRoot(root)+"/runtime/scientific-history.sqlite");
  // Read the existing ALL archive once even if SSH/control never connects.
  // This display-only publication cannot open a run or satisfy SOURCE gates.
-  pgn::ui::loadNativeArchiveIndex(root+"/data/runtime/scientific-history.sqlite",window,[canvas,lensGraph,miningResults](const QJsonObject& packet){
+  pgn::ui::loadNativeArchiveIndex(pgn::app::mutableDataRoot(root)+"/runtime/scientific-history.sqlite",window,[canvas,lensGraph,miningResults](const QJsonObject& packet){
   pgn::ui::presentNativeIndex(canvas,packet);pgn::ui::presentNativeIndex(lensGraph,packet);
    pgn::ui::presentMiningResultsIndex(miningResults,packet);
  });
@@ -369,7 +461,7 @@ int main(int argc,char** argv) {
  QObject::connect(toolsMenu->addAction("Scientific archive · exact source records"),&QAction::triggered,lens,[tabs,lens,lensTabs]{tabs->setCurrentWidget(lens);lensTabs->setCurrentIndex(1);});
  // CPU inventory is observational. A discovered host cannot start work through this probe.
  auto cpuEndpoints=std::make_shared<QList<pgn::mining::CpuInventoryEndpoint>>();
- QFile cpuInventoryProfile(root+"/data/testnet/ui-runtime/cpu-inventory.json");
+ QFile cpuInventoryProfile(pgn::app::mutableDataRoot(root)+"/testnet/ui-runtime/cpu-inventory.json");
  if(testnetMode&&cpuInventoryProfile.open(QIODevice::ReadOnly)&&cpuInventoryProfile.size()<=32768){
   const auto endpoints=QJsonDocument::fromJson(cpuInventoryProfile.readAll()).object().value("endpoints").toArray();
   if(endpoints.size()<=8)for(const auto& entry:endpoints){const auto object=entry.toObject();pgn::mining::CpuInventoryEndpoint endpoint;
@@ -386,8 +478,8 @@ int main(int argc,char** argv) {
   if(QFileInfo::exists(localProbe))cpuEndpoints->append({localProbe,{"--inventory"},{}});
  }
  cpuInventoryProfile.close();
- auto* cpuFleet=new pgn::mining::CpuFleet(&window);
- const bool localCpuOnly=!QFileInfo::exists(root+"/data/testnet/ui-runtime/cpu-controllers.json");
+ auto* cpuFleet=new pgn::mining::CpuNormalResources(&window);
+ const bool localCpuOnly=!QFileInfo::exists(pgn::app::mutableDataRoot(root)+"/testnet/ui-runtime/cpu-controllers.json");
  const auto discoverCpus=[cpuEndpoints,canvas,pgn,cpuFleet,localCpuOnly,root,&window]{
   for(const auto& endpoint:*cpuEndpoints)pgn::mining::probeCpuInventory(endpoint,&window,
    [canvas,pgn,cpuFleet,localCpuOnly,root](const QJsonObject& inventory){
@@ -399,7 +491,8 @@ int main(int argc,char** argv) {
       ".exe"
 #endif
       ;
-     if(QFileInfo::exists(program)){pgn::mining::CpuControlEndpoint control;control.program=program;control.host=host;control.deviceId="CPU/"+host.toUpper()+"/"+QString::number(inventory.value("processor_group").toInt());control.arguments={"--workspace",root+"/data/testnet/cpu-auditor/local","--piece-positions","100000000"};cpuFleet->add(control);}
+     const auto engineState=pgn::wallet::normalEngineStateDirectory(root,pgn::wallet::installedCoreGenesis(root));
+     if(QFileInfo::exists(program)&&!engineState.isEmpty()){pgn::mining::CpuControlEndpoint control;control.program=program;control.host=host;control.deviceId="CPU/"+host.toUpper()+"/"+QString::number(inventory.value("processor_group").toInt());control.arguments={"--workspace",engineState+"/cpu-controller/"+QString::number(inventory.value("processor_group").toInt()),"--piece-positions","100000000"};cpuFleet->add(control);}
     }
    },
    [canvas](const QString& error){canvas->setProperty("pgn_cpu_inventory_error",error);});
@@ -407,25 +500,11 @@ int main(int argc,char** argv) {
  QTimer::singleShot(0,&window,discoverCpus);
  auto* cpuDiscoveryTimer=new QTimer(&window);cpuDiscoveryTimer->setInterval(300000);
  QObject::connect(cpuDiscoveryTimer,&QTimer::timeout,&window,discoverCpus);cpuDiscoveryTimer->start();
- auto cpuAuditBroker=std::make_shared<QPointer<pgn::mining::CpuAuditBroker>>();
- auto cpuValidationCase=std::make_shared<QJsonObject>();
  cpuFleet->onTelemetry=[canvas,pgn](const QString&,const QJsonObject& inventory,const QJsonObject& status,bool connected){pgn::ui::presentCpuController(canvas,inventory,status,connected);pgn->present(pgn::ui::miningCardStates(canvas));};
- cpuFleet->onControl=[canvas,pgn,cpuFleet,cpuValidationCase](const QString& device,const QString& request,bool applied,const QString& detail){pgn::ui::resolveDeviceControl(canvas,device,request,applied,detail);pgn->present(pgn::ui::miningCardStates(canvas));if(applied&&cpuValidationCase->value("completed_device")==device&&cpuValidationCase->value("completed_pass")==true&&cpuFleet->status(device).value("worker_pids").toArray().isEmpty()){if(cpuFleet->acknowledgeAudit(device,cpuValidationCase->value("completed_digest").toString()))cpuValidationCase->remove("completed_digest");}};
- cpuFleet->onAuditComputation=[cpuAuditBroker](const QString& device,const pgn::mining::CpuAuditWork& work,const QJsonObject& result){if(*cpuAuditBroker)(*cpuAuditBroker)->computed(device,work,result);};
- cpuFleet->onValidationComputation=[root,canvas,cpuFleet,cpuValidationCase](const QString& device,const pgn::mining::CpuAuditWork& work,const QJsonObject& result){
-  const bool matches=result.value("counts")==cpuValidationCase->value("reference_counts");
-  const auto native=cpuFleet->status(device);QJsonObject receipt{{"schema","PGN_CPU_LOCAL_VALIDATION_RESULT_V1"},{"PASS",matches},{"scope","Local full audit-sized computation against a known GPU reference; not a blind network audit"},{"network_accepted",false},{"source_proof_pending",true},{"request_sha256",work.requestSha256},{"reference_report_root",cpuValidationCase->value("reference_report_root")},{"counts",result.value("counts")},{"expected_counts",cpuValidationCase->value("reference_counts")},{"completed_positions",result.value("completed_positions")},{"native_status",native},{"observed_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}};
-  const auto bytes=QJsonDocument(receipt).toJson(QJsonDocument::Compact);QSaveFile file(root+"/data/testnet/ui-runtime/cpu-audit-validation-result.json");
-  const bool saved=bytes.size()<=32768&&file.open(QIODevice::WriteOnly)&&file.write(bytes)==bytes.size()&&file.commit();
-  canvas->setProperty("pgn_cpu_validation_result",receipt);canvas->setProperty("pgn_cpu_validation_result_saved",saved);
-  cpuValidationCase->insert("completed_device",device);cpuValidationCase->insert("completed_digest",work.requestSha256);cpuValidationCase->insert("completed_pass",matches&&saved);
-  const auto maximum=canvas->property("pgn_cpu_controller_inventory").toJsonObject().value(device).toObject().value("maximum_workers").toInt(1);
-  cpuFleet->control(device,"validation-complete",false,qRound(100.*std::max(1,native.value("requested_threads").toInt(1))/maximum));
- };
- cpuFleet->onAuditError=[canvas](const QString& device,const QString& error){canvas->setProperty("pgn_cpu_audit_network_status",device+": "+error);};
+ cpuFleet->onControl=[canvas,pgn](const QString& device,const QString& request,bool applied,const QString& detail){pgn::ui::resolveDeviceControl(canvas,device,request,applied,detail);pgn->present(pgn::ui::miningCardStates(canvas));};
  cpuFleet->onCloseReady=[&window,closeOwned]{QTimer::singleShot(0,&window,closeOwned);};
  new pgn::ui::MiningWorkerCloseGuard(&window,[cpuFleet]{return cpuFleet->requestClose();});
- QFile cpuControllers(root+"/data/testnet/ui-runtime/cpu-controllers.json");
+ QFile cpuControllers(pgn::app::mutableDataRoot(root)+"/testnet/ui-runtime/cpu-controllers.json");
  if(testnetMode&&cpuControllers.open(QIODevice::ReadOnly)&&cpuControllers.size()<=32768){
   const auto endpoints=QJsonDocument::fromJson(cpuControllers.readAll()).object().value("endpoints").toArray();
   if(endpoints.size()<=8)for(const auto& value:endpoints){const auto item=value.toObject();pgn::mining::CpuControlEndpoint endpoint;
@@ -436,32 +515,25 @@ int main(int argc,char** argv) {
  }
  cpuControllers.close();
  auto* miningWorkspace=new QWidget;auto* miningBox=new QVBoxLayout(miningWorkspace);miningBox->setContentsMargins(0,0,0,0);miningBox->setSpacing(0);
- miningBox->addWidget(HorizonCoinNavigation(tabs,{{"01  MINING","LIVE SEARCH"},{testnetMode?"02  NETWORK WORK":"02  COMMUNITY",testnetMode?"TICKETS + AUDITS":"SHARED ORBIT"},{"03  NUMBER LENS","SCIENCE + EXACT RECORDS"},{"04  BENCHMARK","HARDWARE LAB"}},miningWorkspace));miningBox->addWidget(tabs,1);
+ miningBox->addWidget(tabs,1);
  auto* major=new QStackedWidget;major->setObjectName("pgn-primary-workspaces");major->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Ignored);major->addWidget(miningWorkspace);
   inspectWallet=pgn::ui::createWalletCoreView(root,[canvas,identity,networkObservation,displayNetwork](const auto& observation){
    *networkObservation=observation;displayNetwork();
   pgn::ui::presentNetwork(canvas,observation);
   identity->setText(observation?"PRIME GAP NETWORK · VERIFIED WALLET CORE · GPU SOURCE / INDEPENDENT PROOF":
    "PRIME GAP NETWORK · GPU SOURCE / INDEPENDENT PROOF · WALLET SERVICE NOT CONNECTED");
- },testnetMode);major->addWidget(inspectWallet);
- const auto attachAuditIdentity=[root,inspectWallet,networkObservation,cpuFleet,cpuAuditBroker,canvas,toolsButton,&window,&app](const QJsonObject& identityData){
-  if(*cpuAuditBroker)return;
+ },testnetMode);
+  pgn::ui::bindWalletNetworkMetrics(inspectWallet,miningResults,[miningResults,networkObservation](const QJsonObject& metrics,const QString& error){const auto& anchor=*networkObservation;const bool same=error.isEmpty()&&anchor&&anchor->freshAt(QDateTime::currentDateTimeUtc())&&metrics.value("genesis")==anchor->genesis&&metrics.value("bestblockhash")==anchor->tipHash&&metrics.value("height").toInteger(-1)==anchor->height;pgn::ui::presentMiningNetworkMetrics(miningResults,same?metrics:QJsonObject{},same?anchor->genesis:QString{});});
+  if(!startup.diagnostic.isEmpty()){auto* notice=new QLabel(startup.diagnostic,inspectWallet);notice->setObjectName("pgn-startup-network-notice");notice->setTextFormat(Qt::PlainText);notice->setWordWrap(true);if(auto* box=qobject_cast<QBoxLayout*>(inspectWallet->layout()))box->insertWidget(0,notice);}
+  major->addWidget(inspectWallet);ticketProgressRail->bindTicketLookup([&inspectWallet](const QString& request,auto consume){pgn::ui::readWalletTicketDetails(inspectWallet,request,std::move(consume));});
+ const auto attachAuditIdentity=[canvas,toolsButton](const QJsonObject& identityData){
   const auto address=identityData.value("address").toString(),genesis=identityData.value("genesis").toString();
   if(address.isEmpty()||!QRegularExpression("^[0-9a-f]{64}$").match(genesis).hasMatch())return;
-  pgn::ui::presentPublicAuditIdentity(toolsButton,address);
-    const QPointer<QWidget> wallet=inspectWallet;pgn::mining::CpuAuditBroker::Services services;
-    services.rpc=[wallet](auto method,auto params,auto consume){pgn::ui::requestWalletAudit(wallet,method,params,std::move(consume));};
-    services.sign=[wallet](auto address,auto challenge,auto consume){pgn::ui::signWalletAudit(wallet,address,challenge,std::move(consume));};
-    services.identity=[wallet](auto address,auto consume){pgn::ui::readWalletSigningIdentity(wallet,address,std::move(consume));};
-    services.details=[wallet](auto id,auto consume){pgn::ui::readWalletTicketDetails(wallet,id,std::move(consume));};
-    services.auditDetails=[wallet](auto id,auto consume){pgn::ui::readWalletAuditDetails(wallet,id,std::move(consume));};
-    services.observation=[networkObservation]{return *networkObservation;};
-    auto* broker=new pgn::mining::CpuAuditBroker(root+"/data/testnet/ui-runtime/cpu-audit-outbox.json",genesis,address,cpuFleet,std::move(services),&window);*cpuAuditBroker=broker;
-    broker->onStatus=[canvas](const QString& text){canvas->setProperty("pgn_cpu_audit_network_status",text);};
-    QObject::connect(&app,&QCoreApplication::aboutToQuit,broker,&pgn::mining::CpuAuditBroker::stop);
+  toolsButton->setProperty("pgn_public_mining_genesis",genesis);pgn::ui::presentPublicAuditIdentity(toolsButton,address);
+  canvas->setProperty("pgn_cpu_audit_network_status","CPU qualification belongs to the normal ticket cycle; standalone audit allocation is disabled");
  };
  if(testnetMode){
-  QFile identityFile(root+"/data/testnet/ui-runtime/mining-address.json");
+  QFile identityFile(pgn::app::mutableDataRoot(root)+"/testnet/ui-runtime/mining-address.json");
   if(identityFile.open(QIODevice::ReadOnly)&&identityFile.size()<=8192)attachAuditIdentity(QJsonDocument::fromJson(identityFile.readAll()).object());
  }
  if(testnetMode){
@@ -470,37 +542,32 @@ int main(int argc,char** argv) {
    ".exe"
 #endif
    ;
-  auto* diagnostics=pgn::ui::createDiagnosticCaptureView(exporter,[canvas,inspectWallet,networkObservation]{
+  auto* diagnostics=pgn::ui::createDiagnosticCaptureView(exporter,[canvas,inspectWallet,networkObservation,&window]{
    const auto select=[](const QJsonObject& source,std::initializer_list<const char*> keys){QJsonObject value;for(const auto* key:keys)if(source.contains(key))value.insert(key,source.value(key));return value;};
    QJsonObject network{{"status",canvas->property("pgn_global_network_status").toString()},{"core_state",inspectWallet->property("pgn_core_link_state").toString()}};
    if(*networkObservation){const auto& observation=**networkObservation;network.insert("height",observation.height);network.insert("genesis",observation.genesis);network.insert("tip_hash",observation.tipHash);network.insert("peers",observation.peers?QJsonValue(*observation.peers):QJsonValue{});network.insert("synchronizing",observation.synchronizing?QJsonValue(*observation.synchronizing):QJsonValue{});}
    QJsonArray cpus;const auto controllers=canvas->property("pgn_cpu_controller_states").toJsonObject();
-   for(auto it=controllers.begin();it!=controllers.end();++it){if(cpus.size()>=8)break;cpus.append(select(it.value().toObject(),{"state","host","device_id","enabled","controller_connected","requested_threads","threads_active","active_workers","resident_workers","machine_load_percent","positions_per_second","rate_positions_per_second","completed_positions","total_positions","inflight_pieces","buffered_closed_pieces","wall_active_seconds","error","cpu_telemetry"}));}
-   return QJsonObject{{"network",network},{"hardware",canvas->property("pgn_diagnostic_hardware").toJsonObject()},{"cpu",cpus},
+   for(auto it=controllers.begin();it!=controllers.end();++it){if(cpus.size()>=8)break;cpus.append(select(it.value().toObject(),{"state","host","device_id","enabled","controller_connected","requested_threads","threads_active","active_workers","resident_workers","machine_load_percent","positions_per_second","rate_positions_per_second","completed_positions","total_positions","inflight_pieces","buffered_closed_pieces","wall_active_seconds","error","cpu_telemetry","memory_pages"}));}
+   const auto* components=window.findChild<QWidget*>("pgn-component-status-strip");
+   const auto software=pgn::ui::diagnosticComponentSnapshot(components?components->property("pgn_component_local_snapshot").toJsonObject():QJsonObject{});
+   return QJsonObject{{"network",network},{"software",software},{"hardware",canvas->property("pgn_diagnostic_hardware").toJsonObject()},{"cpu",cpus},
     {"ticket",select(canvas->property("pgn_network_ticket_frame").toJsonObject(),{"ticket_number","ticket_id","work_role","phase","bits","start","end","positions","positions_total","current","minimum_gap","speed_rate","average_rate","compute_tests_rate","source_age_ns","network_notice"})}};
   });
-  addTool("Diagnostics",diagnostics);
+  tabs->addTab(diagnostics,"Diagnostics");
  }
+ // Build the shared navigation after every page is present. The temporary
+ // testnet recorder has its own page and remains idle until explicitly started.
+ auto* miningNavigation=testnetMode
+  ? HorizonCoinNavigation(tabs,{{"01  MINING","LIVE SEARCH"},{"02  NETWORK WORK","TICKETS + AUDITS"},{"03  NUMBER LENS","SCIENCE + EXACT RECORDS"},{"04  BENCHMARK","HARDWARE LAB"},{"05  DIAGNOSTICS","RECORD + EXPORT"}},miningWorkspace)
+  : HorizonCoinNavigation(tabs,{{"01  MINING","LIVE SEARCH"},{"02  COMMUNITY","SHARED ORBIT"},{"03  NUMBER LENS","SCIENCE + EXACT RECORDS"},{"04  BENCHMARK","HARDWARE LAB"}},miningWorkspace);
+ miningBox->insertWidget(0,miningNavigation);
 
  if(networkWork){networkWork->onOpenBlock=[major,walletButton,toolsButton,inspectWallet](const QString& hash){major->setCurrentIndex(1);walletButton->setChecked(true);toolsButton->show();if(auto* pages=inspectWallet->findChild<QTabWidget*>("pgn-wallet-subtabs"))pages->setCurrentIndex(1);pgn::ui::inspectWalletBlock(inspectWallet,hash);};networkWork->onOpenAudits=[major,walletButton,toolsButton,inspectWallet]{major->setCurrentIndex(1);walletButton->setChecked(true);toolsButton->show();if(auto* pages=inspectWallet->findChild<QTabWidget*>("pgn-wallet-subtabs"))pages->setCurrentIndex(4);};}
  auto* primaryGroup=new QButtonGroup(&window);primaryGroup->setExclusive(true);primaryGroup->addButton(pgn,0);primaryGroup->addButton(walletButton,1);
  QObject::connect(primaryGroup,&QButtonGroup::idClicked,major,[major,toolsButton](int id){major->setCurrentIndex(id);toolsButton->show();});
-  showOwned=[&window,root,testnetMode,cpuFleet,cpuValidationCase,major,tabs,pgn,walletButton,toolsButton,canvas,miningPage,records,community,lens,lensGraph,benchmark,engineConfiguration](const QString& section){
-  if(section=="MiningCpuAuditValidation"||section=="MiningCpuAttachValidation"){
-   if(!testnetMode)return QJsonObject{{"error","Local validation requires the private testnet UI"}};
-   QFile file(root+"/data/testnet/ui-runtime/cpu-audit-validation.json");if(!file.open(QIODevice::ReadOnly)||file.size()>32768)return QJsonObject{{"error","Bounded CPU validation case is unavailable"}};
-   const auto data=QJsonDocument::fromJson(file.readAll()).object();const auto request=data.value("request").toObject();const auto device=data.value("device_id").toString();
-   if(data.value("schema")!="PGN_CPU_AUDIT_VALIDATION_CASE_V1"||data.value("reference_counts").toArray().size()!=5||request.value("schema")!="PGN_EXPLICIT_CPU_AUDIT_REQUEST_V1"||!pgn::mining::cpuAuditProposalSupported(QJsonObject{{"ranges",request.value("partitions")}}))return QJsonObject{{"error","CPU validation case is invalid or unsupported"}};
-   pgn::mining::CpuAuditWork work;work.genesis=data.value("genesis").toString();work.requestId=data.value("reference_request_id").toString();work.reportRoot=data.value("reference_report_root").toString();work.actor="LOCAL_VALIDATION";work.slot=0;work.attempt=0;work.serviceRequest=request;work.requestSha256=QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(request).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256).toHex());
-   const auto maximum=canvas->property("pgn_cpu_controller_inventory").toJsonObject().value(device).toObject().value("maximum_workers").toInt();const auto threads=data.value("threads").toInt();if(threads<1||threads>maximum)return QJsonObject{{"error","CPU validation thread budget is unavailable"}};
-   if(!cpuFleet->attachValidation(device,work))return QJsonObject{{"error","CPU retains another assignment or its controller is not ready"}};
-   *cpuValidationCase=data;
-   if(section=="MiningCpuAttachValidation")return QJsonObject{{"device",device},{"validation_attached",true},{"compute_enabled",cpuFleet->status(device).value("enabled")},{"budget_changed",false},{"network_accepted",false}};
-   cpuFleet->control(device,"validation-start",true,qRound(100.*threads/maximum));
-   major->setCurrentIndex(0);tabs->setCurrentWidget(miningPage);window.showMaximized();window.raise();window.activateWindow();
-   return QJsonObject{{"validation_queued",true},{"device",device},{"threads",threads},{"positions","10000000000000"},{"network_accepted",false}};
-  }
-  const auto resizeMatch=QRegularExpression("^Mining-([0-9]{3,4})x([0-9]{3,4})$").match(section);
+  showOwned=[&window,root,testnetMode,major,tabs,pgn,walletButton,toolsButton,canvas,miningPage,records,community,lens,lensGraph,benchmark,engineConfiguration](const QString& section){
+  if(section=="MiningCpuAuditValidation"||section=="MiningCpuAttachValidation")return QJsonObject{{"error","Standalone CPU audit execution is retired; CPU qualification uses the normal-ticket cycle"},{"network_accepted",false}};
+   const auto resizeMatch=QRegularExpression("^Mining-([0-9]{3,4})x([0-9]{3,4})$").match(section);
   const auto cpuAction=QRegularExpression("^MiningCpu([0-7])(On|Off|Threads([0-9]{1,2}))$").match(section);
   const bool resizeAction=resizeMatch.hasMatch()&&resizeMatch.captured(1).toInt()>=640&&resizeMatch.captured(2).toInt()>=480;
   const QStringList graphActions{"15MIN","1H","6H","1D","1W","1M","1Y","ALL","TIME","LENGTH","CURRENT","HISTORY","RESET"};
@@ -510,7 +577,7 @@ int main(int argc,char** argv) {
   const QStringList communityActions{"FIRSTOPEN","OUR","RESET","ZONE100","MININGZONE","EXACTINVALID","EXACTVALID"};
   const bool communityAction=section.startsWith("Community-")&&communityActions.contains(section.mid(10));
   const QStringList reservationActions{"Reservations","Reservations-Robert","Reservations-Benxy","Reservations-Wizz"};
-   if(!cpuAction.hasMatch()&&!resizeAction&&!lensAction&&!miningGraphAction&&!recordsAction&&!communityAction&&!reservationActions.contains(section)&&!QStringList{"Mining","MiningMaximize","MiningOn","MiningOff","MiningExpand","MiningCollapse","MiningStatus","MiningTotalExpand","MiningTotalCollapse","MiningGroupGpuOn","MiningGroupGpuOff","MiningGroupCpuOn","MiningGroupCpuOff","Community","TicketFirst","CommunityStatus","PublicRegister","NumberLens","NumberLensStatus","Benchmark","BenchmarkMeasure","BenchmarkStatus","Wallet","Audits","Difficulty","Vanity","VanityCheck","VanityStatus","VanityGenerateCPU","Network","NetworkInspectFirst","Configuration"}.contains(section))return QJsonObject{{"error","Unknown owned QA section"}};
+   if(!cpuAction.hasMatch()&&!resizeAction&&!lensAction&&!miningGraphAction&&!recordsAction&&!communityAction&&!reservationActions.contains(section)&&!QStringList{"Mining","MiningMaximize","MiningOn","MiningOff","MiningExpand","MiningCollapse","MiningStatus","MiningTotalExpand","MiningTotalCollapse","MiningGroupGpuOn","MiningGroupGpuOff","MiningGroupCpuOn","MiningGroupCpuOff","Community","TicketFirst","CommunityStatus","PublicRegister","NumberLens","NumberLensStatus","Benchmark","BenchmarkMeasure","BenchmarkStatus","Wallet","Audits","AuditsRegistry","Difficulty","Diagnostics","DiagnosticsStart","DiagnosticsStop","DiagnosticsExport","Vanity","VanityCheck","VanityStatus","VanityGenerateCPU","Network","NetworkInspectFirst","Configuration"}.contains(section))return QJsonObject{{"error","Unknown owned QA section"}};
 
   if(resizeAction){window.showNormal();window.resize(resizeMatch.captured(1).toInt(),resizeMatch.captured(2).toInt());}
 
@@ -575,10 +642,12 @@ int main(int argc,char** argv) {
   // Showing a page is not showing the window. Hidden replacements must leave
   // the hidden/minimized state before acknowledging the owned show command.
   if(window.isMinimized())window.showNormal();if(section=="MiningMaximize")window.showMaximized();else if(!window.isMaximized())window.showNormal();window.raise();window.activateWindow();
-   if(section=="Wallet"||section=="Audits"||section=="Difficulty"||section=="Vanity"||section=="Network"){major->setCurrentIndex(1);walletButton->setChecked(true);toolsButton->show();if(auto* pages=major->widget(1)->findChild<QTabWidget*>("pgn-wallet-subtabs"))pages->setCurrentIndex(section=="Audits"?4:section=="Difficulty"?3:section=="Vanity"?2:section=="Network"?1:0);}
+   if(section=="Wallet"||section=="Audits"||section=="AuditsRegistry"||section=="Difficulty"||section=="Vanity"||section=="Network"){major->setCurrentIndex(1);walletButton->setChecked(true);toolsButton->show();if(auto* pages=major->widget(1)->findChild<QTabWidget*>("pgn-wallet-subtabs"))pages->setCurrentIndex((section=="Audits"||section=="AuditsRegistry")?4:section=="Difficulty"?3:section=="Vanity"?2:section=="Network"?1:0);}
    else{major->setCurrentIndex(0);pgn->setChecked(true);toolsButton->show();if(section!="Configuration")engineConfiguration->window()->hide();if(cpuAction.hasMatch()||section.startsWith("MiningTotal")||section.startsWith("MiningGroup")||section=="Mining"||section=="MiningMaximize"||section=="MiningOn"||section=="MiningOff"||section=="MiningExpand"||section=="MiningCollapse"||miningGraphAction||resizeAction||recordsAction)tabs->setCurrentWidget(miningPage);else if(section=="Community"||section=="TicketFirst"||communityAction)tabs->setCurrentWidget(community);else if(section=="NumberLens"||lensAction)tabs->setCurrentWidget(lens);else if(section=="Benchmark"||section=="BenchmarkMeasure")tabs->setCurrentWidget(benchmark);
+   else if(section.startsWith("Diagnostics")){auto* capture=window.findChild<QWidget*>("pgn-test-diagnostics");if(!capture)return QJsonObject{{"error","Testnet diagnostics are unavailable"}};tabs->setCurrentWidget(capture);if(section=="DiagnosticsStart"||section=="DiagnosticsStop"){const auto name=section=="DiagnosticsStart"?"pgn-diagnostics-start":"pgn-diagnostics-stop";if(auto* button=capture->findChild<QPushButton*>(name))button->click();}else if(section=="DiagnosticsExport"){QDir().mkpath(root+"/evidence");pgn::ui::saveDiagnosticCapture(capture,root+"/evidence/diagnostic-"+QString::number(QCoreApplication::applicationPid())+".zip");}}
    else if(auto* dialog=qobject_cast<QDialog*>(engineConfiguration->parentWidget())){dialog->show();dialog->raise();}}
-  if(section.startsWith("MiningTotal")||section.startsWith("MiningGroup")){QRectF target;bool click=false;if(section.startsWith("MiningTotal")){target=canvas->property("pgn_total_expand_rectangle").toRectF();click=canvas->property("pgn_total_expanded").toBool()!=(section=="MiningTotalExpand");}else{const QString kind=section.contains("Gpu")?"gpu":"cpu";const QByteArray prefix=("pgn_total_"+kind).toLatin1();target=canvas->property((prefix+"_toggle_rect").constData()).toRectF();const auto state=canvas->property((prefix+"_state").constData()).toString();if(state=="unavailable"||state=="pending"||state.isEmpty())return QJsonObject{{"error","Group control is not ready"}};click=state!=(section.endsWith("On")?"on":"off");if(state=="mixed")return QJsonObject{{"error","Mixed group requires individual transition before this scoped test"}};}if(target.isEmpty())return QJsonObject{{"error","Total card is not rendered"}};if(click){const auto point=target.center();QMouseEvent press(QEvent::MouseButtonPress,point,canvas->mapToGlobal(point.toPoint()),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(canvas,&press);QMouseEvent release(QEvent::MouseButtonRelease,point,canvas->mapToGlobal(point.toPoint()),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);QCoreApplication::sendEvent(canvas,&release);}}
+  if(section=="AuditsRegistry"){auto* toggle=window.findChild<QToolButton*>("pgn-audit-registry-toggle");if(!toggle)return QJsonObject{{"error","Audit registry control is unavailable"}};if(!toggle->isChecked())toggle->click();}
+  if(section.startsWith("MiningTotal")||section.startsWith("MiningGroup")){QRectF target;bool click=false;if(section.startsWith("MiningTotal")){target=canvas->property("pgn_total_expand_rectangle").toRectF();click=canvas->property("pgn_total_expanded").toBool()!=(section=="MiningTotalExpand");}else{const QString kind=section.contains("Gpu")?"gpu":"cpu";const QByteArray prefix=("pgn_total_"+kind).toLatin1();target=canvas->property((prefix+"_toggle_rect").constData()).toRectF();const auto state=canvas->property((prefix+"_state").constData()).toString();if(state=="unavailable"||state=="pending"||state.isEmpty())return QJsonObject{{"error","Group control is not ready"}};click=state!=(section.endsWith("On")?"on":"off");if(state=="mixed"&&!section.endsWith("On"))return QJsonObject{{"error","A mixed group starts all devices on its first click; request On before Off"}};}if(target.isEmpty())return QJsonObject{{"error","Total card is not rendered"}};if(click){const auto point=target.center();QMouseEvent press(QEvent::MouseButtonPress,point,canvas->mapToGlobal(point.toPoint()),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(canvas,&press);QMouseEvent release(QEvent::MouseButtonRelease,point,canvas->mapToGlobal(point.toPoint()),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);QCoreApplication::sendEvent(canvas,&release);}}
   if(section=="MiningExpand"||section=="MiningCollapse"){
    const auto device=canvas->property("pgn_managed_source_device").toString();const auto toggle=pgn::ui::miningToggleRect(canvas,device);if(toggle.isEmpty())return QJsonObject{{"error","Managed card is not yet rendered"}};const bool expanded=toggle.width()>100;
    if(expanded!=(section=="MiningExpand")){const auto point=toggle.center()+QPointF(expanded?77.5:51.5,0);QMouseEvent press(QEvent::MouseButtonPress,point,canvas->mapToGlobal(point.toPoint()),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(canvas,&press);QMouseEvent release(QEvent::MouseButtonRelease,point,canvas->mapToGlobal(point.toPoint()),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);QCoreApplication::sendEvent(canvas,&release);}
@@ -653,15 +722,18 @@ int main(int argc,char** argv) {
   return receipt;
  };
  box->addWidget(top);box->addWidget(major,1);
- auto* status=new QLabel("SOURCE CONNECTION PENDING · historical data preserved separately · no CPU miner");inspectRuntimeStatus=status;status->setStyleSheet("font:8px monospace;color:#78b9c6;padding:3px 12px;");
+ auto* status=new QLabel("Connecting to the mining controller");inspectRuntimeStatus=status;status->setStyleSheet("font-size:12px;color:#9ab6c1;");
  status->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);
  auto* hardwareNotice=new QLabel("GPU OBSERVATION PENDING");hardwareNotice->setObjectName("pgn-native-hardware-notice");
- hardwareNotice->setStyleSheet("font:8px monospace;color:#f6c566;padding:3px 12px;");
- auto* footer=new QWidget;auto* footerBox=new QHBoxLayout(footer);footerBox->setContentsMargins(0,0,0,0);footerBox->setSpacing(0);
-  footerBox->addWidget(status,1);footerBox->addWidget(hardwareNotice);footerBox->addWidget(networkSummary);box->addWidget(footer);window.setCentralWidget(shell);
+ hardwareNotice->setStyleSheet("font-size:11px;color:#9ab6c1;");
+ auto* footer=new QWidget;footer->setObjectName("pgn-application-status-footer");footer->setStyleSheet("#pgn-application-status-footer{background:#071820;border-top:1px solid #23424c;}");
+ auto* footerBox=new QVBoxLayout(footer);footerBox->setContentsMargins(12,5,12,5);footerBox->setSpacing(3);
+ auto* connectionRow=new QHBoxLayout;connectionRow->setSpacing(12);networkSummary->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);connectionRow->addWidget(networkSummary,1);
+ auto* componentStatus=new pgn::ui::ComponentStatusStrip(pgn::ui::walletComponentVersionsContext(root,pgn::wallet::coreRuntimeDirectory(root,testnetMode),testnetMode),footer);connectionRow->addWidget(componentStatus);footerBox->addLayout(connectionRow);
+ auto* detailsRow=new QHBoxLayout;detailsRow->addWidget(status,1);detailsRow->addWidget(hardwareNotice);footerBox->addLayout(detailsRow);box->addWidget(footer);window.setCentralWidget(shell);
  // A reversible graph-only safety switch. Source journals and control paths
  // belong to the engine/bridge, never to the expensive visualization consumer.
- QFile graphPolicy(root+"/data/runtime/graph-policy.json");
+ QFile graphPolicy(pgn::app::mutableDataRoot(root)+"/runtime/graph-policy.json");
  const bool graphsPaused=!testnetMode&&graphPolicy.open(QIODevice::ReadOnly) &&
      QJsonDocument::fromJson(graphPolicy.readAll()).object().value("inputs_paused").toBool();
  canvas->setProperty("pgn_graph_inputs_paused",graphsPaused);
@@ -721,7 +793,7 @@ int main(int argc,char** argv) {
   pgn::ui::bindMiningControls(canvas,{});
  #ifdef _WIN32
   if(!config.isEmpty()){
-   const auto directory=QFileInfo(root+"/data/runtime").absoluteFilePath();
+   const auto directory=QFileInfo(pgn::app::mutableDataRoot(root)+"/runtime").absoluteFilePath();
    const pgn::mining::NativeRuntimePaths paths{QFileInfo(bookings->historyDatabase()).absoluteFilePath(),directory+"/scientific-history.sqlite",directory+"/source-journals",directory+"/engine-modules.sqlite",QStringLiteral("C:\\PGN\\runtime\\current-job\\checkpoint")};
    const auto systemRoot=qEnvironmentVariable("SystemRoot");
    const auto transport=pgn::mining::loadNativeRuntimeConfiguration(QFileInfo(config).absoluteFilePath(),QDir::fromNativeSeparators(systemRoot)+"/System32/OpenSSH/ssh.exe",paths);
@@ -740,7 +812,7 @@ int main(int argc,char** argv) {
  }
  else if(!testnetMode&&!config.isEmpty()){
 #ifdef _WIN32
-  const QString runtimeDirectory=QFileInfo(root+"/data/runtime").absoluteFilePath();
+  const QString runtimeDirectory=QFileInfo(pgn::app::mutableDataRoot(root)+"/runtime").absoluteFilePath();
   const QString checkpointLabel=QStringLiteral("C:\\PGN\\runtime\\current-job\\checkpoint");
   pgn::mining::NativeRuntimePaths paths{QFileInfo(bookings->historyDatabase()).absoluteFilePath(),
       runtimeDirectory+"/scientific-history.sqlite",runtimeDirectory+"/source-journals",runtimeDirectory+"/engine-modules.sqlite",checkpointLabel};
@@ -762,8 +834,8 @@ int main(int argc,char** argv) {
    canvas->setProperty("pgn_managed_source_device",nativeRuntime->managedSourceDevice());
    // Same local resource policy as the qualified finite producer. It does not
    // define any chain rule. Private one-thread actor, not a backend/process.
-   proofRuntime=std::make_unique<pgn::verification::SourceProofRuntime>(root+"/data/runtime/scientific-history.sqlite",
-       root+"/data/runtime/native-source-certificates.sqlite",pgn::verification::SourceProofPolicy{4,{{128,32,32},10000},{10002,1048576,32,1}});
+   proofRuntime=std::make_unique<pgn::verification::SourceProofRuntime>(pgn::app::mutableDataRoot(root)+"/runtime/scientific-history.sqlite",
+       pgn::app::mutableDataRoot(root)+"/runtime/native-source-certificates.sqlite",pgn::verification::SourceProofPolicy{4,{{128,32,32},10000},{10002,1048576,32,1}});
    proofRuntime->setEnabled(false);canvas->setProperty("pgn_cpu_audit_enabled",false);
   const QPointer<QWidget> proofCanvas(canvas);
    proofRuntime->onPage=[proofCanvas,proofDisplayRun](const pgn::verification::SourceProofPage& page){
@@ -848,10 +920,16 @@ int main(int argc,char** argv) {
    // the painted control. No new daemon, SSH shortcut or physical ACK fiction.
    startOwned=[&](const QString& id){
     if(!nativeRuntime||nativeRuntime->stopped()||!applicationStart)return QJsonObject{{"request_delivered",false},{"error","Native application unavailable"}};
-    applicationStart->control("GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac",id,true);
+    applicationStart->control(nativeRuntime->managedSourceDevice(),id,true);
     const auto message=applicationStart->status();
     return QJsonObject{{"request_id",id},{"request_delivered",true},
         {"status",message},{"scope","DELIVERED_TO_APPLICATION_START_NOT_ADMISSION_OR_PHYSICAL_OWNERSHIP"}};
+   };
+   stopOwned=[&](const QString& id){
+    if(!nativeRuntime||nativeRuntime->stopped()||!applicationStart)return QJsonObject{{"request_delivered",false},{"error","Native application unavailable"}};
+    applicationStart->control(nativeRuntime->managedSourceDevice(),id,false);
+    return QJsonObject{{"request_id",id},{"request_delivered",true},{"status",applicationStart->status()},
+        {"scope","DELIVERED_TO_APPLICATION_STOP_NOT_PHYSICAL_ACK"}};
    };
    const QPointer<pgn::mining::NativeApplicationRuntime> runtimeOwner(nativeRuntime.get());
    const QPointer<pgn::verification::SourceProofRuntime> proofOwner(proofRuntime.get());
@@ -896,17 +974,20 @@ int main(int argc,char** argv) {
  if(testnetMode){
   using GpuControl=std::function<void(const QString&,bool)>;
   auto gpuControls=std::make_shared<QHash<QString,GpuControl>>();
+  auto ownedGpuSelected=std::make_shared<bool>(false);
+  auto frameSelection=std::make_shared<pgn::ui::MiningFrameSelection>();
   pgn::ui::bindMiningResourceControls(canvas,[canvas,cpuFleet,gpuControls](const QString& device,const QString& id,bool on,int percent){
    if(cpuFleet->control(device,id,on,percent))return;
+   if(on&&!canvas->property("pgn_vanity_gpu_lease").toString().isEmpty()){pgn::ui::resolveDeviceControl(canvas,device,id,false,"GPU reserved by the vanity search");return;}
    const auto found=gpuControls->constFind(device.toLower());
    if(found==gpuControls->cend()){pgn::ui::resolveDeviceControl(canvas,device,id,false,"No qualified local worker is attached");return;}
    (*found)(id,on);
   });
-   const auto attachWorker=[&window,closeOwned,
+   const auto attachWorker=[&window,closeOwned,&startOwned,&stopOwned,ownedGpuSelected,
 #ifdef _WIN32
    &bridge,&hardwareMonitor,
 #endif
-   canvas,hardwareNotice,cpuFleet,ticketProgressRail,miningResults,records,testnetSummary,testnetProgress,pgn,status,gpuControls](const QJsonObject& profile,QPushButton* miningToggle){
+   canvas,hardwareNotice,cpuFleet,ticketProgressRail,miningResults,records,testnetSummary,testnetProgress,pgn,status,gpuControls,inspectWallet,toolsButton,frameSelection](const QJsonObject& profile,QPushButton* miningToggle){
    const auto device=profile.value("gpu_uuid").toString();
    if(device.isEmpty()||gpuControls->contains(device.toLower()))return;
    auto* stream=new QProcess(&window);QStringList arguments;for(const auto& value:profile.value("arguments").toArray())arguments.append(value.toString());
@@ -918,54 +999,164 @@ int main(int argc,char** argv) {
     endpoint.host=hardware.value("host").toString();endpoint.user=hardware.value("user").toString();endpoint.port=quint16(hardware.value("port").toInt());endpoint.hostKeyAlias=hardware.value("host_key_alias").toString();
     canvas->setProperty("pgn_managed_source_device",profile.value("gpu_uuid").toString());
     hardwareMonitor=std::make_unique<pgn::mining::NativeHardwareMonitor>(endpoint,&bridge);
-    hardwareMonitor->onAvailability=[hardwareNotice](bool available,const QString& error){hardwareNotice->setText(available?"WIZZ · GPU TELEMETRY CONNECTED":"WIZZ · GPU TELEMETRY UNAVAILABLE");hardwareNotice->setToolTip(error);};
+    hardwareMonitor->onAvailability=[hardwareNotice](bool available,const QString& error){hardwareNotice->setText(available?"GPU TELEMETRY CONNECTED":"GPU TELEMETRY UNAVAILABLE");hardwareNotice->setToolTip(error);};
     hardwareMonitor->start();
    }
 #endif
+   auto* connectionRecovery=new pgn::mining::NetworkControllerRecovery(stream,&window);
+   auto applyMiningIntent=std::make_shared<std::function<void(bool)>>();
    auto networkMode=std::make_shared<bool>(false);auto pendingNetwork=std::make_shared<bool>(false);auto stopRequested=std::make_shared<bool>(false);auto pendingCard=std::make_shared<QStringList>();auto presentationSequence=std::make_shared<qint64>(0);auto gapRates=std::make_shared<pgn::mining::GapRateWindow>();
    canvas->setProperty("pgn_source_only_control",true);
-   gpuControls->insert(device.toLower(),[canvas,device,miningToggle,pendingCard,ticketProgressRail](const QString& id,bool on){
+   gpuControls->insert(device.toLower(),[canvas,device,miningToggle,pendingCard,ticketProgressRail,applyMiningIntent](const QString& id,bool on){
+    if(on&&!canvas->property("pgn_vanity_gpu_lease").toString().isEmpty()){pgn::ui::resolveDeviceControl(canvas,device,id,false,"GPU reserved by the vanity search");return;}
     *pendingCard={device,id,on?QString("on"):QString("off")};canvas->setProperty("pgn_network_desired_on",on);
-    auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase",on?"Starting":"Stopping");ticketProgressRail->present(frame);miningToggle->setChecked(on);
+    auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase",on?"Starting":"Stopping");ticketProgressRail->present(frame);(*applyMiningIntent)(on);
    });
    stream->setProgram(profile.value("program").toString());stream->setArguments(arguments);stream->setProcessChannelMode(QProcess::SeparateChannels);
+   const auto sendPublicProfile=[stream,networkMode,toolsButton]{
+    if(!*networkMode||stream->state()!=QProcess::Running||!toolsButton->property("pgn_public_profile_saved").toBool())return;
+    const auto command=pgn::ui::publicProfileControl(toolsButton->property("pgn_public_name").toString());
+    if(!command.isEmpty())stream->write(command);
+   };
+   QObject::connect(stream,&QProcess::started,stream,sendPublicProfile);
+   if(auto* field=toolsButton->findChild<QLineEdit*>("pgn-public-profile-name"))QObject::connect(field,&QLineEdit::textChanged,stream,[sendPublicProfile](const QString&){sendPublicProfile();});
+   if(auto* save=toolsButton->findChild<QPushButton*>("pgn-public-profile-save"))QObject::connect(save,&QPushButton::clicked,stream,sendPublicProfile);
    auto buffer=std::make_shared<QByteArray>();
-   QObject::connect(stream,&QProcess::stateChanged,&window,[canvas](QProcess::ProcessState state){canvas->setProperty("pgn_worker_stream_state",int(state));});
+    QObject::connect(stream,&QProcess::stateChanged,&window,[canvas,stream](QProcess::ProcessState state){canvas->setProperty("pgn_worker_stream_state",int(state));canvas->setProperty("pgn_worker_stream_pid",qint64(stream->processId()));});
    QObject::connect(stream,&QProcess::errorOccurred,&window,[canvas,stream](QProcess::ProcessError){canvas->setProperty("pgn_worker_stream_error",stream->errorString().left(400));});
-   QObject::connect(stream,&QProcess::readyReadStandardOutput,&window,[stream,buffer,profile,miningResults,records,testnetSummary,testnetProgress,pgn,miningToggle,networkMode,stopRequested,canvas,pendingCard,presentationSequence,ticketProgressRail,gapRates]{
+   QObject::connect(stream,&QProcess::readyReadStandardOutput,&window,[stream,buffer,profile,cpuFleet,miningResults,records,testnetSummary,testnetProgress,pgn,miningToggle,networkMode,stopRequested,canvas,pendingCard,presentationSequence,ticketProgressRail,gapRates,connectionRecovery,status,toolsButton,frameSelection]{
     const auto received=stream->readAllStandardOutput();canvas->setProperty("pgn_worker_stream_bytes",canvas->property("pgn_worker_stream_bytes").toLongLong()+received.size());buffer->append(received);if(buffer->size()>4194304){buffer->clear();testnetSummary->setText("Worker presentation exceeded its admitted size");return;}
-    while(buffer->contains('\n')){const auto newline=buffer->indexOf('\n');const auto line=buffer->left(newline);buffer->remove(0,newline+1);auto packet=QJsonDocument::fromJson(line).object();
+    while(buffer->contains('\n')){const auto newline=buffer->indexOf('\n');const auto line=buffer->left(newline);buffer->remove(0,newline+1);auto packet=QJsonDocument::fromJson(line).object();if(pgn::ui::presentPublicProfileStatus(toolsButton,packet))continue;
+     pgn::ui::presentPublicMiningAccess(toolsButton,packet.value("network_admission").toObject());if(cpuFleet->packet(stream,packet))continue;cpuFleet->minerReady(stream);
      canvas->setProperty("pgn_worker_stream_packets",canvas->property("pgn_worker_stream_packets").toLongLong()+1);canvas->setProperty("pgn_worker_stream_phase",packet.value("phase").toString());canvas->setProperty("pgn_worker_stream_notice",packet.value("message").toString().left(400));
-     if(packet.value("schema")!="PGN_HORIZON_MINING_VIEW_V1"){auto phaseFrame=canvas->property("pgn_network_ticket_frame").toJsonObject();phaseFrame.insert("phase",packet.value("phase").toString("Starting"));ticketProgressRail->present(phaseFrame);if(packet.value("phase")=="Paused"){*stopRequested=false;const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);if(!pendingCard->isEmpty()){pgn::ui::resolveDeviceControl(canvas,pendingCard->at(0),pendingCard->at(1),true,"GPU released after checkpoint");pendingCard->clear();}}testnetSummary->setText(packet.value("message").toString("Starting · waiting for the first coherent worker checkpoint"));if(packet.value("phase")=="Needs attention"){const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);miningToggle->setText("Start mining");*stopRequested=false;if(!pendingCard->isEmpty()){pgn::ui::resolveDeviceControl(canvas,pendingCard->at(0),pendingCard->at(1),false,packet.value("message").toString());pendingCard->clear();}}continue;}
+     const bool sourceFresh=packet.value("source_stale").isBool()&&!packet.value("source_stale").toBool();
+     connectionRecovery->phase(packet.value("phase").toString(),sourceFresh);
+     const auto controlPhase=pgn::mining::networkControlPhase(packet.value("phase").toString().toStdString(),connectionRecovery->wanted(),connectionRecovery->needsAttention(),sourceFresh);
+     if(controlPhase.suppressPresentation)continue;
+     const bool showTicket=frameSelection->gpu(canvas->property("pgn_network_desired_on").toBool());
+     if(packet.value("schema")!="PGN_HORIZON_MINING_VIEW_V1"){if(showTicket){auto phaseFrame=canvas->property("pgn_network_ticket_frame").toJsonObject();phaseFrame.insert("phase",packet.value("phase").toString("Starting"));ticketProgressRail->present(phaseFrame);}if(controlPhase.acknowledgeOff){*stopRequested=false;const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);if(!pendingCard->isEmpty()&&pendingCard->at(2)=="off"){pgn::ui::resolveDeviceControl(canvas,pendingCard->at(0),pendingCard->at(1),true,"GPU released after checkpoint");pendingCard->clear();}}if(showTicket)testnetSummary->setText(packet.value("message").toString("Starting · waiting for the first coherent worker checkpoint"));if(packet.value("phase")=="Needs attention"){const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);miningToggle->setText("Start mining");*stopRequested=false;if(!pendingCard->isEmpty()){pgn::ui::resolveDeviceControl(canvas,pendingCard->at(0),pendingCard->at(1),false,packet.value("message").toString());pendingCard->clear();}}continue;}
      if(packet.value("title").toString().isEmpty())packet.insert("title","Network ticket");
-     pgn::ui::presentMiningTicketData(miningResults,packet);pgn::ui::presentRecordTicketData(records,packet);const auto phase=packet.value("phase").toString();const bool active=phase=="Searching";if(*networkMode){const QSignalBlocker block(miningToggle);if(*stopRequested&&phase!="Paused"){miningToggle->setChecked(false);miningToggle->setEnabled(false);miningToggle->setText("Stopping…");}else{*stopRequested=false;miningToggle->setEnabled(true);const bool on=phase!="Paused"&&phase!="Needs attention";miningToggle->setChecked(on);miningToggle->setText(on?"Stop mining":"Start mining");}}const auto rate=[](QJsonValue value){return value.isDouble()?QString::number(value.toDouble()/1e9,'f',0)+" Gpos/s":QString("—");};
-     canvas->setProperty("pgn_network_ticket_frame",packet);ticketProgressRail->present(packet);
+     if(showTicket){pgn::ui::presentMiningTicketData(miningResults,packet);pgn::ui::presentRecordTicketData(records,packet);}const auto phase=packet.value("phase").toString();const bool active=phase=="Searching";if(active&&!packet.value("source_stale").toBool()){const QString connected="Mining controller connected · Core verifies network state";if(status->text()!=connected)status->setText(connected);}if(*networkMode){const QSignalBlocker block(miningToggle);if(*stopRequested&&phase!="Paused"){miningToggle->setChecked(false);miningToggle->setEnabled(false);miningToggle->setText("Stopping…");}else{*stopRequested=false;miningToggle->setEnabled(true);const bool on=phase!="Paused"&&phase!="Needs attention";miningToggle->setChecked(on);miningToggle->setText(on?"Stop mining":"Start mining");}}const auto rate=[](QJsonValue value){return value.isDouble()?QString::number(value.toDouble()/1e9,'f',0)+" Gpos/s":QString("—");};
+     if(showTicket){canvas->setProperty("pgn_network_ticket_frame",packet);ticketProgressRail->present(packet);}
      FrontierTelemetrySnapshot lane;lane.authoritative=true;lane.stale=packet.value("source_stale").toBool();lane.sequence=++*presentationSequence;lane.observedUtc=QDateTime::fromString(packet.value("observed_utc").toString(),Qt::ISODateWithMs);lane.runId=packet.value("ticket_id").toString();lane.sourceMode="live";lane.state=active?"running":phase=="Report ready"?"complete":"stopped";lane.terminalSealed=phase=="Report ready";lane.gpuUuid=profile.value("gpu_uuid").toString();lane.gpuName=profile.value("device_name").toString();lane.domainStart=packet.value("start").toString();lane.domainEnd=packet.value("end").toString();lane.domainCurrent=packet.value("current").toString();lane.rowsCompleted=packet.value("positions").toString();lane.rowsTotal=packet.value("positions_total").toString();lane.numberBits=packet.value("bits").toInt();lane.cumulativeGapCandidates=QString::number(packet.value("scopes").toObject().value("ticket").toObject().value("statistics").toObject().value("count_total").toInteger());
      if(active){if(packet.value("speed_rate").isDouble())lane.e2ePositionsPerSecond=packet.value("speed_rate").toDouble();if(packet.value("average_rate").isDouble())lane.e2eWindowPositionsPerSecond=packet.value("average_rate").toDouble();if(packet.value("compute_tests_rate").isDouble())lane.powmPerSecond=packet.value("compute_tests_rate").toDouble();}lane.raw.insert("pgn_work_role",packet.value("work_role"));lane.raw.insert("pgn_cumulative_tests",packet.value("tests"));lane.raw.insert("pgn_source_time_ns",packet.value("compute_time_ns"));lane.raw.insert("pgn_clock_namespace",packet.value("ticket_id"));lane.raw.insert("pgn_compute_epoch",packet.value("compute_epoch"));bool ageOk=false;const auto sourceAge=packet.value("source_age_ns").toString().toULongLong(&ageOk);if(ageOk)pgn::mining::stampSourceAge(lane.raw,sourceAge,0,pgn::mining::receiptMonotonicNs());bool positionOk=false,timeOk=false;const auto position=packet.value("positions").toString().toULongLong(&positionOk),computeNs=packet.value("compute_time_ns").toString().toULongLong(&timeOk);const auto count=packet.value("scopes").toObject().value("ticket").toObject().value("statistics").toObject().value("count_total").toInteger();const auto mean=gapRates->observe(packet.value("ticket_id").toString().toStdString(),active&&positionOk&&timeOk,computeNs,position,quint64(std::max(qint64(0),count)));lane.raw.insert("pgn_cumulative_processed_gaps",QString::number(count));if(mean){lane.gapPairsTestedPerSecond=mean->perSecond;lane.raw.insert("pgn_retained_gaps_per_billion_positions",mean->perBillionPositions);lane.raw.insert("pgn_processed_gaps_per_second",mean->perSecond);lane.raw.insert("pgn_retained_gaps_per_second",mean->perSecond);lane.raw.insert("pgn_gap_window_positions_per_second",mean->positionsPerSecond);lane.raw.insert("pgn_gap_window_ns",QString::number(mean->spanNs));lane.raw.insert("pgn_source_interval_ns",QString::number(mean->spanNs));}lane.raw.insert("pgn_device_enabled",*networkMode&&miningToggle->isChecked()&&phase!="Paused"&&phase!="Needs attention");lane.raw.insert("pgn_process_running",active);lane.raw.insert("pgn_native_min_gap",QString::number(packet.value("minimum_gap").toInt()));pgn::ui::presentDevice(canvas,lane);canvas->update();
-     if(!pendingCard->isEmpty()&&((pendingCard->at(2)=="on"&&active)||(pendingCard->at(2)=="off"&&phase=="Paused"))){pgn::ui::resolveDeviceControl(canvas,pendingCard->at(0),pendingCard->at(1),true,phase);pendingCard->clear();}
-     testnetSummary->setText(QString("%1 · %2    |    Speed %3    |    60 s average %4").arg(profile.value("device_name").toString(),*stopRequested?QString("Stopping · saving progress"):phase,rate(packet.value("speed_rate")),rate(packet.value("average_rate"))));
+     if(!pendingCard->isEmpty()&&((pendingCard->at(2)=="on"&&controlPhase.acknowledgeOn)||(pendingCard->at(2)=="off"&&controlPhase.acknowledgeOff))){pgn::ui::resolveDeviceControl(canvas,pendingCard->at(0),pendingCard->at(1),true,phase);pendingCard->clear();}
+     if(showTicket)testnetSummary->setText(QString("%1 · %2    |    Speed %3    |    60 s average %4").arg(profile.value("device_name").toString(),*stopRequested?QString("Stopping · saving progress"):phase,rate(packet.value("speed_rate")),rate(packet.value("average_rate"))));
      const double width=packet.value("end").toString().toDouble()-packet.value("start").toString().toDouble();const double positions=packet.value("positions").toString().toDouble();if(width>0)testnetProgress->setValue(std::clamp(int(1000*positions/width),0,1000));
      pgn->present(pgn::ui::miningCardStates(canvas));
     }
    });
    QObject::connect(stream,&QProcess::readyReadStandardError,&window,[stream,status]{const auto error=stream->readAllStandardError();if(!error.isEmpty())status->setText(QString::fromUtf8(error).right(600));});
-   const auto startNetwork=[stream,buffer,profile,networkMode,pendingNetwork,testnetSummary]{buffer->clear();QStringList args;for(const auto& value:profile.value("network_arguments").toArray())args.append(value.toString());if(args.isEmpty()){testnetSummary->setText("Mining controller is not configured");return;}*networkMode=true;*pendingNetwork=false;stream->setArguments(args);stream->start();testnetSummary->setText("Starting · requesting an automatic network ticket");};
-   QObject::connect(stream,&QProcess::finished,&window,[testnetSummary,pgn,canvas,pendingNetwork,startNetwork,miningToggle](int,QProcess::ExitStatus){if(*pendingNetwork){startNetwork();return;}testnetSummary->setText("Worker connection closed · mining state unavailable");pgn->present(pgn::ui::miningCardStates(canvas));const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);miningToggle->setText("Start mining");});
-   QObject::connect(miningToggle,&QPushButton::toggled,&window,[stream,networkMode,pendingNetwork,startNetwork,testnetSummary,miningToggle,stopRequested](bool on){
+   const auto startNetwork=[stream,buffer,profile,cpuFleet,networkMode,pendingNetwork,testnetSummary,connectionRecovery,stopRequested]{if(stream->state()!=QProcess::NotRunning)return;connectionRecovery->launching();*stopRequested=!connectionRecovery->wanted();buffer->clear();QStringList args;for(const auto& value:profile.value("network_arguments").toArray())args.append(value.toString());if(args.isEmpty()){testnetSummary->setText("Mining controller is not configured");return;}*networkMode=true;*pendingNetwork=false;cpuFleet->attachMiner(stream);stream->setArguments(args);stream->start();testnetSummary->setText("Starting · requesting an automatic network ticket");};
+   QObject::connect(stream,&QProcess::finished,&window,[testnetSummary,pgn,canvas,pendingNetwork,startNetwork,miningToggle,networkMode,connectionRecovery,cpuFleet,stream](int,QProcess::ExitStatus){cpuFleet->disconnected(stream);*networkMode=false;if(*pendingNetwork){startNetwork();return;}testnetSummary->setText(connectionRecovery->needsAttention()?QString("Mining controller needs attention · checkpoint retained"):QString("Reconnecting · saved ticket retained"));pgn->present(pgn::ui::miningCardStates(canvas));const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);miningToggle->setText("Start mining");});
+   *applyMiningIntent=[stream,networkMode,pendingNetwork,startNetwork,testnetSummary,miningToggle,stopRequested,canvas,connectionRecovery](bool on){
+    if(on&&!canvas->property("pgn_vanity_gpu_lease").toString().isEmpty()){const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);testnetSummary->setText("GPU reserved by the vanity search");return;}
+    {const QSignalBlocker blocked(miningToggle);miningToggle->setChecked(on);}
+    connectionRecovery->intent(on);canvas->setProperty("pgn_network_desired_on",on);
     miningToggle->setText(on?"Stop mining":"Stopping…");if(on)*stopRequested=false;if(!on){*stopRequested=true;*pendingNetwork=false;miningToggle->setEnabled(false);}
+    if(stream->state()==QProcess::NotRunning){connectionRecovery->restartIfClosed();return;}
     if(on&&!*networkMode){*pendingNetwork=true;if(stream->state()==QProcess::NotRunning)startNetwork();else stream->kill();return;}
     if(*networkMode&&stream->state()==QProcess::Running){stream->write(on?"{\"action\":\"resume\"}\n":"{\"action\":\"pause\"}\n");testnetSummary->setText(on?"Starting · resuming the saved checkpoint":"Stopping · saving the current checkpoint");}
-   });
+   };
+   QObject::connect(miningToggle,&QPushButton::toggled,&window,[applyMiningIntent](bool on){(*applyMiningIntent)(on);});
+   if(!*ownedGpuSelected){
+    *ownedGpuSelected=true;
+    // The same normal controller as the visible ON/OFF control, with no
+    // navigation, synthetic mouse event, focus change or CPU control.
+    const auto requestMining=[&window,canvas,miningToggle,applyMiningIntent,device](const QString& id,bool on){
+     if(window.property("pgn_closing").toBool())return QJsonObject{{"request_delivered",false},{"error","Application is closing"}};
+     if(on&&!canvas->property("pgn_vanity_gpu_lease").toString().isEmpty())return QJsonObject{{"request_delivered",false},{"error","GPU reserved by vanity search"}};
+     if(on&&!miningToggle->isEnabled())return QJsonObject{{"request_delivered",false},{"error","Mining control transition is pending"}};
+     (*applyMiningIntent)(on);
+     return QJsonObject{{"request_id",id},{"request_delivered",canvas->property("pgn_network_desired_on").toBool()==on},
+       {"device_id",device},{"requested_enabled",on},{"scope","DELIVERED_TO_NORMAL_MINER_NOT_PHYSICAL_ACK"}};
+    };
+    startOwned=[requestMining](const QString& id){return requestMining(id,true);};
+    stopOwned=[requestMining](const QString& id){return requestMining(id,false);};
+   }
+   connectionRecovery->mayReconnect=[&window,canvasGuard=QPointer<QWidget>(canvas)]{return canvasGuard&&!window.property("pgn_closing").toBool()&&canvasGuard->property("pgn_vanity_gpu_lease").toString().isEmpty();};
+   connectionRecovery->reconnect=[startNetwork,canvas](bool wanted){canvas->setProperty("pgn_network_desired_on",wanted);canvas->setProperty("pgn_worker_reconnect_count",canvas->property("pgn_worker_reconnect_count").toInt()+1);startNetwork();};
+   connectionRecovery->onWaiting=[canvas,testnetSummary,ticketProgressRail](int delay){canvas->setProperty("pgn_worker_reconnect_delay_ms",delay);testnetSummary->setText("Reconnecting · saved ticket retained");auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase","Reconnecting");canvas->setProperty("pgn_network_ticket_frame",frame);ticketProgressRail->present(frame);};
+   connectionRecovery->disconnected=[canvas,profile,miningToggle,pendingCard,ticketProgressRail,connectionRecovery,presentationSequence]{
+    canvas->setProperty("pgn_worker_stream_phase","Disconnected");auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase","Disconnected");frame.insert("source_stale",true);canvas->setProperty("pgn_network_ticket_frame",frame);ticketProgressRail->present(frame);
+    FrontierTelemetrySnapshot stale;stale.sequence=++*presentationSequence;stale.observedUtc=QDateTime::currentDateTimeUtc();stale.sourceMode="live";stale.runId=frame.value("ticket_id").toString();stale.authoritative=true;stale.stale=true;stale.gpuUuid=profile.value("gpu_uuid").toString();stale.gpuName=profile.value("device_name").toString();stale.state="stopped";stale.raw.insert("pgn_device_enabled",false);stale.raw.insert("pgn_process_running",false);pgn::ui::presentDevice(canvas,stale);
+    const QSignalBlocker blocked(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);if(connectionRecovery->needsAttention()&&!pendingCard->isEmpty()){pgn::ui::resolveDeviceControl(canvas,pendingCard->at(0),pendingCard->at(1),false,"Control connection could not restart; checkpoint retained");pendingCard->clear();}
+   };
+   const QPointer<QWidget> gpuCanvas(canvas);const QPointer<QPushButton> gpuToggle(miningToggle);
+   const auto controlState=[gpuCanvas,gpuToggle]{
+    if(!gpuCanvas||!gpuToggle)return QString("unavailable");
+    const auto phase=gpuCanvas->property("pgn_network_ticket_frame").toJsonObject().value("phase").toString();
+    if(phase=="Paused"&&!gpuToggle->isChecked())return QString("off");
+    if(phase=="Starting"||phase=="Stopping"||!gpuToggle->isEnabled())return QString("pending");
+    if(phase=="Searching"||phase=="Report ready")return gpuToggle->isChecked()?QString("on"):QString("pending");
+    return QString("unavailable");
+   };
+   const auto waitForGpu=[&window,gpuCanvas,controlState](bool wanted,const QString& lease,bool releaseOnFailure,std::function<void(QString)> done){
+    auto* timer=new QTimer(&window);timer->setInterval(100);auto elapsed=std::make_shared<QElapsedTimer>();elapsed->start();
+    QObject::connect(timer,&QTimer::timeout,timer,[timer,elapsed,gpuCanvas,controlState,wanted,lease,releaseOnFailure,done=std::move(done)]{
+     const auto state=controlState();const bool reached=state==(wanted?QString("on"):QString("off"));
+     if(!reached&&elapsed->elapsed()<45000)return;
+     timer->stop();timer->deleteLater();
+     if(!reached&&releaseOnFailure&&gpuCanvas&&gpuCanvas->property("pgn_vanity_gpu_lease").toString()==lease)gpuCanvas->setProperty("pgn_vanity_gpu_lease",QVariant{});
+     done(reached?QString{}:QString("GPU transition was not confirmed; review the mining card before retrying"));
+    });timer->start();
+   };
+   pgn::ui::VanityGpuServices vanityGpu;vanityGpu.device=device;vanityGpu.label=profile.value("device_name").toString("Selected GPU");vanityGpu.host=profile.value("local").toBool()?"local":"remote";
+   vanityGpu.sshProgram=profile.value("program").toString();vanityGpu.remoteEndpoint=profile.value("hardware_endpoint").toObject();
+   vanityGpu.state=controlState;
+   vanityGpu.pause=[canvas,miningToggle,waitForGpu,controlState](const QString& lease,std::function<void(QString)> done){
+    const auto held=canvas->property("pgn_vanity_gpu_lease").toString(),state=controlState();
+    if(!held.isEmpty()||state!="on"&&state!="off"){done("GPU control is busy; no vanity worker started");return;}
+    canvas->setProperty("pgn_vanity_gpu_lease",lease);
+    if(state=="off"){done({});return;}
+    canvas->setProperty("pgn_network_desired_on",false);miningToggle->setChecked(false);waitForGpu(false,lease,true,std::move(done));
+   };
+   vanityGpu.release=[&window,canvas,miningToggle,waitForGpu](const QString& lease,bool resume,std::function<void(QString)> done){
+    if(canvas->property("pgn_vanity_gpu_lease").toString()!=lease){done("GPU reservation changed; automatic mining resume withheld");return;}
+    canvas->setProperty("pgn_vanity_gpu_lease",QVariant{});
+    if(!resume||window.property("pgn_closing").toBool()){done({});return;}
+    canvas->setProperty("pgn_network_desired_on",true);miningToggle->setEnabled(true);miningToggle->setChecked(true);waitForGpu(true,lease,false,std::move(done));
+   };
+   pgn::ui::bindVanityGpu(inspectWallet,vanityGpu);
    auto closeRequested=std::make_shared<bool>(false),closeAllowed=std::make_shared<bool>(false);
-   new pgn::ui::MiningWorkerCloseGuard(&window,[stream,networkMode,pendingNetwork,closeRequested,closeAllowed,testnetSummary,ticketProgressRail,canvas]{
+   new pgn::ui::MiningWorkerCloseGuard(&window,[stream,networkMode,pendingNetwork,closeRequested,closeAllowed,testnetSummary,ticketProgressRail,canvas,inspectWallet,&window]{
+    window.setProperty("pgn_closing",true);if(pgn::ui::drainVanityForClose(inspectWallet,[&window]{window.close();}))return false;
     if(*closeAllowed||!*networkMode||stream->state()==QProcess::NotRunning)return true;
     if(!*closeRequested){*closeRequested=true;*pendingNetwork=false;stream->write("{\"action\":\"quit\"}\n");testnetSummary->setText("Closing · saving checkpoint and releasing GPU");auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase","Stopping");ticketProgressRail->present(frame);}return false;
    });
    QObject::connect(stream,&QProcess::finished,&window,[&window,closeOwned,closeRequested,closeAllowed](int code,QProcess::ExitStatus status){if(*closeRequested&&code==0&&status==QProcess::NormalExit){*closeAllowed=true;QTimer::singleShot(0,&window,closeOwned);}});
    QObject::connect(stream,&QProcess::started,&window,[stream,networkMode,stopRequested,canvas]{canvas->setProperty("pgn_worker_stream_error",QVariant{});if(*networkMode&&*stopRequested)stream->write("{\"action\":\"pause\"}\n");});
-   stream->start();hardwareNotice->setText(profile.value("local").toBool()?"LOCAL · OPTIMIZED ENGINE":"WIZZ · OWNED OPTIMIZED ENGINE");status->setText("TESTNET · live worker presentation · Core verifies network state");
+   stream->start();hardwareNotice->setText(profile.value("local").toBool()?"LOCAL · OPTIMIZED ENGINE":"REMOTE · OWNED OPTIMIZED ENGINE");status->setText("TESTNET · live worker presentation · Core verifies network state");
   };
-  QFile streamProfile(root+"/data/testnet/ui-runtime/worker-stream.json");
+   cpuFleet->onNormalFrame=[canvas,miningResults,records,ticketProgressRail,frameSelection](QJsonObject frame){
+   canvas->setProperty("pgn_cpu_normal_frame",frame);
+   if(frame.value("schema")!="PGN_HORIZON_MINING_VIEW_V1"||!frameSelection->cpu(canvas->property("pgn_network_desired_on").toBool()))return;
+   pgn::ui::presentMiningTicketData(miningResults,frame);pgn::ui::presentRecordTicketData(records,frame);
+   canvas->setProperty("pgn_network_ticket_frame",frame);ticketProgressRail->present(frame);
+  };
+  const auto cpuBundle=QCoreApplication::applicationDirPath()+"/EngineRuntime";
+  const auto cpuHost=cpuBundle+"/network/horizon-engine-host"
+#ifdef _WIN32
+   ".exe"
+#endif
+   ;
+  auto* cpuPrepareTimer=new QTimer(&window);cpuPrepareTimer->setInterval(3000);auto cpuPreparing=std::make_shared<bool>(false);
+  const auto prepareCpu=[cpuPreparing,cpuPrepareTimer,cpuHost,cpuBundle,root,inspectWallet,cpuFleet,canvas,&window]{
+   if(*cpuPreparing||!QFileInfo::exists(cpuHost))return;*cpuPreparing=true;
+   pgn::ui::readWalletLocalConnection(inspectWallet,[cpuPreparing,cpuPrepareTimer,cpuHost,cpuBundle,root,cpuFleet,canvas,&window](QJsonObject context,QString error){
+    if(!error.isEmpty()){*cpuPreparing=false;canvas->setProperty("pgn_cpu_normal_preparation",error);return;}
+    const auto stateRoot=pgn::wallet::normalEngineStateDirectory(root,context.value("genesis").toString());
+    if(stateRoot.isEmpty()){*cpuPreparing=false;canvas->setProperty("pgn_cpu_normal_preparation","Verified network identity is required");return;}
+    pgn::engine::localRuntimeQuery(&window,cpuHost,{"--prepare-local-cpu","--bundle",cpuBundle,"--state-root",stateRoot},context,
+     [cpuPreparing,cpuPrepareTimer,cpuFleet,canvas](QJsonObject value,QString error){
+      *cpuPreparing=false;
+      if(!error.isEmpty()||value.value("schema")!="PGN_LOCAL_RUNTIME_PROFILES_V1"||value.value("mining_started")!=false||value.value("allocation_requested")!=false||!cpuFleet->configureNormalMiner(value.value("cpu_profile").toObject())){canvas->setProperty("pgn_cpu_normal_preparation",error.isEmpty()?QString("CPU normal profile not ready"):error);return;}
+      canvas->setProperty("pgn_cpu_normal_preparation","Ready; waiting for CPU ON");cpuPrepareTimer->stop();
+     });
+   });
+  };
+  QObject::connect(cpuPrepareTimer,&QTimer::timeout,&window,prepareCpu);cpuPrepareTimer->start();QTimer::singleShot(0,&window,prepareCpu);
+  QFile streamProfile(pgn::app::mutableDataRoot(root)+"/testnet/ui-runtime/worker-stream.json");
   if(streamProfile.open(QIODevice::ReadOnly)&&streamProfile.size()<=32768){
    const auto profile=QJsonDocument::fromJson(streamProfile.readAll()).object();streamProfile.close();attachWorker(profile,miningToggle);
   }else{
@@ -981,7 +1172,9 @@ int main(int argc,char** argv) {
     if(*preparing||!QFileInfo::exists(host))return;*preparing=true;
     pgn::ui::readWalletLocalConnection(inspectWallet,[preparing,prepareTimer,host,bundle,root,canvas,testnetSummary,miningToggle,attachWorker,attachAuditIdentity,&window](QJsonObject context,QString error){
      if(!error.isEmpty()){*preparing=false;canvas->setProperty("pgn_local_runtime_status",error);return;}
-     pgn::engine::localRuntimeQuery(&window,host,{"--prepare-local","--bundle",bundle,"--state-root",root+"/data/testnet/local-engine"},context,
+     const auto stateRoot=pgn::wallet::normalEngineStateDirectory(root,context.value("genesis").toString());
+     if(stateRoot.isEmpty()){*preparing=false;canvas->setProperty("pgn_local_runtime_status","Verified network identity is required");return;}
+     pgn::engine::localRuntimeQuery(&window,host,{"--prepare-local","--bundle",bundle,"--state-root",stateRoot},context,
       [preparing,prepareTimer,canvas,testnetSummary,miningToggle,attachWorker,attachAuditIdentity,&window](QJsonObject value,QString error){
        *preparing=false;
        if(!error.isEmpty()||value.value("schema")!="PGN_LOCAL_RUNTIME_PROFILES_V1"||value.value("mining_started")!=false||value.value("allocation_requested")!=false||value.value("profiles").toArray().size()>32){canvas->setProperty("pgn_local_runtime_status",error.isEmpty()?QString("Local preparation was refused"):error);return;}
@@ -1024,7 +1217,7 @@ int main(int argc,char** argv) {
   QFile out;if(out.open(stdout,QIODevice::WriteOnly))out.write(QJsonDocument(receipt).toJson(QJsonDocument::Compact)+"\n");
  });
  // Native history is admitted in one publication batch and painted through
- pgn::ui::bindVerificationReceipts(canvas,root+"/data/runtime/independent-gap-verifications.sqlite",
+ pgn::ui::bindVerificationReceipts(canvas,pgn::app::mutableDataRoot(root)+"/runtime/independent-gap-verifications.sqlite",
      pgn::verification::localArchiveValidatorPins());
  // the cached dense layer. The conserved prototype archive remains paginated
  // until its complete bounded-memory projection is connected.

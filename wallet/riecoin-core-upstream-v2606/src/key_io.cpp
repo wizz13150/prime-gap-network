@@ -275,13 +275,22 @@ CTxDestination DecodeDestination(const std::string& str, const std::optional<pgn
     if (policy->keyhash_alias && str.starts_with(policy->keyhash_alias->required_namespace)) {
         if (error_locations)error_locations->clear();
         const auto& a=*policy->keyhash_alias;std::vector<unsigned char> bytes;
-        if (str.size()>policy->max_characters || !DecodeBase58Check(str,bytes,a.version.size()+20) ||
-            bytes.size()!=a.version.size()+20 || !std::equal(a.version.begin(),a.version.end(),bytes.begin()) ||
-            EncodeBase58Check(bytes)!=str) {
-            error_msg="Invalid native Base58Check keyhash alias";return CNoDestination{};
+        if (str.size()<=policy->max_characters && DecodeBase58Check(str,bytes,a.version.size()+20) &&
+            bytes.size()==a.version.size()+20 && std::equal(a.version.begin(),a.version.end(),bytes.begin()) &&
+            EncodeBase58Check(bytes)==str) {
+            WitnessV0KeyHash keyhash;std::copy(bytes.begin()+a.version.size(),bytes.end(),keyhash.begin());
+            // A namespace can also begin an older Bech32 address. Decode both
+            // independently; never give ambiguous text two different scripts.
+            std::string witness_error;
+            const auto witness=DecodeWitnessDestination(str,*policy,witness_error,nullptr);
+            if (IsValidDestination(witness) && witness!=CTxDestination{keyhash}) {
+                error_msg="Ambiguous native address encodings";return CNoDestination{};
+            }
+            error_msg.clear();return keyhash;
         }
-        WitnessV0KeyHash keyhash;std::copy(bytes.begin()+a.version.size(),bytes.end(),keyhash.begin());
-        error_msg.clear();return keyhash;
+        // Invalid Base58 is not sufficient to reject a valid older witness
+        // address sharing the same human-readable namespace.
+
     }
     return DecodeWitnessDestination(str, *policy, error_msg, error_locations);
 }

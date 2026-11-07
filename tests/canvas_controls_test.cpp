@@ -1,16 +1,45 @@
 #include "ui/mining_canvas.h"
 #include "telemetry.h"
+#include "booking/booking_model.h"
 #include <QApplication>
 #include <QMouseEvent>
 #include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QThread>
+#include <QTemporaryDir>
+#include <QSettings>
+#include <QPainter>
 #include <QUuid>
 #include <memory>
 #include <iostream>
 int main(int argc,char** argv){
  QApplication app(argc,argv);QCoreApplication::setOrganizationName("PGN-QA");QCoreApplication::setApplicationName("click-control-test");
+ QTemporaryDir isolated;QSettings::setDefaultFormat(QSettings::IniFormat);QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,isolated.path());
+ {
+  std::unique_ptr<QWidget> fresh(pgn::ui::createMiningCanvas());pgn::ui::configureMiningDashboard(fresh.get());
+  pgn::booking::BookingModel model(isolated.path());pgn::ui::bindBookingModel(fresh.get(),&model);fresh->resize(1040,180);
+  const QString gpu="GPU-startup-control-fixture";FrontierTelemetrySnapshot source;source.gpuUuid=gpu;source.gpuName="Startup control fixture";
+  source.sourceMode="live";source.observedUtc=QDateTime::currentDateTimeUtc();
+  pgn::ui::presentDevice(fresh.get(),source);
+  int commands=0;QString pending;bool requested=false;
+  pgn::ui::bindMiningControls(fresh.get(),[&](const QString&,const QString& id,bool on){++commands;pending=id;requested=on;});
+  const auto paint=[&]{QImage image(fresh->size(),QImage::Format_ARGB32_Premultiplied);QPainter painter(&image);fresh->render(&painter);};
+  paint();if(fresh->property("pgn_total_gpu_state").toString()!="unknown"||commands){std::cerr<<"FAIL unobserved startup falsely claims GPU ON/OFF\n";return 20;}
+  QJsonObject inventory{{"host","QA"},{"model","Startup CPU fixture"},{"maximum_workers",4}};
+  QJsonObject status{{"state","IDLE"},{"enabled",false},{"requested_threads",2},{"resident_workers",0},{"active_workers",0}};
+  source.raw={{"pgn_device_enabled",false},{"legacy_miner_bound",false}};
+  pgn::ui::presentDevice(fresh.get(),source);pgn::ui::presentCpuController(fresh.get(),inventory,status,true);paint();
+  if(fresh->property("pgn_total_gpu_state").toString()!="off"||fresh->property("pgn_total_cpu_state").toString()!="off"||commands){std::cerr<<"FAIL first confirmed OFF frame has stale aggregate ON\n";return 21;}
+  source.raw["pgn_device_enabled"]=true;source.raw["legacy_miner_bound"]=true;source.observedUtc=source.observedUtc.addMSecs(1);
+  status["enabled"]=true;pgn::ui::presentDevice(fresh.get(),source);pgn::ui::presentCpuController(fresh.get(),inventory,status,true);paint();
+  if(fresh->property("pgn_total_gpu_state").toString()!="on"||fresh->property("pgn_total_cpu_state").toString()!="on"||commands){std::cerr<<"FAIL first confirmed ON frame has stale aggregate\n";return 22;}
+  const auto rect=pgn::ui::miningToggleRect(fresh.get(),gpu);if(rect.isEmpty())return 23;
+  QMouseEvent stop(QEvent::MouseButtonPress,rect.center(),fresh->mapToGlobal(rect.center().toPoint()),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(fresh.get(),&stop);
+  if(commands!=1||requested)return 24;
+  pgn::ui::resolveDeviceControl(fresh.get(),gpu,pending,true,"Fixture OFF acknowledgement");paint();
+  if(fresh->property("pgn_total_gpu_state").toString()!="off"){std::cerr<<"FAIL repaint of older ON telemetry undoes newer OFF acknowledgement\n";return 25;}
+ }
  std::unique_ptr<QWidget> canvas(pgn::ui::createMiningCanvas());canvas->resize(1380,900);
  const QString id="GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac";
  FrontierTelemetrySnapshot lane;lane.gpuUuid=id;lane.gpuName="NVIDIA GeForce RTX3090";lane.runId="qa-live";lane.sourceMode="live";

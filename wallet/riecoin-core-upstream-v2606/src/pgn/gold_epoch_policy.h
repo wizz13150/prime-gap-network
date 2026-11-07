@@ -50,6 +50,24 @@ inline std::optional<CAmount> GoldEpochLifetimeOrdinaryBudget(const GoldEpochDef
         if(total>arith_uint256{uint64_t(PGN_MAX_SUPPLY_ATOMIC)})return {};
     }return CAmount(total.GetLow64());
 }
+// Logical task count is independent of the size of one bounded output page.
+// The caller supplies authenticated canonical ordinals; this arithmetic grants
+// no eligibility, chain acceptance, claim ownership or right to mint by itself.
+inline std::optional<CAmount> QuoteAuditPotRange(CAmount pot,uint64_t tasks,uint64_t first,uint64_t count){
+    if(pot<0||pot>PGN_MAX_SUPPLY_ATOMIC||first>tasks||count>tasks-first)return {};
+    if(!tasks)return first==0&&count==0?std::optional<CAmount>{0}:std::nullopt;
+    const auto total=uint64_t(pot),base=total/tasks,remainder=total%tasks;
+    const auto bonus=first<remainder?std::min(count,remainder-first):uint64_t{0};
+    // count<=tasks ensures base*count+bonus<=pot, including UINT64_MAX tasks.
+    return CAmount(base*count+bonus);
+}
+inline std::optional<std::vector<CAmount>> SplitAuditPotPage(CAmount pot,uint64_t tasks,uint64_t first,size_t count){
+    if(count>1024||!QuoteAuditPotRange(pot,tasks,first,uint64_t(count)))return {};
+    std::vector<CAmount> payments;payments.reserve(count);
+    for(size_t i=0;i<count;++i)payments.push_back(*QuoteAuditPotRange(pot,tasks,first+uint64_t(i),1));
+    return payments;
+}
+
 // Stable task ordering is supplied by authenticated (report, slot, attempt)
 // identity. The remainder is atomic units; no coins disappear through rounding.
 inline std::optional<std::vector<CAmount>> SplitAuditPot(CAmount pot,size_t tasks){

@@ -2,7 +2,7 @@
 import io,json,re,sys,zipfile,math
 MAX_INPUT=2*1024*1024
 MAX_SAMPLES=1800
-FORBIDDEN=('cookie','password','secret','private','signature','nonce','counts','answers','report','scopes','best','recent','wif','authorization')
+FORBIDDEN=('cookie','password','secret','private','signature','nonce','counts','answers','report','scopes','best','recent','wif','authorization','seed','token','credential','api_key','apikey')
 
 def clean(value,depth=0):
  if depth>12:raise ValueError('Diagnostic nesting exceeds its bound')
@@ -18,6 +18,7 @@ def clean(value,depth=0):
   return[clean(item,depth+1)for item in value]
  if isinstance(value,str):
   if len(value)>2048:raise ValueError('Diagnostic text exceeds its bound')
+  if re.search(r'(?i)(?<![a-z0-9])prv[0-9a-f]{64}(?![0-9a-f])',value):raise ValueError('Native private key in diagnostic text refused')
   value=re.sub(r'(?i)[a-z]:[\\/]Users[\\/][^\\/\s]+',r'<user>',value)
   value=re.sub(r'/(?:home|Users)/[^/\s]+','<user>',value)
   value=re.sub(r'(?i)(?:authorization|cookie|password|secret|private.key)\s*[:=][^\r\n]*','<redacted>',value)

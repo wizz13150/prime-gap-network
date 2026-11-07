@@ -10,4 +10,5 @@ void presentMiningResultsSource(QWidget*,const FrontierTelemetrySnapshot&);
 void presentMiningTicketData(QWidget*,const QJsonObject&);
 void presentMiningResultsIndex(QWidget*,const QJsonObject&);
 void presentMiningProductivity(QWidget*,const QJsonArray&,const QString& ticketWidth);
+void presentMiningNetworkMetrics(QWidget*,const QJsonObject&,const QString& expectedGenesis);
 }

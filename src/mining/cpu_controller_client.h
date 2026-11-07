@@ -15,6 +15,8 @@ class CpuControllerClient final:public QObject {
 public:
     explicit CpuControllerClient(CpuControlEndpoint,QObject* parent=nullptr);
     void start();
+    qint64 ownedCommand(QString action,QJsonObject fields);
+    std::function<void(qint64,QJsonObject)> onReply;
     bool openAudit(const QJsonObject& authenticatedRequest);
     qint64 configure(bool enabled,int workers);
     bool stopped()const{return process_.state()==QProcess::NotRunning;}
@@ -31,10 +33,11 @@ public:
     std::function<void()> onClosed;
 private:
     struct Pending {QString action;qint64 started;QString expectedDigest;bool timedOut{};};
-    CpuControlEndpoint endpoint_;QProcess process_;QTimer timer_;QElapsedTimer clock_;QByteArray buffer_;QHash<qint64,Pending> pending_;
+    CpuControlEndpoint endpoint_;QProcess process_;QTimer timer_,reconnect_;QElapsedTimer clock_;QByteArray buffer_;QHash<qint64,Pending> pending_;
     QJsonObject inventory_;qint64 sequence_{},generation_{};bool ready_{},healthy_{},closing_{};
     QList<qint64> retiredStatus_;QString terminalDiagnostic_;
+    int reconnectAttempts_{};
     qint64 send(QString,QJsonObject fields={});
-    void receive();void fail(const QString&);
+    void receive();void fail(const QString&);void scheduleReconnect();
 };
 }

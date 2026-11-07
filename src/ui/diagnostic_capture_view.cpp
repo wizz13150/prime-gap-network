@@ -30,14 +30,16 @@ class DiagnosticCaptureView final:public QWidget {
  void stop(){timer_.stop();start_->setEnabled(!exporting_);stop_->setEnabled(false);save_->setEnabled(!exporting_&&!samples_.isEmpty());state(QString("Stopped · %1 samples retained in memory").arg(samples_.size()));}
 public:
  DiagnosticCaptureView(QString exporter,std::function<QJsonObject()> sample,QWidget* parent):QWidget(parent),exporter_(std::move(exporter)),sample_(std::move(sample)),timer_(this){
-  setObjectName("pgn-test-diagnostics");auto* box=new QVBoxLayout(this);
-  auto* title=new QLabel("Testnet diagnostics",this);box->addWidget(title);
-  auto* description=new QLabel("Record application, network and device status, then save a ZIP for troubleshooting.\nThe capture stays in memory until you save it. Wallet files, keys, credentials, audit answers and gap tables are excluded.",this);description->setWordWrap(true);box->addWidget(description);
+  setObjectName("pgn-test-diagnostics");auto* box=new QVBoxLayout(this);box->setContentsMargins(24,20,24,20);box->setSpacing(16);
+  auto* title=new QLabel("Testnet diagnostics",this);title->setStyleSheet("font-size:22px;font-weight:600;color:#e7f9f1;");box->addWidget(title);
+  auto* description=new QLabel("Record application, network and device status, then save a ZIP for troubleshooting.\nThe capture stays in memory until you save it. Wallet files, keys, credentials, audit answers and gap tables are excluded.",this);description->setWordWrap(true);description->setStyleSheet("font-size:13px;color:#a8c7cc;");box->addWidget(description);
   auto* actions=new QHBoxLayout;start_=new QPushButton("Start recording",this);stop_=new QPushButton("Stop",this);save_=new QPushButton("Save ZIP",this);
   start_->setObjectName("pgn-diagnostics-start");stop_->setObjectName("pgn-diagnostics-stop");save_->setObjectName("pgn-diagnostics-save");
+  for(auto* button:{start_,stop_,save_}){button->setMinimumHeight(36);button->setStyleSheet("font-size:12px;padding:6px 16px;");}
+  start_->setStyleSheet("font-size:12px;font-weight:600;padding:6px 16px;background:#e8bf74;color:#091820;border:1px solid #e8bf74;border-radius:7px;");
   start_->setToolTip("Start a new recording; replaces the current unsaved capture");stop_->setEnabled(false);save_->setEnabled(false);
   actions->addWidget(start_);actions->addWidget(stop_);actions->addWidget(save_);actions->addStretch();box->addLayout(actions);
-  status_=new QLabel(this);status_->setObjectName("pgn-diagnostics-status");status_->setWordWrap(true);box->addWidget(status_);box->addStretch();state("No recording · no diagnostic file has been created");
+  status_=new QLabel(this);status_->setObjectName("pgn-diagnostics-status");status_->setWordWrap(true);status_->setStyleSheet("font-size:13px;color:#91dfbb;padding:14px;background:#071e26;border:1px solid #28515b;border-radius:8px;");box->addWidget(status_);box->addStretch();state("No recording · no diagnostic file has been created");
   timer_.setInterval(1000);connect(&timer_,&QTimer::timeout,this,[this]{capture();});
   connect(start_,&QPushButton::clicked,this,[this]{if(exporting_)return;samples_={};bytes_=0;setProperty("pgn_capture_saved",QVariant{});start_->setEnabled(false);stop_->setEnabled(true);save_->setEnabled(false);timer_.start();capture();});
   connect(stop_,&QPushButton::clicked,this,[this]{stop();});

@@ -143,6 +143,8 @@ class Job:
         self._input_guard = None
         self._receipt_error_since = None
         self.is_plan = '--plan' in self.args
+        self._output_end = None
+        self._output_binding = None
 
     @property
     def pid(self):
@@ -166,6 +168,8 @@ class Job:
                 continue
             if value is None:
                 return
+            if self.terminal(value):
+                self._output_end = getattr(value, 'end_offset', None)
             yield value
 
     def terminal(self, line):
@@ -239,6 +243,8 @@ class Job:
             self.manager.owner.commit_identity(path)
         elif identity.get('pid') != self.pid or str(identity.get('birth')) != str(self.birth):
             raise ResidentProtocolError('WAL owner identity mismatch')
+        if not self.is_plan and hasattr(self.manager.owner, 'bind_output'):
+            self._output_binding = self.manager.owner.bind_output(path, self.sequence, self.nonce, self.args)
         self.committed = True
 
     def resume(self):
@@ -247,6 +253,8 @@ class Job:
         if not self.committed and (not self.is_plan):
             raise ResidentProtocolError('Job requires durable identity before dispatch')
         self.resumed = True
+        if not self.is_plan and self._output_binding is not None:
+            self.manager.owner.dispatch_output(self._output_binding)
         if self.first:
             self.manager.owner.resume()
         else:
@@ -259,6 +267,20 @@ class Job:
         if guard is not None:
             guard.close()
             self._input_guard = None
+
+    def acknowledge_output(self):
+        """Only the host's successful durable store.closed may call this."""
+        if self.is_plan or self._output_end is None:
+            return False
+        if hasattr(self.manager.owner, 'acknowledge_output'):
+            return self.manager.owner.acknowledge_output(self._output_end)
+        return False
+
+    def output_recovery_locator(self):
+        if self._output_binding is None:
+            return None
+        from pgn_output_spool import recovery_locator
+        return recovery_locator(self.manager.owner.root, self._output_binding)
 
     def close(self, force=False):
         if not force and self.poll() is None:

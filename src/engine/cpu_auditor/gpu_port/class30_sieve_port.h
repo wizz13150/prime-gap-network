@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <limits>
 #include <utility>
+#include "bitmap_storage.h"
 namespace pgn_cpu_shared {
 inline constexpr uint32_t Classes30[8]={1,7,11,13,17,19,23,29};
 struct Number96{uint64_t low;uint32_t high;};
@@ -22,9 +23,10 @@ inline std::vector<SievePrime> canonicalPrimeBank(){
  return out;
 }
 class Class30Bitmap{
- Number96 origin_;uint64_t slots_;std::vector<uint64_t>composite_;
+ friend class CpuCompositeOverlay;
+ Number96 origin_;uint64_t slots_;BitmapWords composite_;
 public:
- Class30Bitmap(Number96 origin,uint64_t slots,std::vector<uint64_t>marks):origin_(origin),slots_(slots),composite_(std::move(marks)){if(!slots||slots>(1ULL<<28)||composite_.size()!=(slots+63)/64||(origin.low%30+(origin.high%30)*16)%30)throw std::runtime_error("Invalid tiledbitmap extent/origin");}
+ Class30Bitmap(Number96 origin,uint64_t slots,BitmapWords marks):origin_(origin),slots_(slots),composite_(std::move(marks)){if(!slots||slots>(1ULL<<28)||composite_.size()!=(slots+63)/64||(origin.low%30+(origin.high%30)*16)%30)throw std::runtime_error("Invalid tiledbitmap extent/origin");}
  Class30Bitmap(Number96 origin,uint64_t slots,const std::vector<SievePrime>&bank):origin_(origin),slots_(slots),composite_((slots+63)/64,0){
   if(!slots||slots>(1ULL<<28)||(origin.low%30+(origin.high%30)*16)%30)throw std::runtime_error("Invalid canonical class30 origin/extent");
   for(const auto&entry:bank){const uint64_t p=entry.p;const uint64_t residue=(origin.low%p+uint64_t(origin.high%p)*entry.r64)%p;
@@ -36,6 +38,7 @@ public:
   }
   if(slots&63)composite_.back()|=~0ULL<<(slots&63);
  }
+ void markComputeUse()const{composite_.markComputeUse();}
  uint64_t slots()const{return slots_;}
  bool marked(uint64_t i)const{if(i>=slots_)throw std::runtime_error("Bitmap index outsidequery");return(composite_[i>>6]>>(i&63))&1;}
  Number96 number(uint64_t i)const{if(i>=slots_)throw std::runtime_error("Candidate outsidequery");uint64_t offset=30*(i>>3)+Classes30[i&7],lo=origin_.low+offset;return {lo,origin_.high+uint32_t(lo<origin_.low)};}

@@ -142,7 +142,7 @@ struct Fixture {
         need(temp.isValid(),"Own directory");const auto key=temp.filePath("PUBLIC-TESTONLY.key");QFile f(key);need(f.open(QIODevice::WriteOnly)&&f.write("PUBLIC-TESTONLY")>0,"Own fake key");f.close();
         need(QDir().mkdir(temp.filePath("source-journals")),"Own mirror directory");
         config.transport.endpoint={QCoreApplication::applicationFilePath(),key,"PUBLIC-TESTONLY.invalid","fixture",22};
-        config.transport.paths={temp.filePath("local-bookings.sqlite"),temp.filePath("scientific-history.sqlite"),temp.filePath("source-journals"),temp.filePath("engine-modules.sqlite"),"C:/PUBLIC-TESTONLY/checkpoint"};
+        config.transport.paths={temp.filePath("local-bookings.sqlite"),temp.filePath("source-display-cache.sqlite"),temp.filePath("source-journals"),temp.filePath("engine-modules.sqlite"),"C:/PUBLIC-TESTONLY/checkpoint"};
         config.sourceRegistryDirectory=temp.path();config.controlTimeouts={10000,20000};config.timingAudit=timingAudit;
         qputenv("PGN_RUNTIME_TEST_MARKER",temp.filePath("marker.txt").toUtf8());qunsetenv("PGN_RUNTIME_TEST_BOOKING");
         qunsetenv("PGN_RUNTIME_TEST_PROFILE_MODE");qunsetenv("PGN_RUNTIME_TEST_BINDING");qunsetenv("PGN_RUNTIME_TEST_CONSTANT_MODE");

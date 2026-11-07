@@ -27,6 +27,7 @@ inline std::optional<IssuanceCommit> PrepareNativeZeroIssuanceEnrollment(
        !NativeMonetaryPolicyOnBranch(view,index,policy)||view.GetPgnIssuanceState()||!ZeroCoinbase(genesis))return {};
     IssuanceSnapshot initial{index.GetBlockHash(),PGN_MAX_SUPPLY_ATOMIC,0,0,
         IssuanceBudgetPartition{policy.Id(),policy.Definition().ordinary_cap,0,0,0,0},OrdinaryRewardPools{0,0}};
+    if(policy.Audits()&&!policy.Activation()){initial.epochs=GoldEpochBalances{};initial.audit_settlement=AuditSettlementBalances{};}
     IssuanceCommit commit{{},initial};return commit.Valid()?std::optional{commit}:std::nullopt;
 }
 // Call before native connection, publish ONLY after own scientific/bootstrap

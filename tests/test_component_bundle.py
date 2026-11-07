@@ -1,0 +1,26 @@
+"""Publisher payload filtering; inert code only, strict client rules retained."""
+from pathlib import Path
+import json,sys,tempfile,unittest,zipfile
+P=Path(__file__).resolve().parents[1];sys.path[:0]=[str(P/'tools'),str(P/'src/update')]
+import build_component_bundle as builder
+import generate_component_manifest as component
+import stage_component_bundle as stage
+from test_component_staging import pe
+
+class ComponentBundleTests(unittest.TestCase):
+ def setUp(self):
+  self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name);self.code=self.root/'code';self.code.mkdir();(self.code/'PGN-Horizon.exe').write_bytes(pe())
+  self.marker='UpdateRuntime/_internal/cryptography-50.0.2.dist-info/REQUESTED';f=self.code/self.marker;f.parent.mkdir(parents=True);f.write_bytes(b'')
+  self.context=self.root/'context.json';self.context.write_text(json.dumps(dict(schema='PGN_COMPONENT_STAGE_CONTEXT_V1',network='testnet',genesis_hash='5'*64,platform='windows-x86_64',compatibility_set='qa.cohort',minimum_sequence=1,installed=[dict(id='ui',version='1.0',abi='qa.1')],protected_roots=[str(self.code)])))
+ def tearDown(self):self.temp.cleanup()
+ def manifest(self,files):
+  value=component.build(dict(release_version='1.0',network='testnet',published=False,components=[dict(id='ui',version='1.0',root=str(self.code),files=files)]));(self.code/'components.json').write_text(json.dumps(value))
+ def test_only_known_empty_installer_marker_is_omitted(self):
+  self.manifest(['PGN-Horizon.exe',self.marker]);r=builder.build(self.code,self.context,self.root/'bundle.zip',2,'1.0','qa.1')
+  self.assertEqual(r['files'],1);self.assertEqual(r['omitted_optional_installer_metadata'],[self.marker]);self.assertTrue(r['privacy']['PASS'])
+  with zipfile.ZipFile(self.root/'bundle.zip')as z:self.assertEqual(set(z.namelist()),{'component-bundle.json','payload/ui/PGN-Horizon.exe'})
+ def test_other_empty_code_is_still_refused(self):
+  (self.code/'empty.dll').write_bytes(b'');self.manifest(['PGN-Horizon.exe',self.marker,'empty.dll'])
+  with self.assertRaisesRegex(ValueError,'Invalid file declaration'):builder.build(self.code,self.context,self.root/'bundle.zip',2,'1.0','qa.1')
+  self.assertFalse((self.root/'bundle.zip').exists())
+if __name__=='__main__':unittest.main()

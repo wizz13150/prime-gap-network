@@ -2356,6 +2356,7 @@ bool Chainstate::ConnectBlockImpl(const CBlock& block, BlockValidationState& sta
     // the clock to go backward).
     bool body_valid;
     std::optional<pgn::core::NativeScienceMonetaryPlan> native_science_money;
+    std::optional<pgn::core::NativeAuditCoordinationPlan> native_audit_coordination;
     const bool native_genesis=m_chainman.m_options.pgn_candidate_science_budget&&m_chainman.m_options.pgn_candidate_bootstrap_budget&&
         !pindex->pprev&&pindex->nHeight==0&&block_hash==params.GetConsensus().hashGenesisBlock;
     if(native_genesis){
@@ -2371,8 +2372,18 @@ bool Chainstate::ConnectBlockImpl(const CBlock& block, BlockValidationState& sta
            !pindex->pprev||bootstrap_candidate->Block()!=block_hash||bootstrap_candidate->Parent()!=pindex->pprev->GetBlockHash()||
            pindex->nTx!=block.vtx.size()||block.vtx.size()!=1||!block.vtx.front()||!block.vtx.front()->IsCoinBase()||HasNativeCandidateBlockScienceEnvelope(block))
             return state.Error("pgn-bootstrap-body-domain-or-seal-mismatch");
-        for(const auto& output:block.vtx.front()->vout)if(output.nValue!=0)return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,"pgn-bootstrap-mint-forbidden");
-        if(InspectNativeBootstrapPhase(view,*pindex->pprev,uint32_t(pindex->pprev->nHeight)+1)!=NativeBootstrapPhaseVerdict::Bootstrap||
+        const auto& configured=m_chainman.m_options.pgn_candidate_science_budget;const auto* archive=PgnRequestHistory();
+        if(!configured||!archive)return state.Error("pgn-coordination-audit-history-held");
+        const auto money=ReadChainMonetaryPolicy(view,*pindex->pprev,*archive,configured->schedule.archive,configured->policy);
+        if(!money.policy)return state.Error("pgn-coordination-audit-policy-held");
+        const NativeAuditSettlementContext context{*archive,configured->policy,configured->schedule,configured->signature};
+        native_audit_coordination=PrepareNativeAuditCoordinationPlan(view,*pindex->pprev,block,*money.policy,context);
+        if(!native_audit_coordination||!VerifyAuditSettlementOutputs(native_audit_coordination->page,*block.vtx.front(),{},0))
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,"pgn-coordination-audit-payment-mismatch");
+        const auto& bootstrap_budget=*m_chainman.m_options.pgn_candidate_bootstrap_budget;
+        const auto phase=InspectNativeBootstrapPhase(view,*pindex->pprev,bootstrap_budget.maximum_phase_blocks);
+        const bool continuation=bootstrap_budget.ledger_continuation||(money.policy->Audits()&&money.policy->Activation()&&money.policy->Activation()->coordination_after_gold);
+        if(!NativeLedgerAllowsCoordination(phase,continuation)||
            !VerifyNativeBootstrapHash(view,*pindex->pprev,bootstrap_candidate->Policy(),block).proof)
             return state.Error("pgn-bootstrap-body-phase-or-work-mismatch");
         try{if(!PrepareLocalEmptyFactForward(view,*pindex))return state.Error("pgn-bootstrap-body-parent-unenrolled");}
@@ -2403,7 +2414,8 @@ bool Chainstate::ConnectBlockImpl(const CBlock& block, BlockValidationState& sta
                 if(!configured||!archive)return state.Error("pgn-native-monetary-history-unavailable");
                 const auto money=pgn::core::ReadChainMonetaryPolicy(view,*pindex->pprev,*archive,configured->schedule.archive,bootstrap->policy);
                 if(!money.policy)return state.Error("pgn-native-monetary-policy-unconfigured");
-                native_science_money=pgn::core::PrepareNativeScienceMonetaryPlan(view,*pindex->pprev,block,*scientific_candidate,*money.policy);
+                const pgn::core::NativeAuditSettlementContext audit_context{*archive,configured->policy,configured->schedule,configured->signature};
+                native_science_money=pgn::core::PrepareNativeScienceMonetaryPlan(view,*pindex->pprev,block,*scientific_candidate,*money.policy,&audit_context);
                 if(!native_science_money)return state.Error("pgn-native-science-monetary-state-held");
             }else{
                 // Unconfigured science still grants NO inherited issuance.
@@ -2613,6 +2625,9 @@ bool Chainstate::ConnectBlockImpl(const CBlock& block, BlockValidationState& sta
         // inherited height subsidy, half-fee burn or arbitrary caller quote.
         if(state.IsValid()&&!pgn::core::VerifyNativeScienceCoinbase(*native_science_money,block,nFees))
             state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,"pgn-native-science-coinbase-mismatch");
+    }else if(native_audit_coordination){
+        if(state.IsValid()&&(nFees!=0||!pgn::core::VerifyAuditSettlementOutputs(native_audit_coordination->page,*block.vtx[0],{},0)))
+            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,"pgn-coordination-audit-reserve-mismatch");
     }else if(bootstrap_candidate||scientific_candidate){
         if(state.IsValid()&&block.vtx[0]->GetValueOut(*params.GetConsensus().amount_rules)!=0)
             state.Error("pgn-native-monetary-policy-unconfigured");
@@ -3274,12 +3289,15 @@ bool Chainstate::ConnectTip(
                     const auto money=ReadChainMonetaryPolicy(view,*pindexNew->pprev,*archive,configured->schedule.archive,bootstrap->policy);
                     if(!money.policy)return state.Error("pgn-native-monetary-history-or-policy-held");
                     if(scientific_candidate){
-                        const auto plan=PrepareNativeScienceMonetaryPlan(view,*pindexNew->pprev,*block_to_connect,*scientific_candidate,*money.policy);
+                        const NativeAuditSettlementContext audit_context{*archive,configured->policy,configured->schedule,configured->signature};
+                        const auto plan=PrepareNativeScienceMonetaryPlan(view,*pindexNew->pprev,*block_to_connect,*scientific_candidate,*money.policy,&audit_context);
                         if(!plan)return state.Error("pgn-native-science-monetary-plan-held");
                         issuance_forward=plan->Forward();
                     }else{
-                        issuance_forward=PrepareNativeZeroIssuanceForward(view,*pindexNew->pprev,*block_to_connect,*money.policy);
-                        if(!issuance_forward)return state.Error("pgn-native-zero-issuance-parent-or-payout-held");
+                        const NativeAuditSettlementContext context{*archive,configured->policy,configured->schedule,configured->signature};
+                        const auto plan=PrepareNativeAuditCoordinationPlan(view,*pindexNew->pprev,*block_to_connect,*money.policy,context);
+                        if(!plan||!VerifyAuditSettlementOutputs(plan->page,*block_to_connect->vtx.front(),{},0))return state.Error("pgn-native-coordination-audit-payout-held");
+                        issuance_forward=plan->forward;
                     }
                 }
             }

@@ -105,11 +105,16 @@ inline std::optional<NativeRecheckedBlock> PrepareNativeBlockForwardAtParent(
     }
     const auto policy=ReadChainMonetaryPolicy(parent_view,*index.pprev,archive,science_budget.schedule.archive,bootstrap_budget.policy);
     if(!policy.policy)return {};
+    const NativeAuditSettlementContext audit_context{archive,science_budget.policy,science_budget.schedule,science_budget.signature};
     if(out.science){
-        const auto plan=PrepareNativeScienceMonetaryPlan(parent_view,*index.pprev,block,*out.science,*policy.policy);
+        const auto plan=PrepareNativeScienceMonetaryPlan(parent_view,*index.pprev,block,*out.science,*policy.policy,&audit_context);
         if(!plan)return {};
         out.money=plan->Forward();
-    }else out.money=PrepareNativeZeroIssuanceForward(parent_view,*index.pprev,block,*policy.policy);
+    }else{
+        const auto plan=PrepareNativeAuditCoordinationPlan(parent_view,*index.pprev,block,*policy.policy,audit_context);
+        if(!plan||!VerifyAuditSettlementOutputs(plan->page,*block.vtx.front(),{},0))return {};
+        out.money=plan->forward;
+    }
     if(!out.facts||!out.money)return {};
     return out;
 }
@@ -194,15 +199,9 @@ inline VerifyDBResult VerifyNativeDatabase(Chainstate& chainstate,const Consensu
                 metadata.SetBestBlock(index->pprev->GetBlockHash());
                 metadata.StagePgnIssuanceHistoryStep(*money_rewind);
                 metadata.StagePgnFactHistoryStep(*fact_rewind);
-                const auto checked=RecheckNativeBlockAtParent(metadata,*index,block,*archive,*science,*bootstrap);
-                if(!checked)return held("own native proof or full fact/monetary forward rejected");
-                // Level1 has no spend view. It still checks an exact zero-fee
-                // coinbase for coinbase-only bodies, including recipient/pools.
-                if(block.vtx.size()==1&&checked->science){
-                    const auto money_policy=ReadChainMonetaryPolicy(metadata,*index->pprev,*archive,science->schedule.archive,bootstrap->policy);
-                    const auto plan=money_policy.policy?PrepareNativeScienceMonetaryPlan(metadata,*index->pprev,block,*checked->science,*money_policy.policy):std::nullopt;
-                    if(!plan||!VerifyNativeScienceCoinbase(*plan,block,0))return held("native coinbase-only payout mismatch");
-                }
+                // Authenticate each inverse here. Full native proof and exact
+                // retained-forward comparison follow in ascending order below;
+                // direct-child readers need not restart at every prior parent.
                 if(level>=3&&!skipped_memory){
                     const size_t usage=coins.DynamicMemoryUsage()+chainstate.CoinsTip().DynamicMemoryUsage();
                     // An optimization must not reduce the original UTXO-check
@@ -231,34 +230,55 @@ inline VerifyDBResult VerifyNativeDatabase(Chainstate& chainstate,const Consensu
             const auto money_policy=ReadChainMonetaryPolicy(metadata,*lowest,*archive,science->schedule.archive,bootstrap->policy);
             if(!money_policy.policy)return held("native genesis monetary definition missing");
             const auto& policy=*money_policy.policy;
-            const IssuanceSnapshot initial{lowest->GetBlockHash(),PGN_MAX_SUPPLY_ATOMIC,0,0,
+            IssuanceSnapshot initial{lowest->GetBlockHash(),PGN_MAX_SUPPLY_ATOMIC,0,0,
                 IssuanceBudgetPartition{policy.Id(),policy.Definition().ordinary_cap,0,0,0,0},OrdinaryRewardPools{0,0}};
+            if(policy.Audits()&&!policy.Activation()){initial.epochs=GoldEpochBalances{};initial.audit_settlement=AuditSettlementBalances{};}
             if(metadata.GetPgnIssuanceState()!=initial||metadata.GetPgnFactHead()!=std::optional{FactHead{policy.Chain(),lowest->GetBlockHash()}})
                 return held("native genesis initial issuance/head mismatch");
         }
-        if(level>=4&&!skipped_memory){
+        if(level>=1){
             const CBlockIndex* parent=lowest;
             while(parent!=tip){
                 auto* index=chainstate.m_chain.Next(*parent);if(!index)return held("native reconnect ancestry missing");
                 CBlock block;if(!chainstate.m_blockman.ReadBlock(block,*index))return held("native reconnect body unavailable");
-                const auto checked=RecheckNativeBlockAtParent(coins,*index,block,*archive,*science,*bootstrap);
+                const auto checked=RecheckNativeBlockAtParent(metadata,*index,block,*archive,*science,*bootstrap);
                 if(!checked)return held("native reconnect proof/history rejected");
-                BlockValidationState state;
-                const bool valid=checked->science?
-                    chainstate.ConnectScientificCandidateBlock(block,state,index,coins,*checked->science,true):
-                    chainstate.ConnectBootstrapCandidateBlock(block,state,index,coins,*checked->bootstrap,true);
-                if(!valid)return held("native reconnect body/input scripts/actual fees rejected");
-                // fJustCheck pays all body/scripts/actual-fee checks but does
-                // not write native undo/index files. Publish into THIS memory
-                // view only, then exact retained fact/issuance forwards.
-                coins.SetBestBlock(index->GetBlockHash());
-                coins.StagePgnIssuanceHistoryStep(*checked->money);
-                coins.StagePgnFactHistoryStep(*checked->facts);
+                // Keep the original level1 zero-fee coinbase obligation even
+                // when no spend view is requested or its memory budget is met.
+                if(block.vtx.size()==1&&checked->science){
+                    const auto money_policy=ReadChainMonetaryPolicy(metadata,*parent,*archive,science->schedule.archive,bootstrap->policy);
+                    const NativeAuditSettlementContext audit_context{*archive,science->policy,science->schedule,science->signature};
+                    const auto plan=money_policy.policy?PrepareNativeScienceMonetaryPlan(metadata,*parent,block,*checked->science,*money_policy.policy,&audit_context):std::nullopt;
+                    if(!plan||!VerifyNativeScienceCoinbase(*plan,block,0))return held("native coinbase-only payout mismatch");
+                }
+                if(level>=4&&!skipped_memory){
+                    // Both views began at the same base and consumed the same
+                    // authenticated inverse steps. Check their common parent
+                    // before using the already verified native proof seal.
+                    if(coins.GetBestBlock()!=metadata.GetBestBlock()||
+                       coins.GetPgnFactHead()!=metadata.GetPgnFactHead()||
+                       coins.GetPgnIssuanceState()!=metadata.GetPgnIssuanceState())return held("native reconnect parent views differ");
+                    BlockValidationState state;
+                    const bool valid=checked->science?
+                        chainstate.ConnectScientificCandidateBlock(block,state,index,coins,*checked->science,true):
+                        chainstate.ConnectBootstrapCandidateBlock(block,state,index,coins,*checked->bootstrap,true);
+                    if(!valid)return held("native reconnect body/input scripts/actual fees rejected");
+                    // fJustCheck performs scripts and actual-fee checks, with
+                    // no persistent undo/index writes, as in the original path.
+                    coins.SetBestBlock(index->GetBlockHash());
+                    coins.StagePgnIssuanceHistoryStep(*checked->money);
+                    coins.StagePgnFactHistoryStep(*checked->facts);
+                }
+                metadata.SetBestBlock(index->GetBlockHash());
+                metadata.StagePgnIssuanceHistoryStep(*checked->money);
+                metadata.StagePgnFactHistoryStep(*checked->facts);
                 parent=index;
                 if(chainstate.m_chainman.m_interrupt)return VerifyDBResult::INTERRUPTED;
             }
-            if(coins.GetBestBlock()!=tip->GetBlockHash()||coins.GetPgnFactHead()!=original_head||
-               coins.GetPgnIssuanceState()!=original_money)return held("native reconnect terminal state differs");
+            if(metadata.GetBestBlock()!=tip->GetBlockHash()||metadata.GetPgnFactHead()!=original_head||
+               metadata.GetPgnIssuanceState()!=original_money)return held("native proof replay terminal state differs");
+            if(level>=4&&!skipped_memory&&(coins.GetBestBlock()!=tip->GetBlockHash()||coins.GetPgnFactHead()!=original_head||
+               coins.GetPgnIssuanceState()!=original_money))return held("native reconnect terminal state differs");
         }
         // Neither memory view is flushed. Authoritative UTXO/fact/money state
         // and active chain remain untouched; only own derived archive may fill.
