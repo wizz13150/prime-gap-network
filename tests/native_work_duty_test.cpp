@@ -13,7 +13,7 @@ int main(){
     const auto inspect=[&](std::vector<NativeDutyReference> refs){return InspectNativeWorkDuty(ledger,parent,miner,refs,spent,0);};
     unsigned checks=0;
     auto check=[&](bool ok){assert(ok);++checks;};
-    check(!ConfiguredNativeWorkDutyActivation());
+    check(!ConfiguredNativeWorkDutyActivation(id(1))); // No activation on this unrelated fixture chain.
     NativeWorkDutyActivation activation{id(1),id(2),id(3),1,2,0};check(activation.Valid());
     activation.height=1;check(!activation.Valid());activation.height=2;
     activation.first_assignment_height=3;check(!activation.Valid());
