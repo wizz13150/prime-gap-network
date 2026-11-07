@@ -469,3 +469,7 @@ endif()
 
 add_executable(pgn-native-audit-activation-test EXCLUDE_FROM_ALL pgn/audit_settlement_activation_test.cpp)
 target_link_libraries(pgn-native-audit-activation-test PRIVATE core_interface riecoin_common riecoin_util riecoin_consensus)
+
+# Native epoch2 service activation bindings; no daemon or live network.
+add_executable(pgn-testnet-service-activation-test EXCLUDE_FROM_ALL pgn/testnet_service_activation_test.cpp)
+target_link_libraries(pgn-testnet-service-activation-test PRIVATE core_interface riecoin_node univalue)

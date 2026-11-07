@@ -92,7 +92,7 @@ inline ChainMonetaryPolicyCheck ReadChainMonetaryPolicy(const CCoinsView& view,c
     if(audits)id<<settlement.payload;
     const auto monetary_id=id.GetHash();
     std::optional<AuditSettlementActivation> activation;
-    if(const auto configured=ConfiguredAuditSettlementActivation();configured&&
+    if(const auto configured=ConfiguredAuditSettlementActivation(p.genesis->Chain());configured&&
        (configured->chain==p.genesis->Chain()||configured->genesis==p.genesis->Block())){
         if(!configured->Valid()||audits||!epochs||configured->chain!=p.genesis->Chain()||configured->genesis!=p.genesis->Block()||configured->monetary_policy!=monetary_id)
             return {ChainRangePolicyVerdict::InvalidConfiguration,{}};

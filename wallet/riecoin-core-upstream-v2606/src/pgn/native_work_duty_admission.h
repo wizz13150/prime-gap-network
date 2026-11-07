@@ -2,6 +2,7 @@
 // Deterministic service accounting over authenticated native history.
 #pragma once
 #include <pgn/native_work_duty.h>
+#include <pgn/testnet_service_activation.h>
 #include <pgn/proposed_ticket_requests.h>
 namespace pgn::core {
 struct NativeWorkDutyActivation {
@@ -12,9 +13,10 @@ struct NativeWorkDutyActivation {
             height>anchor_height&&first_assignment_height>=0&&first_assignment_height<=height;
     }
 };
-inline std::optional<NativeWorkDutyActivation> ConfiguredNativeWorkDutyActivation(){
-    // No network policy, activation height or authority approval is invented.
-    return {};
+inline std::optional<NativeWorkDutyActivation> ConfiguredNativeWorkDutyActivation(const uint256& chain){
+    const auto pin=PgnTestnetServiceActivation(chain);
+    if(!pin)return {};
+    return NativeWorkDutyActivation{chain,pin->genesis,pin->genesis,0,pin->height,pin->first_assignment_height};
 }
 inline bool NativeWorkDutyActivationOnBranch(const CCoinsView& view,const CBlockIndex& parent,
     const NativeWorkDutyActivation& activation){
@@ -51,7 +53,7 @@ inline std::optional<NativeWorkDutyState> ReadNativeWorkDutyState(const CCoinsVi
 inline bool VerifyProposedNativeWorkDuties(const CCoinsView& view,const CBlockIndex& parent,
     const NativeRequestHistoryArchive& history,const VerifiedProposedTicketRequests& proposed,
     const RangePolicyReadBudget& policy_budget,const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,
-    const std::optional<NativeWorkDutyActivation>& activation=ConfiguredNativeWorkDutyActivation()){
+    const std::optional<NativeWorkDutyActivation>& activation){
     if(!activation||int64_t(parent.nHeight)+1<activation->height)return true;
     if(!NativeWorkDutyActivationOnBranch(view,parent,*activation)||proposed.Parent()!=parent.GetBlockHash()||
        proposed.Height()!=int64_t(parent.nHeight)+1||proposed.Chain()!=activation->chain)return false;
@@ -65,5 +67,11 @@ inline bool VerifyProposedNativeWorkDuties(const CCoinsView& view,const CBlockIn
             request.Request().miner,request.Id(),state->spent))return false;
     }
     return true;
+}
+inline bool VerifyProposedNativeWorkDuties(const CCoinsView& view,const CBlockIndex& parent,
+    const NativeRequestHistoryArchive& history,const VerifiedProposedTicketRequests& proposed,
+    const RangePolicyReadBudget& policy_budget,const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget){
+    return VerifyProposedNativeWorkDuties(view,parent,history,proposed,policy_budget,schedule_budget,
+        signature_budget,ConfiguredNativeWorkDutyActivation(proposed.Chain()));
 }
 } // namespace pgn::core

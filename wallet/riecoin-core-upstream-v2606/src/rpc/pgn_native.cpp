@@ -138,7 +138,7 @@ RPCMethod getpgnstate(){
   result.pushKV("near_miss_pool_atomic",std::to_string(money->pools->near_miss));result.pushKV("audit_pool_atomic",std::to_string(money->pools->audit));
    result.pushKV("issuance_snapshot_version",money->audit_settlement?5:money->epochs?4:money->pools?3:money->partition?2:1);
    if(money->audit_settlement)result.pushKV("audit_paid_atomic",std::to_string(money->audit_settlement->total_paid));
-   if(const auto activation=ConfiguredAuditSettlementActivation();activation&&activation->chain==manager.GetConsensus().hashGenesisBlock){
+   if(const auto activation=ConfiguredAuditSettlementActivation(manager.GetConsensus().hashGenesisBlock);activation&&activation->chain==manager.GetConsensus().hashGenesisBlock){
        result.pushKV("audit_activation_contract",activation->Id().GetHex());result.pushKV("audit_activation_height",activation->height);
    }
   if(money->epochs){result.pushKV("gold_blocks",money->epochs->golds);result.pushKV("last_gold_ledger_height",money->epochs->last_gold_height);}else if(phase==NativeBootstrapPhaseVerdict::Bootstrap){result.pushKV("gold_blocks",0);result.pushKV("last_gold_ledger_height",0);}else throw JSONRPCError(RPC_MISC_ERROR,"Authenticated Gold epoch counters unavailable");
@@ -311,7 +311,7 @@ RPCMethod getpgnscientificwork(){
   const auto* issued=tip.GetAncestor(confirmed.location->height);
   if(!issued||!issued->phashBlock||issued->GetBlockHash()!=confirmed.location->block||!issued->IsValid(BLOCK_VALID_SCRIPTS))
    throw JSONRPCError(RPC_MISC_ERROR,"Confirmed request inclusion held");
-  const auto activation=ConfiguredNativeWorkDutyActivation();const bool enforced=activation&&confirmed.location->height>=activation->height;
+  const auto activation=ConfiguredNativeWorkDutyActivation(manager.GetConsensus().hashGenesisBlock);const bool enforced=activation&&confirmed.location->height>=activation->height;
   UniValue service{UniValue::VOBJ};service.pushKV("schema","PGN_NATIVE_ASSIGNED_AUDIT_SERVICE_V1");service.pushKV("enforced",enforced);
   service.pushKV("request_id",idText);service.pushKV("view_parent",tip.GetBlockHash().GetHex());
   service.pushKV("issuance_block",issued->GetBlockHash().GetHex());service.pushKV("issuance_height",confirmed.location->height);
@@ -589,7 +589,7 @@ RPCMethod getpgnworkdutystatus(){
   auto& manager=EnsureAnyChainman(request.context);LOCK(cs_main);RequireNative(manager);auto& tip=Tip(manager);
   const auto destination=DecodeDestination(request.params[0].get_str());
   if(!IsValidDestination(destination))throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,"Native signing address required");
-  const auto actor=GetScriptForDestination(destination);const auto activation=ConfiguredNativeWorkDutyActivation();
+  const auto actor=GetScriptForDestination(destination);const auto activation=ConfiguredNativeWorkDutyActivation(manager.GetConsensus().hashGenesisBlock);
   UniValue out{UniValue::VOBJ};out.pushKV("schema","PGN_NATIVE_WORK_DUTY_STATUS_V1");
   out.pushKV("genesis",manager.GetConsensus().hashGenesisBlock.GetHex());out.pushKV("bestblockhash",tip.GetBlockHash().GetHex());out.pushKV("height",tip.nHeight);
   const bool enforced=activation&&int64_t(tip.nHeight)+1>=activation->height;out.pushKV("enforced",enforced);

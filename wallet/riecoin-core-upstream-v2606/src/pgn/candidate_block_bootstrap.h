@@ -87,7 +87,7 @@ inline NativeBootstrapBlockCheck VerifyNativeBootstrapBlock(const CCoinsView& vi
         NativeBootstrapBlockVerdict::BudgetExceeded:NativeBootstrapBlockVerdict::HistoryHeld,{}};
     const auto proposed=VerifyProposedTicketRequests(view,parent,*registry,block,budget.requests.scan,budget.requests.maximum_total_requests);
     if(!proposed.batch)return {proposed.verdict==ProposedRequestVerdict::BudgetExceeded?NativeBootstrapBlockVerdict::BudgetExceeded:NativeBootstrapBlockVerdict::InvalidRequest,{}};
-    const auto duties=ConfiguredNativeWorkDutyActivation();
+    const auto duties=ConfiguredNativeWorkDutyActivation(proposed.batch->Chain());
     if(duties&&int64_t(parent.nHeight)+1>=duties->height&&!proposed.batch->Requests().empty()&&
        (!science_budget||!VerifyProposedNativeWorkDuties(view,parent,history,*proposed.batch,
             science_budget->policy,science_budget->schedule,science_budget->signature,duties)))
