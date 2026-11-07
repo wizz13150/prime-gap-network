@@ -136,7 +136,7 @@ bool ComponentVersionsDialog::ensureService(){
  if(service_)return true;
  try{
   deployment_=pgn::update::componentUpdateDeployment(QFileInfo(context_.manifestPath).absolutePath(),context_.testnet);
-  if(!context_.genesisHash.isEmpty()&&context_.genesisHash!=deployment_.context.value("genesis_hash"))throw std::runtime_error("Update repository belongs to another Core epoch.");
+  if(!context_.genesisHash.isEmpty()&&context_.genesisHash!=deployment_.context.value("genesis_hash").toString())throw std::runtime_error("Update repository belongs to another Core epoch.");
   service_=new pgn::update::ComponentUpdateService(deployment_,this);service_->onStatus=[this](const QString& text){status_->setText(text);};
   service_->onError=[this](const QString& error){setBusy(false);status_->setText(error);updateRecovery();};
   service_->onResult=[this](const QJsonObject& value){setBusy(false);if(value.value("schema")=="PGN_AUTHENTICATED_COMPONENT_VIEW_V1")presentPublished(value);else if(value.value("schema")=="PGN_UPDATE_INSTALL_PREPARATION_V1"){
