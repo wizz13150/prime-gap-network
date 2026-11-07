@@ -60,8 +60,12 @@ def tasks(value,work):
 def observe(rpc,work,genesis,previous=None):
     # Never authorize from a saved JSON flag: re-read the actual owning Core.
     fresh=rpc.call('getpgnscientificwork',[work['request_id'],'0'*64])
+    # Service belongs to the immutable request/range, not the current Gold
+    # difficulty. Core legitimately reprices a scientific submission at a new
+    # parent; submit_gold fetches that current target again before proof/signing.
+    # Comparing it here would strand retained computation after a retarget.
     if fresh.get('genesis')!=genesis or fresh.get('accepted')is not False or any(fresh.get(k)!=work.get(k)for k in
-            ('request_id','ticket','start','length','target_numerator','target_denominator')):
+            ('request_id','ticket','start','length')):
         raise ValueError('Native service receipt belongs to different issued work')
     value=fresh.get('native_audit_service')
     if (type(value)is not dict or set(value)!={'schema','enforced','request_id','view_parent','issuance_block','issuance_height','credits'}

@@ -41,6 +41,20 @@ class NativeDutyTests(unittest.TestCase):
     def test_saved_claim_is_not_authority_and_fresh_wrong_range_is_rejected(self):
         w=dict(work(),native_audit_service=receipt(work()));rpc=Rpc(w);rpc.w['start']='160000000000000000000'
         with self.assertRaises(ValueError):duty.observe(rpc,w,w['genesis'])
+    def test_retarget_does_not_change_the_confirmed_service_consumer(self):
+        w=work();rpc=Rpc(w);expected=duty.observe(rpc,w,w['genesis'])
+        # Actual cold-resume regression: retained117485/4096, current233443/8192.
+        for numerator,denominator in [('233443','8192'),('467201','16384')]:
+            rpc.w.update(target_numerator=numerator,target_denominator=denominator)
+            self.assertEqual(duty.observe(rpc,w,w['genesis'],expected),expected)
+        for field in ('request_id','ticket','start','length'):
+            changed=Rpc(w);changed.w[field]='1'if field in('start','length')else'1'*64
+            with self.subTest(field=field),self.assertRaises(ValueError):duty.observe(changed,w,w['genesis'])
+    def test_old_pre_activation_work_resumes_after_a_difficulty_change(self):
+        w=work();rpc=Rpc(w)
+        rpc.w.update(target_numerator='233443',target_denominator='8192')
+        rpc.w['native_audit_service']['enforced']=False;rpc.w['native_audit_service']['credits']=[]
+        self.assertIsNone(duty.observe(rpc,w,w['genesis']))
     def test_branch_change_or_orphaned_issuance_cannot_authorize_search(self):
         for change in ('tip','canonical'):
             rpc=Rpc(work());setattr(rpc,change,'1'*64 if change=='tip'else False)
