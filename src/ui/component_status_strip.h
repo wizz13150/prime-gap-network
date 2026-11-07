@@ -108,7 +108,7 @@ public:
   try{
    if(!updateService_){
     const auto root=QFileInfo(context_.manifestPath).absolutePath();auto deployment=pgn::update::componentUpdateDeployment(root,context_.testnet);
-    if(!context_.genesisHash.isEmpty()&&context_.genesisHash!=deployment.context.value("genesis_hash"))throw std::runtime_error("Update deployment differs from the active Core epoch");
+    if(!context_.genesisHash.isEmpty()&&context_.genesisHash!=deployment.context.value("genesis_hash").toString())throw std::runtime_error("Update deployment differs from the active Core epoch");
     updateRequest_=pgn::update::componentUpdateRequest(deployment,property("pgn_component_local_snapshot").toJsonObject(),root,context_.mutableDataRoot,"check",{"ui","core","gpu","cpu"});
     updateService_=new pgn::update::ComponentUpdateService(std::move(deployment),this);
     updateService_->onResult=[this](const QJsonObject& value){presentPublished(value);};
