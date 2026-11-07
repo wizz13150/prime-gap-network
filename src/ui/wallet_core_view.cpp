@@ -214,7 +214,10 @@ public:
    runtime_->onReady=[this,presentSetup](qint64){presentSetup();attachClock_.start();attach();accountPanel_->setEnabled(!runtime_->walletManager()->busy());accountPanel_->refreshWallet();metrics_->refresh();};
   runtime_->onStopped=[this]{attachClock_.stop();accountPanel_->setEnabled(false);setProperty("pgn_wallet_embedded",false);setProperty("pgn_wallet_frontend_loaded",false);};
   attachClock_.setInterval(500);connect(&attachClock_,&QTimer::timeout,this,[this]{attach();});
-  QTimer::singleShot(0,runtime_,[this]{runtime_->launch();});
+  QTimer::singleShot(0,runtime_,[this]{
+   if(!QFileInfo::exists(runtime_->runtimeDirectory()+"/wallet-core.json"))management_->onConfigure();
+   else runtime_->launch();
+  });
  }
  ~WalletCoreView() override = default;
 private:

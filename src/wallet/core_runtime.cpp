@@ -383,7 +383,26 @@ void CoreRuntime::readTicketAtlas(const QString& start,const QString& end,int bi
  });
 }
 void CoreRuntime::readTicketPage(int offset,std::function<void(QJsonObject,QString)> consume){
- readWorkView("tickets",offset,100,{},[consume=std::move(consume)](QJsonObject view,QString error){if(!error.isEmpty()){consume({},error);return;}auto state=view.value("state").toObject();state.insert("reports",view.value("reports"));state.insert("audits",view.value("audits"));consume(state,{});});
+ const auto owner=epoch();
+ readWorkView("tickets",offset,100,{},[this,owner,consume=std::move(consume)](QJsonObject view,QString error){
+  if(!error.isEmpty()){consume({},error);return;}
+  auto state=view.value("state").toObject();state.insert("reports",view.value("reports"));state.insert("audits",view.value("audits"));
+  QJsonArray ids;for(const auto& item:state.value("leases").toArray())if(item.toObject().contains("report_root"))ids.append(item.toObject().value("request"));
+  if(ids.isEmpty()||!view.value("audits").toArray().isEmpty()){consume(state,{});return;}
+  // Ticket pages intentionally omit audit joins. Read only their submitted IDs
+  // in one bounded batch, and reject a change of tip across the two reads.
+  rpc("getpgnauditstate",{0,ids.size(),QJsonValue{},ids},[this,owner,state,ids,consume=std::move(consume)](QJsonValue value,QString error)mutable{
+   if(!error.isEmpty()||!owner.matches(epoch())||!connected_||!processAlive()){consume({},error.isEmpty()?QString("Core audit page connection changed"):error);return;}
+   QSet<QString> expected,seen;for(const auto& id:ids)expected.insert(id.toString());
+   if(!value.isArray()||value.toArray().size()!=ids.size()){consume({},"Ticket audit batch incomplete; retaining last verified page");return;}
+   for(const auto& entry:value.toArray()){const auto row=entry.toObject();const auto id=row.value("request_id").toString();if(!expected.contains(id)||seen.contains(id)||!row.value("jobs").isArray()||row.value("jobs").toArray().size()>2||!row.value("audited").isBool()){consume({},"Ticket audit batch identity invalid");return;}seen.insert(id);}
+   state.insert("audits",value);
+   rpc("getbestblockhash",{},[this,owner,state,consume=std::move(consume)](QJsonValue hash,QString error){
+    if(!error.isEmpty()||!owner.matches(epoch())||!connected_||!processAlive()||hash!=state.value("bestblockhash")){consume({},error.isEmpty()?QString("Ticket audit page changed branch; retrying"):error);return;}
+    consume(state,{});
+   });
+  });
+ });
 }
 void CoreRuntime::readTicketDetails(const QString& request,std::function<void(QJsonObject,QString)> consume){
  readWorkView("tickets",0,1,request,[consume=std::move(consume)](QJsonObject view,QString error){

@@ -266,32 +266,44 @@ class NetworkAudits:
             self.owner_reports.invalidate_sweep()
             self.owner_poll_more = True
             return
+        first_error = None
         for request, item in list(pending.items()):
-            state = states.get(request, {})
-            jobs = state.get("jobs", [])
-            if not state.get("audited") and (state.get("details_root") or len(jobs) != 2 or any(j["state"] == "assigned" for j in jobs)):
-                continue
-            source = self.worker.root / "tickets" / item["ticket"] / "network-report.json"
-            if source.stat().st_size > 262144:
-                raise ValueError("Owner report exceeds budget")
-            sealed = json.loads(source.read_bytes())
-            if (sealed["report_root"] != item["report_root"] or not isinstance(sealed.get("body"), dict)
-                    or hashlib.sha256(canonical_bytes(sealed["body"])).hexdigest() != item["report_root"]):
-                raise ValueError("Owner report differs from committed index")
-            if not state.get("details_root") and len(jobs) == 2 and all(j["state"] != "assigned" for j in jobs):
-                proposal = self.apply("reveal_report", request, 0, 0, canonical_bytes(sealed["body"]).hex())
-                if not proposal.get("available"):
-                    self.owner_reports.invalidate_sweep()
-                    self.owner_poll_more = True
+            try:
+                state = states.get(request, {})
+                jobs = state.get("jobs", [])
+                if not state.get("audited") and (state.get("details_root") or len(jobs) != 2 or any(j["state"] == "assigned" for j in jobs)):
                     continue
-                state = self.state(request)
-            if state.get("audited"):
-                outcome = self.worker.submit_gold(request, sealed, state["details_root"])
-                if outcome in ("accepted", "no_gold") and self.owner_terminal_on_anchor(request, anchor):
-                    self.owner_reports.acknowledge(request, item)
-                else:
-                    self.owner_reports.invalidate_sweep()
-                    self.owner_poll_more = True
+                source = self.worker.root / "tickets" / item["ticket"] / "network-report.json"
+                if source.stat().st_size > 262144:
+                    raise ValueError("Owner report exceeds budget")
+                sealed = json.loads(source.read_bytes())
+                if (sealed["report_root"] != item["report_root"] or not isinstance(sealed.get("body"), dict)
+                        or hashlib.sha256(canonical_bytes(sealed["body"])).hexdigest() != item["report_root"]):
+                    raise ValueError("Owner report differs from committed index")
+                if not state.get("details_root") and len(jobs) == 2 and all(j["state"] != "assigned" for j in jobs):
+                    proposal = self.apply("reveal_report", request, 0, 0, canonical_bytes(sealed["body"]).hex())
+                    if not proposal.get("available"):
+                        self.owner_reports.invalidate_sweep()
+                        self.owner_poll_more = True
+                        continue
+                    state = self.state(request)
+                if state.get("audited"):
+                    outcome = self.worker.submit_gold(request, sealed, state["details_root"])
+                    # A successful Gold publication advances the active chain.
+                    # Confirm the terminal report on that new anchor, not the
+                    # necessarily obsolete pre-publication tip.
+                    terminal_anchor = self.owner_reports.observe(self.worker.rpc) if outcome == "accepted" else anchor
+                    if (outcome in ("accepted", "no_gold") and terminal_anchor is not None
+                            and self.owner_terminal_on_anchor(request, terminal_anchor)):
+                        self.owner_reports.acknowledge(request, item)
+                    else:
+                        self.owner_reports.invalidate_sweep()
+                        self.owner_poll_more = True
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
 
     def process_one(self):
         self.last_unavailable = None

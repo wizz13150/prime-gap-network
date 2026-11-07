@@ -93,6 +93,7 @@ class NetworkWorker:
         self.args = args
         self.root = args.state_root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.startup_phase("loading_profile")
         self.public_profile = PublicProfile(self.root)
         self.rpc = CoreRpc(args.rpc_port, args.cookie, args.genesis, args.wallet)
         self.running, self.quitting = threading.Event(), threading.Event()
@@ -113,18 +114,24 @@ class NetworkWorker:
         else:
             self.source = EngineService(args.bundle, self.root, args.gpu, args.architecture, observer=self.progress)
         from horizon_cpu_bridge import LogicalMinerCpuResources
+        self.startup_phase("engine_constructed")
         if not self.cpu_only:
             self.source = LogicalMinerCpuResources(self.source, self.root, self.emit)
         self.sequence = 0
         self.device_lease = None
         self.off_announced = False
         self.audits = NetworkAudits(self)
+        self.startup_phase("audit_queues_opened")
         self.admission = AdmissionMonitor.from_worker(self)
         if args.import_work and not (self.root / "controller.json").exists():
             work = json.loads(args.import_work.read_bytes())
             if work["genesis"] != args.genesis:
                 raise ValueError("Imported owned work belongs to another network")
             save(self.root / "controller.json", dict(stage="ASSIGNED", sequence=2, work=work))
+
+    def startup_phase(self, phase):
+        save(self.root / "runtime-startup.json", dict(schema="PGN_CONTROLLER_STARTUP_V1",
+             phase=phase, pid=os.getpid(), observed_utc=time.time()))
 
     def emit(self, frame):
         admission = getattr(self, "admission", None)
@@ -472,6 +479,31 @@ class NetworkWorker:
         self.mark_report_confirmed(work, sealed)
 
     def submit_gold(self, request, sealed, details_root):
+        folder = self.root / "tickets" / sealed["body"]["ticket"]
+        binding = dict(request_id=request, ticket=sealed["body"]["ticket"],
+                       report_root=sealed["report_root"], details_root=details_root,
+                       genesis=self.args.genesis)
+        # An accepted block changes the chain tip. Retrying maintenance, or
+        # restarting after submitblock, must not try to mint the same report.
+        for name in ("network-acceptance.json", "gold-publication-intent.json"):
+            file = folder / name
+            if not file.exists():
+                continue
+            if file.stat().st_size > 32768:
+                raise ValueError("Gold publication journal exceeds budget")
+            receipt = json.loads(file.read_bytes())
+            if receipt.get("schema") != "PGN_HORIZON_GOLD_PUBLICATION_V2":
+                continue
+            if any(receipt.get(key) != value for key, value in binding.items()):
+                raise ValueError("Gold publication journal differs from audited report")
+            try:
+                header = self.rpc.call("getblockheader", [receipt["block"], True])
+            except RuntimeError:
+                header = {}
+            if header.get("confirmations", -1) >= 1:
+                save(folder / "network-acceptance.json", dict(receipt, audited=True,
+                     exact_gap_verified=True, monetary_accepted=True))
+                return "accepted"
         work = self.rpc.call("getpgnscientificwork", [request, details_root])
         target = int(work["target_numerator"]) / int(work["target_denominator"])
         candidates = [record for record in sealed["body"]["computed"]["best"] if int(record["gap"]) >= target * math.log(int(record["lower_prime"])) * (1 - 1e-12)]
@@ -486,13 +518,16 @@ class NetworkWorker:
         candidate = self.rpc.call("getpgnscientifictemplate", [script])
         if candidate.get("work_verified") is not True or int(candidate["winner_atomic"]) <= 0:
             raise ValueError("Gold candidate has no verified positive reward")
+        intent = dict(binding, schema="PGN_HORIZON_GOLD_PUBLICATION_V2",
+                      block=candidate["hash"], winner_atomic=candidate["winner_atomic"])
+        save(folder / "gold-publication-intent.json", intent)
         result = self.rpc.call("submitblock", [candidate["block"]])
         if result is not None:
             raise RuntimeError("Gold candidate was not accepted: " + str(result))
         header = self.rpc.call("getblockheader", [candidate["hash"], True])
         if header.get("confirmations", -1) < 1:
             raise RuntimeError("Gold is not yet on the active chain; report retained")
-        save(self.root / "tickets" / sealed["body"]["ticket"] / "network-acceptance.json", dict(schema="PGN_HORIZON_GOLD_ACCEPTANCE_V1", block=candidate["hash"], winner_atomic=candidate["winner_atomic"], audited=True, exact_gap_verified=True, monetary_accepted=True))
+        save(folder / "network-acceptance.json", dict(intent, audited=True, exact_gap_verified=True, monetary_accepted=True))
         return "accepted"
 
     def acquire_device(self):
@@ -531,12 +566,14 @@ class NetworkWorker:
     def run(self):
         admission = getattr(self, "admission", None)
         try:
+            self.startup_phase("verifying_core")
             self.rpc.verify()
             if self.args.wallet not in self.rpc.call("listwallets"):
                 self.rpc.call("loadwallet", [self.args.wallet])
             if admission is not None:
                 admission.start()
             threading.Thread(target=self.controls, name="mining-controls", daemon=True).start()
+            self.startup_phase("controls_ready")
             if getattr(self, 'cpu_only', False) and not self.wait_cpu_admission():
                 self.source.close()
                 return
@@ -544,7 +581,9 @@ class NetworkWorker:
                 self.source.close()
                 return
             from horizon_mining_flow import MiningFlow
+            self.startup_phase("opening_normal_cycle")
             flow = MiningFlow(self)
+            self.startup_phase("normal_cycle_ready")
             try:
                 flow.run()
             finally:

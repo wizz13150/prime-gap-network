@@ -578,6 +578,9 @@ class EngineService:
 
 
 def main():
+    if "--export-results" in sys.argv:
+        from horizon_result_export import main as result_main
+        return result_main([value for value in sys.argv[1:] if value != "--export-results"])
     if "--prepare-local-cpu" in sys.argv:
         from horizon_local_runtime import main as local_main
         return local_main([value for value in sys.argv[1:] if value != "--prepare-local-cpu"]+["--cpu-only"])

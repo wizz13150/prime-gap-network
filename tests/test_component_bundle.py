@@ -23,4 +23,10 @@ class ComponentBundleTests(unittest.TestCase):
   (self.code/'empty.dll').write_bytes(b'');self.manifest(['PGN-Horizon.exe',self.marker,'empty.dll'])
   with self.assertRaisesRegex(ValueError,'Invalid file declaration'):builder.build(self.code,self.context,self.root/'bundle.zip',2,'1.0','qa.1')
   self.assertFalse((self.root/'bundle.zip').exists())
+ def test_all_four_qualified_profile_sidecars_are_code_resources(self):
+  for arch in (86,120):
+   for profile in (8,16,32,64):
+    stage._code_path(f'payload/gpu/EngineRuntime/bin/prime-gap-worker-sm{arch}-k{profile}.exe.module.json','gpu')
+  for name in ('prime-gap-worker-sm86-k128.exe.module.json','prime-gap-worker-sm99-k64.exe.module.json','private.json'):
+   with self.assertRaises(stage.StageError):stage._code_path('payload/gpu/EngineRuntime/bin/'+name,'gpu')
 if __name__=='__main__':unittest.main()

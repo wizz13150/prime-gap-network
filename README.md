@@ -11,47 +11,36 @@ Prime Gap Network (PGN) is a collaborative initiative conceived by **Rob Smith**
 
 **PGN Horizon** is the network client in this repository: an integrated wallet, optimized search engines, automatic work tickets, independent audits, and views of network evidence. It owns its engine runtime and does not require an installed Scout application.
 
-## Working source snapshot
+## Windows network test — r69
 
-The working tree is preparing the next **Windows testnet** preview. Its new
-scientific factory is scoped to `[2^66, 10^21)`. SM86/K64 has hardware
-qualification; SM120/K64 currently has compilation and loader qualification,
-with physical GPU testing still needed. The standalone Scout release is
-separate and is not modified by this snapshot.
+[Download Windows x64](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Windows-x64-r69.zip) · [Release and checksums](https://github.com/wizz13150/prime-gap-network/releases/tag/horizon-testnet-updates-epoch2) · [Tester guide](docs/TESTING.md)
 
-[Component build provenance](docs/COMPONENT-BUILDS.md) describes the signed
-updater, exact CUDA inputs and supported memory profile.
-[Scientific observation storage](docs/scientific-gap-observations.md) explains
-full local gap-pair conservation, collection cutoffs and correction records.
-The stable CPU component's matching sources are identified in
-[CPU source provenance](docs/CPU-SOURCE-PROVENANCE.json); its scientific network
-admission remains experimental.
+This is the current portable Windows preview for supervised tests on the PGN testnet. Use this epoch's package when joining; older alpha packages belong to an older test network.
 
-The previous alpha below uses an older testnet epoch. It must not be confused
-with a new package for the reset network. This source snapshot does not itself
-announce a newly published binary release.
+1. Extract the complete folder and launch **PGN-Horizon.exe**. PGN Core and the engine runtimes are included.
+2. On the first launch, the wallet setup assistant opens automatically. Create a testnet wallet or select an existing Core data folder. Review the folder and confirm; cancellation does not create a wallet. Existing configured wallets reopen normally.
+3. Let the integrated encrypted connection synchronize. No VPN or public wallet RPC port is required.
+4. In Profile, copy your **public mining identity** and send it to the testnet coordinator for approval. A connected peer is not automatically an admitted miner/auditor. Never send wallet files, keys or RPC credentials.
+5. Turn your GPU on. The normal work cycle handles assigned audits, searches, report publication and validation. There is no separate audit-only product mode.
 
-## Current published status
+### What this preview provides
 
-Horizon is a **private development testnet preview**, with play coins. The [0.1.0-alpha.1 pre-release](https://github.com/wizz13150/prime-gap-network/releases/tag/v0.1.0-alpha.1) is available for a small Windows and Ubuntu trial. It is not a production launch, a completed implementation of the final monetary rules, or a demonstrated large-network deployment.
+- Optimized NVIDIA CUDA search images for SM86/SM120 and 67–95-bit intervals, with four memory profiles. The current network search domain begins inside the 68-bit band and ends at 2⁹⁵, exclusive.
+- Automatic tickets, durable audit commitments, report disclosure and independently assigned checks. Discovery, audit acceptance and payment are shown as separate states.
+- A real testnet wallet using **tPGN**, including available and immature balances, send/receive and wallet management. There is no conversion into mainnet PGN.
+- Best/Recent results, shared device cards, ticket/audit evidence, network history, and an Atlas with a graduation for every bit in its complete-domain view.
+- Optional signed updates for the interface, Core, GPU runtime and CPU runtime. The updater verifies payloads and preserves wallet data; updates are not forced. `components-26.zip` is an updater asset, not the portable application download.
+- Manual diagnostic ZIP export and scientific CSV export in **Number Lens → Native GPU observations → Export results (CSV)**. Exact gap endpoints, gap-size counts and provenance are retained for completed searches. Historical missing populations are disclosed, never invented.
 
-[Download Windows x64](https://github.com/wizz13150/prime-gap-network/releases/download/v0.1.0-alpha.1/PGN-Horizon-testnet-preview-Windows-x64.zip) · [Download Ubuntu 24.04 x86-64](https://github.com/wizz13150/prime-gap-network/releases/download/v0.1.0-alpha.1/PGN-Horizon-testnet-preview-Ubuntu24.04-x86_64.tar.gz) · [SHA-256 checksums](https://github.com/wizz13150/prime-gap-network/releases/download/v0.1.0-alpha.1/SHA256SUMS.txt)
+### Qualification and remaining scope
 
-![PGN Horizon mining on an RTX 3090, with CPU audit controls](assets/horizon-mining.png)
+Controlled laboratory clients have exchanged blind audit commitments and revealed matching answers. A normal isolated controller recovered its retained work and automatically published an accepted Gold, crediting **171 immature tPGN** to its wallet. These are controlled laboratory identities, not independently operated human testers or exhaustive power-loss testing.
 
-The preview includes:
+CPU network operation/Huge pages and physical SM120 performance need wider qualification. Windows Huge pages require the account's **Lock pages in memory** right and a new sign-in; the assisted privilege-grant flow is not included. The CPU card reports real allocation status rather than assuming it is enabled.
 
-- Local wallet setup through an explicit assistant, a selectable data folder, and reopening an existing wallet.
-- An integrated encrypted bootstrap connection: testers do not install a VPN or expose wallet RPC.
-- Optimized NVIDIA CUDA engines covering 67–95-bit searches, with cached resident execution and qualified SM86/SM120 images. There is no automatic whole-range generic search fallback.
-- Automatically allocated, network-numbered tickets from a rolling pool of 10,000 available ranges. The pool is a window, not a 10,000-ticket lifetime limit. Manual reservations are disabled.
-- Persistent reports and audit state. Two audit operators must be distinct from each other and from the report owner. Insufficient independent operators leave a report pending.
-- GPU and CPU cards, explicit controls, dedicated CPU thread selection, Best/Recent results, compact statistics, and a bounded records display.
-- A separate diagnostic recorder with an explicit ZIP export and a 2 MiB capture limit.
+The test ledger includes coordination records without coin issuance. **Ledger height is not Gold-block count.** Final Gold-only chain architecture, final economics and large-network load qualification remain development work. Complementary pseudoprime recovery is deferred in this preview; exhaustive scientific completeness against that case is not claimed. Ordinary network audits and exact Gold verification remain enabled.
 
-The CPU auditing path currently covers the **68-bit test area**. Physical testing on additional GPUs, a complete exchange with independent external auditors, final reward economics, Gold-only monetary-block rules, and large-network load qualification remain work in progress. Technical coordination-ledger height is **not** the number of Gold mining blocks.
-
-Read [the tester guide](docs/TESTING.md) before joining. The guide distinguishes computed results, committed reports, audits, scientific acceptance, and rewards.
+The new Ubuntu clean-source build is checked separately; do not use an older Ubuntu alpha as if it joined this current epoch. [Build instructions](docs/BUILDING.md), [component provenance](docs/COMPONENT-BUILDS.md) and [scientific observation storage](docs/scientific-gap-observations.md) document the source and data contracts.
 
 ## Search performance
 

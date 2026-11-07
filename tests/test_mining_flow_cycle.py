@@ -17,6 +17,21 @@ from horizon_coordination import native_header_hash
 
 
 class MiningFlowCycleTests(unittest.TestCase):
+    def test_ticket_prefetch_refusal_does_not_hide_unfinished_audit_verification(self):
+        messages=[];flow=object.__new__(MiningFlow)
+        flow.worker=SimpleNamespace(message=lambda text,phase:messages.append((text,phase)))
+        flow.gpu=SimpleNamespace(search_waiting_for_audits=False)
+        flow.prefetch=SimpleNamespace(error='Required audit service before next range')
+        flow.audit_lanes=[SimpleNamespace(current_audit={'ranges':[{'index':12},{'index':30}], 'counts':[]}),
+                          SimpleNamespace(current_audit={'ranges':[{'index':24},{'index':31}], 'counts':[7,8]})]
+        flow.waiting();text,phase=messages[-1]
+        self.assertEqual(phase,'Completing audits')
+        self.assertIn('Audit 1/2: 0/2 partitions verified · checking partition 12',text)
+        self.assertIn('Audit 2/2: 2/2 partitions verified · result publication pending',text)
+        self.assertNotIn('Required audit service',text)
+        flow.audit_lanes[0].current_audit=None;flow.audit_lanes[1].current_audit=None
+        flow.waiting();self.assertEqual(messages[-1],(flow.prefetch.error,'Waiting for next ticket'))
+
     def test_real_empty_queue_acknowledges_pause_before_first_gpu_job(self):
         from horizon_gpu_queue import ResidentGpuQueue
         stopped=threading.Event();enabled=threading.Event();ack=threading.Event();events=[]

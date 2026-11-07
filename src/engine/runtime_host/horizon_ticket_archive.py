@@ -306,13 +306,12 @@ def compact(folder, dry_run=False):
             return {"compacted": True, "dry_run": True, "archive_bytes": len(encoded),
                     "reclaimable_bytes": sum((folder / name).stat().st_size
                                              for name in WORK_FILES if (folder / name).is_file())}
-        if metadata['configuration'].get('preseal_required')is True:
-            from horizon_scientific_gaps import create
-            body['scientific_gap_archive']=create(folder,metadata['configuration'])
-            raw=canonical(body)
-            if len(raw)>MAXIMUM_BYTES:
-                raise ValueError('Scientific archive descriptor exceeds compact-state budget; originals retained')
-            encoded=gzip.compress(raw,mtime=0)
+        from horizon_scientific_gaps import create
+        body['scientific_gap_archive']=create(folder,metadata['configuration'])
+        raw=canonical(body)
+        if len(raw)>MAXIMUM_BYTES:
+            raise ValueError('Scientific archive descriptor exceeds compact-state budget; originals retained')
+        encoded=gzip.compress(raw,mtime=0)
         archive = folder / ARCHIVE_NAME
         atomic_bytes(archive, encoded)
         if gzip.decompress(archive.read_bytes()) != raw:

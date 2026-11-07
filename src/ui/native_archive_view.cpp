@@ -1,6 +1,7 @@
 #include "app/horizon_user_paths.h"
 #include "ui/native_archive_view.h"
 #include "ui/panel_style.h"
+#include "ui/result_export.h"
 #include "science/archive_reader.h"
 #include <QtConcurrent/QtConcurrentRun>
 #include <QFutureWatcher>
@@ -31,6 +32,8 @@ public:
   auto* searchButton=new QPushButton("Find exact p");auto* sources=new QPushButton("Open conserved journals");
   controls->addWidget(previous_);controls->addWidget(next_);controls->addWidget(refresh_);controls->addWidget(search_,1);controls->addWidget(searchButton);controls->addWidget(sources);box->addLayout(controls);
   status_=new QLabel;box->addWidget(status_);
+  auto* exportResults=new QPushButton("Export results (CSV)");exportResults->setObjectName("pgn-export-search-results");controls->addWidget(exportResults);
+  bindResultExport(exportResults,status_,root_);
   table_=new QTableWidget;table_->setObjectName("pgn-native-archive-records");table_->setColumnCount(6);
   table_->setHorizontalHeaderLabels({"Left endpoint p","Right endpoint q","Gap q − p","Original merit","Original UTC","Proof status"});
   table_->setSelectionBehavior(QAbstractItemView::SelectRows);table_->setSelectionMode(QAbstractItemView::SingleSelection);table_->setEditTriggers(QAbstractItemView::NoEditTriggers);

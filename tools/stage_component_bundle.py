@@ -24,7 +24,7 @@ import zipfile
 # The complete four-component Windows payload is already ~248 MiB before the
 # vanity/update helpers. Keep a bounded 512 MiB expanded staging transaction.
 MAX_CACHE = 512 * 1024 * 1024
-MAX_ARCHIVE = 128 * 1024 * 1024
+MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_FILE = 128 * 1024 * 1024
 MAX_MANIFEST = 128 * 1024
 MAX_ENTRIES = 512
@@ -146,7 +146,7 @@ def _code_path(name, component):
     relative = '/'.join(parts[2:])
     immutable = relative in IMMUTABLE_RESOURCES.get(component, set())
     immutable |= component == 'gpu' and bool(re.fullmatch(
-        r'EngineRuntime/bin/prime-gap-worker-sm(?:86|120)-k64[.]exe[.]module[.]json', relative))
+        r'EngineRuntime/bin/prime-gap-worker-sm(?:86|120)-k(?:8|16|32|64)[.]exe[.]module[.]json', relative))
     immutable |= component == 'ui' and bool(re.fullmatch(
         r'UpdateRuntime/_internal/[A-Za-z0-9_.-]+[.]dist-info/(?:entry_points[.]txt|top_level[.]txt|licenses/LICENSE(?:[.](?:txt|APACHE|BSD|MIT))?)', relative))
     immutable |= component == 'ui' and bool(re.fullmatch(

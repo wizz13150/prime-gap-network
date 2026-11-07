@@ -1,6 +1,6 @@
 import pathlib,sys,unittest,hashlib
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/'src/engine/runtime_host'))
-from horizon_sync_guard import synchronized
+from horizon_sync_guard import synchronized,wait_for_network
 from horizon_coordination import confirm_candidate,active_candidate,native_header_hash,validate_intent
 from horizon_core_rpc import CoreRpcError
 HEADER=bytearray(112);HEADER[4:36]=bytes.fromhex('a'*64)[::-1]
@@ -27,6 +27,11 @@ class ReadinessTests(unittest.TestCase):
   header=bytearray(HEADER);header[68:76]=(1793540000).to_bytes(8,'little');header[76:80]=(0x207fffff).to_bytes(4,'little');header[80:112]=(2).to_bytes(32,'little')
   self.assertEqual(native_header_hash(header),hashlib.sha256(hashlib.sha256(header).digest()).digest()[::-1].hex())
  def test_exact_synced_chain_ready(self):self.assertTrue(synchronized(ReadyRpc(),1242,'a'*64))
+ def test_paused_ready_network_allows_report_maintenance_without_compute(self):
+  from types import SimpleNamespace
+  from threading import Event
+  running=Event();worker=SimpleNamespace(quitting=Event(),running=running,rpc=ReadyRpc(),args=SimpleNamespace(bootstrap_height=1242,bootstrap_hash='a'*64))
+  self.assertTrue(wait_for_network(worker));self.assertFalse(running.is_set())
  def inbound_rpc(self,**peer_changes):
   rpc=ReadyRpc();original=rpc.call
   def call(method,params=None):
@@ -35,6 +40,18 @@ class ReadinessTests(unittest.TestCase):
   rpc.call=call;return rpc
  def test_synced_listening_seed_with_only_inbound_peer(self):
   self.assertTrue(synchronized(self.inbound_rpc(),1242,'a'*64))
+ def test_uninitialized_inbound_does_not_disable_synced_seed(self):
+  rpc=self.inbound_rpc();original=rpc.call
+  def call(method,params=None):
+   result=original(method,params)
+   if method=='getpeerinfo':return [dict(connection_type='inbound',inbound=True),*result]
+   return result
+  rpc.call=call;self.assertTrue(synchronized(rpc,1242,'a'*64))
+  rpc.ibd=True;self.assertFalse(synchronized(rpc,1242,'a'*64))
+ def test_only_uninitialized_inbound_is_not_a_sync_witness(self):
+  rpc=ReadyRpc();original=rpc.call
+  rpc.call=lambda method,params=None: [dict(connection_type='inbound',inbound=True)] if method=='getpeerinfo'else original(method,params)
+  self.assertFalse(synchronized(rpc,1242,'a'*64))
  def test_inbound_topology_cannot_override_core_ibd(self):
   rpc=self.inbound_rpc();rpc.ibd=True;self.assertFalse(synchronized(rpc,1242,'a'*64))
  def test_inbound_topology_preserves_native_and_checkpoint_guards(self):

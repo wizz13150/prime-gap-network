@@ -1,21 +1,18 @@
-# Private testnet tester guide
+# Current Windows testnet tester guide
 
-Windows: extract the full archive and open PGN-Horizon.exe.
-Ubuntu 24.04 x86-64 desktop: extract the full archive, then run ./Horizon.
-No VPN or development tools are required. Horizon opens its encrypted testnet connection itself.
+Download the current r69 Windows portable archive from the release, extract the complete folder, and launch PGN-Horizon.exe. Do not launch a component-update ZIP as the application. Older alpha packages use an older testnet epoch.
 
-1. Open Wallet and select Set up wallet. Choose the normal user-data folder, another folder, or an existing wallet. Creation starts only after Finish.
-2. Wait for synchronization. The initial download and verification can take several minutes. Ledger height and synchronization state are shown in the footer.
-3. Open Profile, choose your public name or pseudonym, and copy the Public audit address for the testnet coordinator. The coordinator must admit auditor identities; this does not reserve a range.
-4. Switch a local GPU card ON to request random network work automatically. CUDA images for SM86 and SM120 and the optimized 67–95-bit range are included. The RTX3070Ti belongs to the SM86 family; that particular card still needs tester feedback. An appropriate installed NVIDIA driver is required.
-5. CPU cards operate as auditors, with a selectable dedicated thread budget. The CPU arithmetic currently supports the 68-bit testnet area. ON without assigned compatible work means waiting, not active calculation.
-6. Diagnostics is a separate tool in the Profile menu. Start recording before reproducing a problem, stop, then Save ZIP. The capture is limited to 2 MiB in memory and excludes wallet files, keys, credentials, audit answers and gap tables.
+1. With no wallet configuration, Horizon opens its setup assistant automatically. Choose a new testnet wallet or your existing Core data folder, review the path and confirm. Cancel leaves wallet creation unapplied. Already configured wallets reopen normally.
+2. Wait for synchronization through the integrated encrypted connection. No VPN or exposed wallet RPC port is required.
+3. Choose your public profile name and copy the public mining identity for the coordinator. Approval enables the normal mining/audit cycle. Peer presence alone does not grant that permission. Share only this public identity, never wallet files or credentials.
+4. Turn a local GPU ON. Observe the current work role, search progress, report state and audits. Reports and audit answers survive a restart; a claim is not a credited reward. Available, pending and immature tPGN are distinct.
+5. For feedback, start Diagnostics recording, reproduce the issue, stop and Save ZIP. Record GPU performance while computation is running. Include OS/driver, device, displayed versions and approximate event time. Diagnostics remain local until you send them.
+6. For scientific data, use Number Lens → Native GPU observations → Export results (CSV). The archive preserves exact endpoints, gap sizes, counts and provenance. Its manifest identifies historical data that was not retained.
 
-Scope of this preview
-This is a development testnet with play coins. Search results, committed reports, completed audits, scientific acceptance and rewards are separate states. The current coordination ledger includes zero-issuance records: its height is not the number of Gold mining blocks. Pending reports remain available until processed. A report needs two admitted audit operators distinct from its owner; with fewer eligible operators, it stays pending while other mining work continues. No quorum is silently lowered.
+Updates are optional and authenticated. Choose components or the complete update and confirm application. Horizon drains its own workers and restarts the affected application when necessary; wallet data remains outside component payloads.
 
-Please report: OS and NVIDIA driver version, which device was ON, what happened, the public audit address when admission is needed, and an optional diagnostic ZIP. Do not send private keys or wallet files.
+CPU/Huge pages and additional hardware remain wider qualification work. On Windows the account needs Lock pages in memory before a newly signed-in worker can use large pages. Running as administrator alone does not grant a missing account right. The card turns green only for actual confirmed large-page allocations. This preview has no one-click account-right setup assistant.
 
-The preview is intended for a small private trial. Large-network load, final Gold-only currency-chain rules, final economics and the remaining Horizon roadmap are still under development. It is not a production launch or a claim that all hardware has been physically tested.
+This supervised testnet uses play coins. Its ledger contains zero-issuance coordination records, so its height is not the Gold reward-block count. Final Gold-only chain architecture, economics, external independent operator testing and large-network load remain unfinished. Complementary pseudoprime recovery is deferred; this preview does not claim exhaustive scientific completeness against that case.
 
-Coordinator presence inspection is available in `tools/inspect_testnet.py`. It reads local authenticated RPC and reports peer IDs, announced height, synchronization and traffic counters. It never sends a message, enrolls an identity or requests work. A connection count alone does not establish independent audit operators.
+Never send wallet.dat, private keys, authentication cookies, private audit answers or entire work folders as an ordinary diagnostic report. The coordinator can observe accepted network reports and peer protocol behavior, not remotely control a tester's computer.

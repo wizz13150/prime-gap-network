@@ -380,6 +380,29 @@ class MiningFlow:
         self.worker.progress(dict(phase="PAUSED_ACK"))
 
     def waiting(self):
+        # A raw GPU partition can be complete while its independent source
+        # finalization still runs. A refused ticket prefetch must not hide that
+        # audit activity or suggest the miner has no work.
+        pending = []
+        lanes = getattr(self, 'audit_lanes', [])
+        for position, lane in enumerate(lanes):
+            audit = getattr(lane, 'current_audit', None)
+            if not isinstance(audit, dict):
+                continue
+            ranges, counts = audit.get('ranges'), audit.get('counts')
+            if not isinstance(ranges, list) or not isinstance(counts, list) or not ranges:
+                continue
+            done, total = len(counts), len(ranges)
+            if not 0 <= done <= total:
+                continue
+            stage = ('checking partition ' + str(ranges[done]['index'])
+                     if done < total else 'result publication pending')
+            pending.append('Audit ' + str(position + 1) + '/' + str(len(lanes))
+                           + ': ' + str(done) + '/' + str(total)
+                           + ' partitions verified · ' + stage)
+        if pending:
+            self.worker.message(' | '.join(pending), 'Completing audits')
+            return
         detail = ("Waiting for required audit submissions" if self.gpu.search_waiting_for_audits else
                   self.prefetch.error or "Preparing the next signed network ticket")
         self.worker.message(detail, "Waiting for next ticket")

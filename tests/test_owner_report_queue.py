@@ -179,6 +179,32 @@ class OwnerReportQueueTests(unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.assertEqual(self.count(1), 1)
 
+    def test_failed_owner_does_not_starve_another_ready_report(self):
+        first, item1, sealed1 = self.completed(1)
+        second, item2, sealed2 = self.completed(2)
+        self.queue.register(first, item1)
+        self.queue.register(second, item2)
+        def submit(request, sealed, details):
+            if request == first:
+                raise RuntimeError('First reward temporarily unavailable')
+            self.sent.append(request)
+            return 'no_gold'
+        self.worker.submit_gold = submit
+        with self.assertRaisesRegex(RuntimeError, 'temporarily unavailable'):
+            self.client.reveal_owner_reports()
+        self.assertEqual(self.sent, [second])
+        self.assertEqual(self.count(1), 1)
+
+    def test_accepted_gold_acknowledges_on_its_new_chain_tip(self):
+        request, item, sealed = self.completed(1)
+        self.queue.register(request, item)
+        def submit(*args):
+            self.rpc.extend()
+            return 'accepted'
+        self.worker.submit_gold = submit
+        self.client.reveal_owner_reports()
+        self.assertEqual(self.count(1), 0)
+
     def test_invalid_registration_and_empty_queue_do_not_send_rpc(self):
         for request, item in [('../bad', self.item(1)), (identity(0), self.item(1)), (identity(1), dict(ticket='../bad', report_root='a'*64)),
                               (identity(1), dict(ticket='a'*64, report_root='b'*64, extra='bad'))]:

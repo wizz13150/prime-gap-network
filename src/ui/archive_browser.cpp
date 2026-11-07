@@ -38,7 +38,8 @@ static QWidget* createImportedArchiveBrowser(const QString& root,QWidget* canvas
  auto* plot=new QPushButton("Add this page to Mining graph");auto* provenance=new QPushButton("Open conserved sources and proofs");
  controls->addWidget(previous);controls->addWidget(number);controls->addWidget(next);controls->addWidget(plot);controls->addWidget(provenance);layout->addLayout(controls);
  auto* count=new QLabel;count->setWordWrap(true);layout->addWidget(count);
- auto* table=new QTableWidget;table->setColumnCount(5);table->setHorizontalHeaderLabels({"Left endpoint p","Right endpoint q","Gap q − p","Merit (display)","Proof / coverage status"});
+ auto* table=new QTableWidget;table->setColumnCount(5);table->setHorizontalHeaderLabels({"Left endpoint p","Right endpoint q","Gap q − p","Merit (≈)","Proof / coverage status"});
+ table->horizontalHeaderItem(3)->setToolTip("Rounded display of gap / ln(lower prime); exact integer endpoints and gap sizes are retained.");
  table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);table->horizontalHeader()->setStretchLastSection(true);table->setEditTriggers(QAbstractItemView::NoEditTriggers);layout->addWidget(table,1);
  auto records=std::make_shared<QList<QJsonObject>>();
  auto load=[=](int pageNumber){

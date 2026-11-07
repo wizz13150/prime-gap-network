@@ -16,10 +16,16 @@
 #include <functional>
 
 namespace pgn::ui {
+inline QString atlasSuperscript(int value){const QString digits="⁰¹²³⁴⁵⁶⁷⁸⁹";QString result;for(const auto c:QString::number(value))result+=digits[c.digitValue()];return result;}
+inline QString atlasScientificLabel(const pgn::wallet::AtlasInteger& n){const auto digits=QString::fromStdString(n.str());return "≈ "+digits.left(1)+"."+digits.mid(1,3)+" × 10"+atlasSuperscript(digits.size()-1);}
+inline constexpr qint64 AtlasBitUnit=qint64(1)<<40;
+inline qint64 atlasBitCoordinate(const pgn::wallet::AtlasInteger& n){if(n<=0)return 0;const int k=boost::multiprecision::msb(n);const pgn::wallet::AtlasInteger base=pgn::wallet::AtlasInteger(1)<<k;return qint64(k)*AtlasBitUnit+((n-base)*AtlasBitUnit/base).convert_to<qint64>();}
+inline pgn::wallet::AtlasInteger atlasBitInteger(qint64 coordinate){coordinate=std::max(qint64(0),coordinate);const int k=int(coordinate/AtlasBitUnit);const pgn::wallet::AtlasInteger base=pgn::wallet::AtlasInteger(1)<<k;return base+base*(coordinate%AtlasBitUnit)/AtlasBitUnit;}
 inline QString ticketAtlasCoordinateLabel(const pgn::wallet::AtlasInteger& position,const pgn::wallet::AtlasInteger& span){
     const auto digits=QString::fromStdString(position.str());if(span<1000000000000LL)return digits;
+    if(position>0&&(position&(position-1))==0)return "2"+atlasSuperscript(boost::multiprecision::msb(position));
     const int significant=std::clamp(int(digits.size()-QString::fromStdString(span.str()).size()+3),5,16);
-    return "≈ "+digits.left(1)+"."+digits.mid(1,significant-1)+"e"+QString::number(digits.size()-1);
+    return "≈ "+digits.left(1)+"."+digits.mid(1,significant-1)+" × 10"+atlasSuperscript(digits.size()-1);
 }
 // Refactored ticket-only use of the atlas range tiles/spans. The reservation
 // calendar, zones, context actions and absolute floating-point axis are absent.
@@ -31,12 +37,12 @@ public:
 private:
     using Int=pgn::wallet::AtlasInteger;
     Reader reader_;QJsonObject snapshot_;QString first_,last_,selected_;
-    QTimer debounce_,poll_;QLabel* status_;QVector<QPair<QRectF,QJsonObject>> hits_;
-    QPoint pressed_;Int pressedFirst_{},pressedLast_{};bool dragging_{},busy_{},pending_{},autoFocused_{};
+    QTimer debounce_,poll_;QLabel *status_,*domain_;QVector<QPair<QRectF,QJsonObject>> hits_;
+    QPoint pressed_;Int pressedFirst_{},pressedLast_{};bool dragging_{},busy_{},pending_{},autoFocused_{},bitScale_{},pressedBitScale_{};
     static QColor color(size_t s){static const std::array<QColor,5> c{QColor("#70badb"),QColor("#e6bd64"),QColor("#ba9aee"),QColor("#63dfb3"),QColor("#f37b7e")};return c[s];}
     static QString stageTitle(size_t s){static const std::array<QString,5> names{"Assigned","Awaiting audits","Audits assigned","Audits passed","Audit failed"};return names[s];}
     QVector<size_t> visibleStages()const{QVector<size_t> result;const auto totals=snapshot_.value("totals").toObject();for(size_t s=0;s<5;++s)if(totals.value(pgn::wallet::AtlasStates[s]).toObject().value("tickets").toInteger()>0)result.append(s);if(result.isEmpty())result.append(0);return result;}
-    QRectF plot()const{return {14,76,qreal(std::max(1,width()-28)),qreal(std::max(50,height()-136))};}
+    QRectF plot()const{return {14,76,qreal(std::max(1,width()-28)),qreal(std::max(50,height()-(bitScale_?230:136)))};}
     Int first()const{return first_.isEmpty()?Int(0):Int(first_.toStdString());}
     Int last()const{return last_.isEmpty()?Int(1):Int(last_.toStdString());}
     static QString text(const Int& value){return QString::fromStdString(value.str());}
@@ -47,18 +53,26 @@ private:
     }
     double pixel(const Int& position)const{
         const auto area=plot();const Int a=first(),span=last()-a;
+        if(bitScale_)return area.left()+area.width()*double(atlasBitCoordinate(position)-atlasBitCoordinate(a))/double(atlasBitCoordinate(last())-atlasBitCoordinate(a));
         // Conversion follows subtraction and bounded fixed-point projection.
         // Absolute 95-bit coordinates never pass through a floating-point value.
         const Int fixed=(position-a)*1000000/span;
         return area.left()+area.width()*fixed.convert_to<double>()/1000000.;
     }
-    Int at(qreal x)const{const auto p=plot();const int n=std::clamp(int((x-p.left())*1000000/std::max(1.,p.width())),0,1000000);return first()+(last()-first())*n/1000000;}
+    Int at(qreal x)const{const auto p=plot();const int n=std::clamp(int((x-p.left())*1000000/std::max(1.,p.width())),0,1000000);if(bitScale_){const auto a=atlasBitCoordinate(first()),b=atlasBitCoordinate(last());return std::clamp(atlasBitInteger(a+(Int(b-a)*n/1000000).convert_to<qint64>()),first(),last());}return first()+(last()-first())*n/1000000;}
     void viewport(Int a,Int b){
         if(snapshot_.isEmpty())return;
         const Int origin=pgn::wallet::atlasInteger(snapshot_.value("range_origin")),limit=pgn::wallet::atlasInteger(snapshot_.value("range_limit"));
         Int span=b-a;if(span<=0)span=1;if(span>limit-origin)span=limit-origin;
         if(a<origin)a=origin;if(a+span>limit)a=limit-span;
         first_=text(a);last_=text(a+span);setProperty("pgn_ticket_atlas_start",first_);setProperty("pgn_ticket_atlas_end",last_);update();
+        const bool entire=a==origin&&a+span==limit;
+        const auto bits=[](const Int& n){return n>0?int(boost::multiprecision::msb(n))+1:1;};
+        const int lowerBits=bits(a),upperBits=bits(Int(a+span-1));
+        bitScale_=upperBits-lowerBits>1;setProperty("pgn_ticket_atlas_bit_scale",bitScale_);setMinimumHeight(bitScale_?285:190);
+        const auto bitLabel=lowerBits==upperBits?QString("%1 bits").arg(lowerBits):QString("%1–%2 bits").arg(lowerBits).arg(upperBits);
+        domain_->setText(QString("%1 · %2 · %3").arg(entire?"Network domain":"Ticket area",bitLabel,bitScale_?"one band per bit":"linear scale"));
+        domain_->setToolTip("Exact integer interval ["+text(a)+", "+text(a+span)+") · upper bound excluded. This is the network search domain, not detected hardware capacity.");
     }
     void requestSoon(){debounce_.start();}
     void fetch(){
@@ -80,6 +94,7 @@ private:
     }
     void zoom(int steps,qreal x){
         if(snapshot_.isEmpty()||!steps)return;const Int anchor=at(x);Int span=last()-first();
+        if(bitScale_){const auto pivot=atlasBitCoordinate(anchor);qint64 width=atlasBitCoordinate(last())-atlasBitCoordinate(first());if(steps>0)width>>=std::min(steps,8);else width<<=std::min(-steps,8);width=std::max(qint64(1),width);const int fraction=std::clamp(int((x-plot().left())*1000000/plot().width()),0,1000000);const auto low=pivot-(Int(width)*fraction/1000000).convert_to<qint64>();viewport(atlasBitInteger(low),atlasBitInteger(low+width));requestSoon();return;}
         if(steps>0)span>>=std::min(steps,8);else span<<=std::min(-steps,8);if(span<1)span=1;
         const int fraction=std::clamp(int((x-plot().left())*1000000/plot().width()),0,1000000);
         const Int a=anchor-span*fraction/1000000;viewport(a,a+span);requestSoon();
@@ -131,10 +146,16 @@ protected:
             }
         }
         p.restore();p.setPen(QPen(QColor("#27515d"),1));
-        for(int i=0;i<=4;++i){const qreal x=area.left()+area.width()*i/4;p.drawLine(QPointF(x,area.top()),QPointF(x,area.bottom()+5));}
+        if(!bitScale_)for(int i=0;i<=4;++i){const qreal x=area.left()+area.width()*i/4;p.drawLine(QPointF(x,area.top()),QPointF(x,area.bottom()+5));}
         p.setPen(QColor("#b2d8de"));f.setPixelSize(12);p.setFont(f);
         if(first_.isEmpty())p.drawText(QRectF(area.left(),area.bottom()+8,area.width(),18),Qt::AlignLeft,"Loading verified ticket ranges…");
-        else{
+        else if(bitScale_){
+            f.setPixelSize(11);p.setFont(f);QJsonArray ticks;
+            const int low=boost::multiprecision::msb(first())+1,high=boost::multiprecision::msb(Int(last()-1))+1;
+            const qreal labelAngle=area.width()/std::max(1,high-low+1)<32?90:65;
+            for(int bit=low;bit<=high;++bit){const Int boundary=std::max(first(),Int(Int(1)<<(bit-1)));const qreal x=pixel(boundary);p.setPen(QColor("#27515d"));p.drawLine(QPointF(x,area.top()),QPointF(x,area.bottom()+5));p.setPen(QColor("#b2d8de"));p.drawText(QRectF(x-12,area.bottom()+9,30,17),Qt::AlignCenter,QString::number(bit));p.save();p.translate(x,area.bottom()+36);p.rotate(labelAngle);p.drawText(QPointF(0,0),atlasScientificLabel(boundary));p.restore();ticks.append(QJsonObject{{"bits",bit},{"position",text(boundary)},{"scientific",atlasScientificLabel(boundary)}});}
+            const qreal x=area.right();p.setPen(QColor("#537f8a"));p.drawLine(QPointF(x,area.top()),QPointF(x,area.bottom()+5));p.setPen(QColor("#b2d8de"));p.drawText(QRectF(x-24,area.bottom()+9,28,17),Qt::AlignCenter,"end");p.save();p.translate(x-1,area.bottom()+36);p.rotate(90);p.drawText(QPointF(0,0),atlasScientificLabel(last()));p.restore();setProperty("pgn_ticket_atlas_bit_ticks",ticks);
+        }else{
             const Int span=last()-first();const int labelWidth=std::max(p.fontMetrics().horizontalAdvance(axisLabel(first(),span)),p.fontMetrics().horizontalAdvance(axisLabel(last(),span)))+32;
             const int divisions=area.width()>labelWidth*4?4:area.width()>labelWidth*2?2:1;
             for(int i=0;i<=divisions;++i){const Int position=first()+span*i/divisions;
@@ -145,8 +166,8 @@ protected:
         }
     }
     void wheelEvent(QWheelEvent* e)override{if(plot().contains(e->position())){zoom(e->angleDelta().y()>0?1:-1,e->position().x());e->accept();}else e->ignore();}
-    void mousePressEvent(QMouseEvent* e)override{if(e->button()==Qt::LeftButton&&plot().contains(e->position())&&!snapshot_.isEmpty()){dragging_=true;pressed_=e->position().toPoint();pressedFirst_=first();pressedLast_=last();setCursor(Qt::ClosedHandCursor);e->accept();}else QWidget::mousePressEvent(e);}
-    void mouseMoveEvent(QMouseEvent* e)override{if(dragging_){const Int delta=(pressedLast_-pressedFirst_)*(e->position().toPoint().x()-pressed_.x())/int(std::max(1.,plot().width()));viewport(pressedFirst_-delta,pressedLast_-delta);e->accept();}else QWidget::mouseMoveEvent(e);}
+    void mousePressEvent(QMouseEvent* e)override{if(e->button()==Qt::LeftButton&&plot().contains(e->position())&&!snapshot_.isEmpty()){dragging_=true;pressed_=e->position().toPoint();pressedFirst_=first();pressedLast_=last();pressedBitScale_=bitScale_;setCursor(Qt::ClosedHandCursor);e->accept();}else QWidget::mousePressEvent(e);}
+    void mouseMoveEvent(QMouseEvent* e)override{if(dragging_){const int dx=e->position().toPoint().x()-pressed_.x();if(pressedBitScale_){const auto a=atlasBitCoordinate(pressedFirst_),b=atlasBitCoordinate(pressedLast_);const auto delta=(Int(b-a)*dx/int(std::max(1.,plot().width()))).convert_to<qint64>();viewport(atlasBitInteger(a-delta),atlasBitInteger(b-delta));}else{const Int delta=(pressedLast_-pressedFirst_)*dx/int(std::max(1.,plot().width()));viewport(pressedFirst_-delta,pressedLast_-delta);}e->accept();}else QWidget::mouseMoveEvent(e);}
     void mouseReleaseEvent(QMouseEvent* e)override{if(!dragging_){QWidget::mouseReleaseEvent(e);return;}dragging_=false;setCursor(Qt::OpenHandCursor);
         if((e->position().toPoint()-pressed_).manhattanLength()<6){QStringList found;for(const auto& hit:hits_)if(hit.first.contains(e->position())){
                 if(hit.second.value("atlas_bin").toBool()){viewport(pgn::wallet::atlasInteger(hit.second.value("start")),pgn::wallet::atlasInteger(hit.second.value("end")));requestSoon();return;}
@@ -163,8 +184,8 @@ public:
         setObjectName("pgn-ticket-atlas");setMinimumHeight(190);setMaximumHeight(320);setCursor(Qt::OpenHandCursor);
         setFont(QFont("Segoe UI",10));
         setStyleSheet("QWidget#pgn-ticket-atlas{background:#03141b;border:1px solid #27515d;border-radius:8px;} QPushButton{color:#bce8e7;background:#0b2e36;border:1px solid #386674;border-radius:5px;padding:3px 9px;font:12px 'Segoe UI';} QPushButton:hover{background:#174d54;border-color:#65d4c7;} QPushButton:pressed{background:#20645f;} QLabel{color:#a8cdd4;font-family:'Segoe UI';}");
-        auto* controls=new QHBoxLayout;controls->setContentsMargins(12,7,12,0);auto* caption=new QLabel("TICKET ATLAS");caption->setStyleSheet("font-weight:600;color:#bfe6e7");controls->addWidget(caption,1);
-        auto* active=new QPushButton("Active area"),*all=new QPushButton("Full range"),*minus=new QPushButton("−"),*plus=new QPushButton("+");active->setObjectName("pgn-atlas-active");all->setObjectName("pgn-atlas-overview");
+        auto* controls=new QHBoxLayout;controls->setContentsMargins(12,7,12,0);auto* caption=new QLabel("TICKET ATLAS");caption->setStyleSheet("font-weight:600;color:#bfe6e7");controls->addWidget(caption);domain_=new QLabel("Network search domain");domain_->setStyleSheet("color:#a8cdd4");controls->addWidget(domain_,1);
+        auto* active=new QPushButton("Active area"),*all=new QPushButton("Network domain"),*minus=new QPushButton("−"),*plus=new QPushButton("+");active->setObjectName("pgn-atlas-active");all->setObjectName("pgn-atlas-overview");
         for(auto* button:{active,all,minus,plus}){button->setMaximumHeight(26);controls->addWidget(button);}plus->setFixedWidth(30);minus->setFixedWidth(30);
         auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,3);layout->addLayout(controls);layout->addStretch();status_=new QLabel("Reading the authenticated ticket map…");status_->setWordWrap(true);status_->setStyleSheet("color:#92bac6;font-size:12px");layout->addWidget(status_);layout->setStretch(1,1);
         connect(active,&QPushButton::clicked,this,[this]{focusActive();});connect(all,&QPushButton::clicked,this,[this]{if(snapshot_.isEmpty())return;viewport(pgn::wallet::atlasInteger(snapshot_.value("range_origin")),pgn::wallet::atlasInteger(snapshot_.value("range_limit")));requestSoon();});

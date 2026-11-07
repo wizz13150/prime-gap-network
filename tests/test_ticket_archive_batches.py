@@ -3,6 +3,8 @@ from pathlib import Path
 from contextlib import nullcontext
 import hashlib
 import json
+import sqlite3
+from contextlib import closing
 import sys
 import tempfile
 import unittest
@@ -60,6 +62,13 @@ class ArchiveBatchTests(unittest.TestCase):
         (folder / 'report.json').write_bytes(archive.canonical(report))
         for name in archive.WORK_FILES:
             (folder / name).write_bytes(b'redundant committed work')
+        index=folder/'session-index.sqlite3';index.unlink()
+        for suffix in ('-wal','-shm'):(folder/('session-index.sqlite3'+suffix)).write_bytes(b'')
+        with closing(sqlite3.connect(index))as db,db:
+            db.executescript('CREATE TABLE meta(k TEXT PRIMARY KEY,v TEXT);CREATE TABLE gaps(lo BLOB PRIMARY KEY,hi BLOB,gap INTEGER,seq INTEGER,bin INTEGER);')
+            db.execute('INSERT INTO meta VALUES(?,?)',('binding',json.dumps(dict(configuration_hash=hashlib.sha256(archive.canonical(config)).hexdigest()))))
+            start=int(config['start'])
+            db.executemany('INSERT INTO gaps VALUES(?,?,?,?,?)',[((start+i*20).to_bytes(16,'big'),(start+i*20+10).to_bytes(16,'big'),10,i,0)for i in range(3)])
         return folder, report
 
     def test_all_521_tickets_are_reached_in_128_ticket_batches(self):

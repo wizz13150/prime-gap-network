@@ -20,7 +20,14 @@ def synchronized(rpc,height,expected_hash):
  # no public listener). Accept that topology only after Core itself left IBD;
  # the exact checkpoint and every native download/height check still apply.
  if not bootstrap_peers and chain['initialblockdownload']is False:
-  bootstrap_peers=[peer for peer in announcements if isinstance(peer,dict)and peer.get('connection_type')=='inbound'and peer.get('inbound')is True]
+  # A new inbound connection has no PGN announcement yet. It is not an
+  # authoritative synchronization source and must not disable a seed that
+  # already has another initialized, validated inbound peer. Manual bootstrap
+  # peers retain the strict all-peer checks below.
+  bootstrap_peers=[peer for peer in announcements if isinstance(peer,dict)
+                   and peer.get('connection_type')=='inbound'and peer.get('inbound')is True
+                   and type(peer.get('pgn_announced_height'))is int and peer['pgn_announced_height']>=0
+                   and type(peer.get('pgn_syncing'))is bool]
  if not bootstrap_peers:return False
  if any(type(peer.get('pgn_announced_height'))is not int or peer['pgn_announced_height']<0 or type(peer.get('pgn_syncing'))is not bool for peer in bootstrap_peers):return False
  if blocks<max(peer['pgn_announced_height']for peer in bootstrap_peers)or any(peer['pgn_syncing']for peer in bootstrap_peers):return False
@@ -29,8 +36,11 @@ def synchronized(rpc,height,expected_hash):
 
 def wait_for_network(worker):
  while not worker.quitting.is_set():
+  # Publication of already-computed reports must be able to resume after an
+  # application restart even when the user keeps the compute devices OFF.
+  # Compute/prefetch lanes still enforce running independently.
+  if synchronized(worker.rpc,worker.args.bootstrap_height,worker.args.bootstrap_hash):return True
   if not worker.running.is_set():worker.message('Mining paused; no work requested','Paused')
-  elif synchronized(worker.rpc,worker.args.bootstrap_height,worker.args.bootstrap_hash):return True
   else:worker.message('Synchronizing the testnet before requesting an automatic ticket','Synchronizing')
   worker.quitting.wait(1)
  return False

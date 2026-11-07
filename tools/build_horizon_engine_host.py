@@ -5,6 +5,8 @@ parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--outpu
 inputs={p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
         for folder in (source,root/'src/protocol',root/'src/engine/shared_composite')for p in sorted(folder.glob('*.py'))}
 inputs[Path(__file__).resolve().relative_to(root).as_posix()]=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+for name in ('export_gap_observations.py','export_scientific_results.py'):
+ p=root/'tools'/name;inputs[p.relative_to(root).as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
 command=[sys.executable,'-m','PyInstaller','--noconfirm','--onedir','--console','--name','horizon-engine-host','--distpath',str(out/'dist'),'--workpath',str(out/'work'),'--specpath',str(out/'spec'),'--paths',str(source),'--paths',str(root/'src/protocol'),'--paths',str(root/'src/engine/shared_composite'),'--hidden-import','sqlite3','--hidden-import','_sqlite3']
 for p in source.glob('pgn_*.py'):command+=['--hidden-import',p.stem]
 # Some managed Python distributions load an additional certificate policy from
@@ -12,6 +14,7 @@ for p in source.glob('pgn_*.py'):command+=['--hidden-import',p.stem]
 certificate_policy=Path(ssl.__file__).parent/'codex-rejected-cas.pem'
 if certificate_policy.is_file():command+=['--add-data',str(certificate_policy)+os.pathsep+'.']
 for name in('rich','numpy','matplotlib','scipy','pandas','torch','tensorflow','cupy','numba'):command+=['--exclude-module',name]
+command += ['--paths',str(root/'tools')]
 command.append(str(source/'horizon_engine_host.py'));subprocess.run(command,check=True)
 if any(hashlib.sha256((root/name).read_bytes()).hexdigest()!=expected for name,expected in inputs.items()):
     raise RuntimeError('Engine-host source changed while freezing; output is not qualified')
