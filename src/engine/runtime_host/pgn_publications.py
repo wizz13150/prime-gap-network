@@ -145,7 +145,10 @@ class WorkRates:
     def add(self, samples):
         for stamp, pos, tests in samples:
             if self.minimum is not None:
-                if pos < self.minimum[0] or tests < self.minimum[1]:
+                # A restored (or zero-work startup) snapshot has no trustworthy
+                # compute-start timestamp. Arm the baseline on fresh coverage,
+                # then measure the next native work delta without a speed cap.
+                if pos <= self.minimum[0] or tests < self.minimum[1]:
                     continue
                 self.minimum = None
             if self.last is not None:
@@ -197,10 +200,14 @@ class WorkRates:
         recent = boundary(1)
         seconds = last[0] - window[0]
         span = last[0] - recent[0]
+        # Completed descriptors can be published together after asynchronous GPU
+        # work. Sub-millisecond publication gaps are not computation intervals.
+        # Warm the advertised one-second window instead of shrinking it at start.
+        ready = seconds >= 1.0 and span > 0
         return {
-            "speed_rate": (last[1] - recent[1]) / span if span > 0 else None,
-            "average_rate": (last[1] - window[1]) / seconds if seconds > 0 else None,
+            "speed_rate": (last[1] - recent[1]) / span if ready else None,
+            "average_rate": (last[1] - window[1]) / seconds if ready else None,
             "observed_active_seconds": min(60.0, seconds),
-            "compute_tests_rate": (last[2] - recent[2]) / span if span > 0 else None,
-            "eta_rate": (last[1] - window[1]) / seconds if seconds > 0 else None,
+            "compute_tests_rate": (last[2] - recent[2]) / span if ready else None,
+            "eta_rate": (last[1] - window[1]) / seconds if ready else None,
         }

@@ -1,0 +1,8 @@
+# Versions used by the Windows updater qualification (Python 3.12.14).
+tuf==7.0.1
+securesystemslib==1.6.0
+cryptography==50.0.2
+cffi==2.1.1
+pycparser==3.12
+urllib3==2.8.0
+PyInstaller==6.22.3

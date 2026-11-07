@@ -1,3 +1,4 @@
+#include "app/horizon_user_paths.h"
 #include "ui/native_archive_view.h"
 #include "ui/panel_style.h"
 #include "science/archive_reader.h"
@@ -20,7 +21,7 @@ class NativeArchive final:public QWidget {
 public:
  explicit NativeArchive(QString root,QWidget* parent):QWidget(parent),root_(std::move(root)){
   setObjectName("pgn-native-archive-view");setStyleSheet(dataPanelStyle());
-  database_=root_+"/data/runtime/scientific-history.sqlite";
+  database_=pgn::app::mutableDataRoot(root_)+"/runtime/scientific-history.sqlite";
   auto* box=new QVBoxLayout(this);box->setContentsMargins(20,18,20,18);
   auto* heading=new QLabel("NATIVE SCIENTIFIC ARCHIVE · EXACT ENDPOINTS + ORIGINAL SOURCES");heading->setStyleSheet("font:700 20px 'Segoe UI';color:#e9fffb");box->addWidget(heading);
   auto* warning=new QLabel("SOURCE PRP OBSERVATIONS · independent primality proof and exhaustive interval coverage remain pending. A fixed snapshot excludes new arrivals until Refresh.");
@@ -44,7 +45,7 @@ public:
   connect(search_,&QLineEdit::returnPressed,this,[this]{reset();});
   connect(previous_,&QPushButton::clicked,this,[this]{if(after_.size()>1){after_.removeLast();load();}});
   connect(next_,&QPushButton::clicked,this,[this]{if(current_.more&&!current_.rows.isEmpty()){after_.append(current_.rows.last().id);load();}});
-  connect(sources,&QPushButton::clicked,this,[this]{QDesktopServices::openUrl(QUrl::fromLocalFile(root_+"/data/runtime/source-journals"));});
+  connect(sources,&QPushButton::clicked,this,[this]{QDesktopServices::openUrl(QUrl::fromLocalFile(pgn::app::mutableDataRoot(root_)+"/runtime/source-journals"));});
   connect(table_,&QTableWidget::itemSelectionChanged,this,[this]{const int row=table_->currentRow();if(row<0||row>=current_.rows.size())return;
    selected_=current_.rows[row].id;originAfterRun_.clear();originAfterSource_.clear();loadOrigins();});
   connect(originsNext_,&QPushButton::clicked,this,[this]{if(!originPage_.more||originPage_.rows.isEmpty())return;

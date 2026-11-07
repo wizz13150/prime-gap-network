@@ -98,3 +98,23 @@ class CpuMetrics:
   if not cpu_known:errors.append('Worker CPU sample unavailable')
   self.cached=dict(schema='PGN_CPU_TELEMETRY_V1',sample_monotonic_ns=str(int(now*1e9)),worker_pids=list(pids),worker_busy_percent=busy,engine_working_set_bytes=str(rss)if memory_known else None,host_memory_total_bytes=str(total)if total else None,host_memory_used_bytes=str(used)if used is not None else None,working_set_scope='Sum of controller and worker working sets; shared pages may be counted more than once',error='; '.join(errors)or None)
   self.last=now;return self.cached
+
+class MiningCounterWindow:
+ """Coupled durable counter deltas on one active-time clock, never a rate guess."""
+ def __init__(self,seconds=60.):self.seconds=seconds;self.identity=None;self.samples=deque(maxlen=1024)
+ def observe(self,identity,active_seconds,positions,tests,gaps,computing):
+  if not math.isfinite(active_seconds)or active_seconds<0 or any(type(v)is not int or v<0 for v in(positions,tests,gaps)):
+   raise ValueError('Invalid durable mining counters')
+  current=(active_seconds,positions,tests,gaps)
+  reset=identity!=self.identity or(self.samples and(active_seconds-self.samples[-1][0]>self.seconds or any(a<b for a,b in zip(current,self.samples[-1]))))
+  if reset:self.samples.clear();self.identity=identity
+  if not self.samples:self.samples.append(current)
+  elif computing and active_seconds>self.samples[-1][0]:self.samples.append(current)
+  while len(self.samples)>2 and self.samples[1][0]<=active_seconds-self.seconds:self.samples.popleft()
+  span=active_seconds-self.samples[0][0];dp=positions-self.samples[0][1];dt=tests-self.samples[0][2];dg=gaps-self.samples[0][3]
+  ready=bool(computing)and span>=.25 and min(dp,dt,dg)>=0
+  return dict(schema='PGN_CPU_MINING_RATES_V1',source='durable_completed_counts',request_sha256=identity,
+   positions=str(positions),candidate_tests=str(tests),retained_gaps=str(gaps),active_window_seconds=span if ready else 0.,
+   tests_per_second=dt/span if ready else(0. if not computing else None),
+   gaps_per_second=dg/span if ready else(0. if not computing else None),
+   gaps_per_billion_positions=dg*1e9/dp if ready and dp>0 else None)

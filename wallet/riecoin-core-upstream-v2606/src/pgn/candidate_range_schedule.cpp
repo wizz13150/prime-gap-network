@@ -9,6 +9,11 @@
 #include <map>
 namespace pgn::core {
 namespace {
+CandidateRangeScheduleReader& VerifiedScheduleReader(){
+    AssertLockHeld(cs_main);
+    static CandidateRangeScheduleReader reader;
+    return reader;
+}
 uint256 ReservationIdentity(const uint256& policy,const CandidateRangeLease& lease){
     HashWriter hash{TaggedHash(lease.time_lease?"PGN/UNAPPROVED/NATIVE-RESERVATION/2":"PGN/UNAPPROVED/NATIVE-RESERVATION/1")};
     hash<<policy<<lease.assignment.request<<lease.assignment.seed<<lease.issued;
@@ -20,7 +25,7 @@ uint256 ReservationIdentity(const uint256& policy,const CandidateRangeLease& lea
 RangeScheduleCheck ReconstructCandidateRangeSchedule(const CCoinsView& view,const CBlockIndex& parent,
     const ChainRangePolicy& policy,const NativeRequestHistoryArchive& archive,RangeScheduleBudget budget){
     AssertLockHeld(cs_main);
-    static CandidateRangeScheduleReader reader;
+    auto& reader=VerifiedScheduleReader();
     // Admission and RPC require a complete answer. Pay accepted-parent cold
     // replay once in slices; a continuation is not an invalid reservation.
     for(;;){
@@ -28,18 +33,34 @@ RangeScheduleCheck ReconstructCandidateRangeSchedule(const CCoinsView& view,cons
         if(result.verdict!=RangeScheduleVerdict::BudgetExceeded||!reader.MoreWorkPending())return result;
     }
 }
+RangeLeaseCheck ReconstructCandidateRangeLease(const CCoinsView& view,const CBlockIndex& parent,
+    const ChainRangePolicy& policy,const NativeRequestHistoryArchive& archive,RangeScheduleBudget budget,const uint256& request){
+    AssertLockHeld(cs_main);
+    auto& reader=VerifiedScheduleReader();
+    for(;;){
+        auto result=reader.ReadLease(view,parent,policy,archive,budget,request);
+        if(result.verdict!=RangeScheduleVerdict::BudgetExceeded||!reader.MoreWorkPending())return result;
+    }
+}
+RangeScheduleCheck VisitCandidateRangeSchedule(const CCoinsView& view,const CBlockIndex& parent,
+    const ChainRangePolicy& policy,const NativeRequestHistoryArchive& archive,RangeScheduleBudget budget,
+    const std::function<void(const CandidateRangeLease&)>& visitor){
+    AssertLockHeld(cs_main);auto& reader=VerifiedScheduleReader();
+    for(;;){auto result=reader.Visit(view,parent,policy,archive,budget,visitor);
+        if(result.verdict!=RangeScheduleVerdict::BudgetExceeded||!reader.MoreWorkPending())return result;
+    }
+}
 CandidateReservationCheck DeriveNativeCandidateReservation(const CCoinsView& view,const CBlockIndex& parent,
     const ChainRangePolicy& policy,const NativeRequestHistoryArchive& archive,RangeScheduleBudget budget,const uint256& request){
     AssertLockHeld(cs_main);
     if(!ChainRangePolicyOnBranch(view,parent,policy))return {CandidateReservationVerdict::InvalidParent,{},{}};
-    auto schedule=ReconstructCandidateRangeSchedule(view,parent,policy,archive,budget);
-    if(!schedule.schedule)return {CandidateReservationVerdict::HistoryHeld,{},schedule.verdict};
-    for(auto& lease:schedule.schedule->active)if(lease.owner.Id()==request){
-        const auto identity=ReservationIdentity(policy.Id(),lease);
-        return {CandidateReservationVerdict::BoundToNativeHistory,
-            NativeCandidateReservation{parent.GetBlockHash(),policy.Id(),identity,std::move(lease)},schedule.verdict};
-    }
-    return {CandidateReservationVerdict::NotReserved,{},schedule.verdict};
+    auto found=ReconstructCandidateRangeLease(view,parent,policy,archive,budget,request);
+    if(found.verdict!=RangeScheduleVerdict::ReconstructedCandidate)
+        return {CandidateReservationVerdict::HistoryHeld,{},found.verdict};
+    if(!found.lease)return {CandidateReservationVerdict::NotReserved,{},found.verdict};
+    const auto identity=ReservationIdentity(policy.Id(),*found.lease);
+    return {CandidateReservationVerdict::BoundToNativeHistory,
+        NativeCandidateReservation{parent.GetBlockHash(),policy.Id(),identity,std::move(*found.lease)},found.verdict};
 }
 bool NativeCandidateReservationAtParent(const CCoinsView& view,const CBlockIndex& parent,const ChainRangePolicy& policy,
     const NativeCandidateReservation& reservation){

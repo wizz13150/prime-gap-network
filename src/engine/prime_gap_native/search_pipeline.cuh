@@ -37,6 +37,7 @@ struct PgnWalkGraphState {
     uint32_t cursor, count, completed;
 };
 struct PgnWalkGraphBuffers {
+    pgn_composite_device::Bank complement{};
     const uint64_t *primes, *invp, *r64;
     const uint32_t *item_pidx, *item_k0, *wheel_primes, *window_steps;
     uint32_t item_count, gap_min, result_capacity, blocks_per_slot;
@@ -75,7 +76,7 @@ __global__ __maxnreg__(48) void pgn_graph_mark(const PgnWalkDescriptor *descript
         segmented_sieve::body<true, true, true, true>(
             buffers.primes, buffers.invp, buffers.r64, buffers.item_pidx, buffers.item_k0,
             buffers.item_count, low, high, 1ULL << 19, 32, bitmap + uint64_t(cohort) * 32u * 8192u,
-            8192, buffers.wheel_primes, 1, buffers.root_steps, 0, logicalY, 1);
+            8192, buffers.wheel_primes, 1, buffers.root_steps, 0, logicalY, 1, buffers.complement);
         __syncthreads();
     }
 }
@@ -151,6 +152,10 @@ __global__ void pgn_graph_verify_optimized_width(
     const uint32_t index=state->cursor;if(index>=state->count)return;
     const auto origin=pgn_class30_origin(descriptors[index]);
     if(origin.high<(uint64_t(1)<<(Bits-65))||origin.high>=(uint64_t(1)<<(Bits-64)))return;
+    const auto descriptor=descriptors[index];
+    constexpr uint64_t wordsPerBitmap=(1ull<<28)/64;
+    const auto bitmapWords=uint64_t(descriptor.bitmap_blocks)*wordsPerBitmap;
+    const auto* bitmap=buffers.bitmaps+uint64_t(index%PgnBitmapSlots)*buffers.blocks_per_slot*wordsPerBitmap;
     const auto*source=buffers.results+uint64_t(index)*buffers.result_capacity;const unsigned count=source[0].gap;
     if(count>=buffers.result_capacity)return;
     for(unsigned row=1+blockIdx.x*blockDim.x+threadIdx.x;row<=count;row+=gridDim.x*blockDim.x){
@@ -160,6 +165,19 @@ __global__ void pgn_graph_verify_optimized_width(
         for(unsigned delta=1;valid&&delta<gap.gap;++delta){
             const uint64_t n=gap.slot+delta;
             if(!(n&1)||(n%3+origin.high%3)%3==0||(n%5+origin.high%5)%5==0)continue;
+            // The retained bitmap is already a compositeness certificate:
+            // ordinary divisors and typed exact-factor complement marks.
+            if(n>=origin.low){
+                const uint64_t offset=n-origin.low;
+                const uint64_t covered=uint64_t(descriptor.bitmap_blocks)*(30ull<<25);
+                if(offset<covered){
+                    const int residue=c30_clsidx[offset%30];
+                    if(residue>=0){
+                        const uint64_t slot=(offset/30)*8+unsigned(residue);
+                        if((slot>>6)<bitmapWords&&(bitmap[slot>>6]&(1ull<<(slot&63))))continue;
+                    }
+                }
+            }
             if(w_live_prime<Bits,FixedHigh,Upper>(n,origin.high,0,arithmetic)&&pgn_mr96::screen13(n,origin.high)!=0)valid=false;
         }
         buffers.proofs[uint64_t(index)*buffers.result_capacity+row]=valid?1u:0u;

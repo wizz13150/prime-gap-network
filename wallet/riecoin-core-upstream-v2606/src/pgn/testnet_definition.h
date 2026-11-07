@@ -42,12 +42,12 @@ inline NativeMainParameterDefinition BuildPgnTestnetDefinition(){
     put(40*65536,4);
     const std::string rewards_tag="PGNTESTNET-REWARDS-1";
     CMutableTransaction coinbase;coinbase.vin.resize(1);coinbase.vin[0].prevout.SetNull();
-    const std::string identity="PGN TESTNET / prime gaps / 2026-10-31";
+    const std::string identity="PGN TESTNET / prime gaps / reset 2026-11-06";
     coinbase.vin[0].scriptSig=CScript{}<<OP_0<<Bytes{identity.begin(),identity.end()};
     coinbase.vout={{0,*range_script},{0,*science_script},{0,*money_script},{0,*bootstrap_script},
         {0,*work_script},{0,*controller_script},
         {0,CScript{}<<OP_RETURN<<Bytes{rewards_tag.begin(),rewards_tag.end()}<<rewards}};
-    CBlock genesis;genesis.nVersion=4;genesis.nTime=1793404800;
+    CBlock genesis;genesis.nVersion=4;genesis.nTime=1793923200;
     genesis.nBits=bootstrap_bits;genesis.nNonce=NativeBootstrapNonce(0);
     genesis.vtx={MakeTransactionRef(coinbase)};genesis.hashMerkleRoot=BlockMerkleRoot(genesis);
     const auto target=*CanonicalBootstrapHashTarget(bootstrap_bits);
@@ -60,8 +60,8 @@ inline NativeMainParameterDefinition BuildPgnTestnetDefinition(){
         genesis.hashMerkleRoot=BlockMerkleRoot(genesis);
     }
     const auto id=genesis.GetHash();
-    const NativeAddressPolicy addresses{"tpgn",NativeWitnessChecksum::Bip173And350,NativeWitnessCase::Lower,90};
-    return {genesis,id,{0xd7,0x54,0x4e,0x31},48931,48932,addresses,
+    const auto addresses=PgnTestnetAddressPolicy();
+    return {genesis,id,{0xd7,0x54,0x4e,0x32},48941,48942,addresses,
         {Bytes{0x04,0x35,0x87,0xcf},Bytes{0x04,0x35,0x83,0x94}},
         {128},AtomicFeeRatePolicy{coin,{128}},budget};
 }

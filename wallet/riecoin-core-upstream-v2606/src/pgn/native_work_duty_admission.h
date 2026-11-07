@@ -1,0 +1,69 @@
+// Copyright (c) 2026 The PGN developers. MIT.
+// Deterministic service accounting over authenticated native history.
+#pragma once
+#include <pgn/native_work_duty.h>
+#include <pgn/proposed_ticket_requests.h>
+namespace pgn::core {
+struct NativeWorkDutyActivation {
+    uint256 chain,genesis,anchor;
+    int32_t anchor_height{},height{},first_assignment_height{};
+    bool Valid()const {
+        return !chain.IsNull()&&!genesis.IsNull()&&!anchor.IsNull()&&anchor_height>=0&&
+            height>anchor_height&&first_assignment_height>=0&&first_assignment_height<=height;
+    }
+};
+inline std::optional<NativeWorkDutyActivation> ConfiguredNativeWorkDutyActivation(){
+    // No network policy, activation height or authority approval is invented.
+    return {};
+}
+inline bool NativeWorkDutyActivationOnBranch(const CCoinsView& view,const CBlockIndex& parent,
+    const NativeWorkDutyActivation& activation){
+    AssertLockHeld(cs_main);
+    if(!activation.Valid()||!parent.phashBlock||!parent.IsValid(BLOCK_VALID_SCRIPTS)||parent.nHeight<activation.anchor_height)return false;
+    const auto head=view.GetPgnFactHead();
+    const auto* genesis=parent.GetAncestor(0);const auto* anchor=parent.GetAncestor(activation.anchor_height);
+    return head&&head->chain==activation.chain&&head->tip==parent.GetBlockHash()&&view.GetBestBlock()==head->tip&&
+        genesis&&genesis->phashBlock&&genesis->GetBlockHash()==activation.genesis&&
+        anchor&&anchor->phashBlock&&anchor->GetBlockHash()==activation.anchor;
+}
+struct NativeWorkDutyState {NativeAuditLedger audits;NativeDutySpent spent;};
+inline std::optional<NativeWorkDutyState> ReadNativeWorkDutyState(const CCoinsView& view,
+    const CBlockIndex& parent,const NativeRequestHistoryArchive& history,const RangePolicyReadBudget& policy_budget,
+    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,const NativeWorkDutyActivation& activation){
+    if(!NativeWorkDutyActivationOnBranch(view,parent,activation))return {};
+    NativeDutySpent spent;
+    const auto before=[&](const NativeAuditLedger& ledger,const CBlockIndex& prior,const VerifiedNativeRequestBlock& block){
+        if(prior.nHeight+1<activation.height)return true;
+        const auto scan=ScanConfirmedTicketRequests(view,parent,block,schedule_budget.scan);
+        if(!scan.batch)return false;
+        for(const auto& confirmed:scan.batch->Requests()){
+            const auto& request=confirmed.Request();
+            auto selected=InspectAutomaticNativeWorkDuty(ledger,prior,request.Request().miner,spent,activation.first_assignment_height);
+            if(!selected.checked.proof||!ConsumeNativeWorkDuty(*selected.checked.proof,prior.GetBlockHash(),
+                request.Request().miner,request.Id(),spent))return false;
+        }
+        return true;
+    };
+    auto ledger=ReadNativeAuditLedgerWithBlockHook(view,parent,history,policy_budget,schedule_budget,signature_budget,before);
+    if(!ledger)return {};
+    return NativeWorkDutyState{std::move(*ledger),std::move(spent)};
+}
+inline bool VerifyProposedNativeWorkDuties(const CCoinsView& view,const CBlockIndex& parent,
+    const NativeRequestHistoryArchive& history,const VerifiedProposedTicketRequests& proposed,
+    const RangePolicyReadBudget& policy_budget,const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,
+    const std::optional<NativeWorkDutyActivation>& activation=ConfiguredNativeWorkDutyActivation()){
+    if(!activation||int64_t(parent.nHeight)+1<activation->height)return true;
+    if(!NativeWorkDutyActivationOnBranch(view,parent,*activation)||proposed.Parent()!=parent.GetBlockHash()||
+       proposed.Height()!=int64_t(parent.nHeight)+1||proposed.Chain()!=activation->chain)return false;
+    if(proposed.Requests().empty())return true;
+    auto state=ReadNativeWorkDutyState(view,parent,history,policy_budget,schedule_budget,signature_budget,*activation);
+    if(!state)return false;
+    for(const auto& item:proposed.Requests()){
+        const auto& request=item.request;
+        auto selected=InspectAutomaticNativeWorkDuty(state->audits,parent,request.Request().miner,state->spent,activation->first_assignment_height);
+        if(!selected.checked.proof||!ConsumeNativeWorkDuty(*selected.checked.proof,parent.GetBlockHash(),
+            request.Request().miner,request.Id(),state->spent))return false;
+    }
+    return true;
+}
+} // namespace pgn::core

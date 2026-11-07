@@ -53,6 +53,8 @@ struct SshObservationTrace {
     QJsonObject json() const;
 };
 SshObservationCommand makeSshObservationCommand(const SshObservationEndpoint&,const SshObservationRequest&);
+// Explicit, validated direct endpoint; callers own and quote the remote command.
+SshObservationCommand makeSshConnectionCommand(const SshObservationEndpoint&,const QString& remoteCommand);
 QString nativeRemoteRuntimeRoot(const SshObservationEndpoint&);
 QString nativeControlScriptForEndpoint(const SshObservationEndpoint&,const QString& generatedScript);
 SshObservationFrame decodeSshSnapshot(const QByteArray& document);

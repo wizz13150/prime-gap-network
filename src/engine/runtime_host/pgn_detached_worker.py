@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 PUBLICATION_GRACE_SECONDS = 5.0
+MAX_OWNER_PUBLICATION_BYTES = 1024 * 1024
 
 
 def _publication_busy(error):
@@ -20,10 +21,13 @@ def _publication_busy(error):
 
 
 def atomic(path, value):
+    raw = json.dumps(value).encode("utf-8")
+    if len(raw) > MAX_OWNER_PUBLICATION_BYTES:
+        raise ValueError("Owner publication exceeds the 1 MiB control-file budget")
     path = Path(path)
     tmp = path.with_suffix(path.suffix + ".pending")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(value, f)
+    with tmp.open("wb") as f:
+        f.write(raw)
         f.flush()
         os.fsync(f.fileno())
     until = time.monotonic() + PUBLICATION_GRACE_SECONDS
@@ -40,7 +44,11 @@ def atomic(path, value):
 
 
 def load(path):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    with Path(path).open("rb") as stream:
+        raw = stream.read(MAX_OWNER_PUBLICATION_BYTES + 1)
+    if len(raw) > MAX_OWNER_PUBLICATION_BYTES:
+        raise ValueError("Owner publication exceeds the 1 MiB control-file budget")
+    return json.loads(raw.decode("utf-8"))
 
 
 def _load_publication(path):
@@ -100,6 +108,8 @@ def boot_main(path):
     try:
         lease = GpuLease(data["gpu_uuid"], data.get("registry_root")).acquire()
         process = WindowsOwnedProcess(cmd, data["environment"], lease, cwd=data.get("cwd"))
+        from pgn_output_spool import Writer
+        output_writer = Writer(root / "output", token)
         atomic(
             root / "ready.json",
             {
@@ -136,21 +146,15 @@ def boot_main(path):
 
         def copy_output():
             try:
-                digest = hashlib.sha256()
-                written = 0
-                with (root / "stdout.log").open("x", encoding="utf-8", newline="\n") as f:
-                    for line in process.stdout:
-                        if len(line) > 65536:
-                            raise ValueError("Oversized Native publication")
-                        data = line.encode("utf-8")
-                        f.write(line)
-                        f.flush()
-                        digest.update(data)
-                        written += len(data)
-                    os.fsync(f.fileno())
-                output_info.update(stdout_sha256=digest.hexdigest().upper(), stdout_bytes=written)
+                for line in process.stdout:
+                    output_writer.append(line.encode("utf-8"))
+                output_info["output_spool"] = output_writer.finish()
             except BaseException as error:
                 copy_error.append(str(error))
+                try:
+                    output_info["output_spool"] = output_writer.finish()
+                except BaseException as seal_error:
+                    copy_error.append(str(seal_error))
 
         reader = threading.Thread(target=copy_output, name="PGN-worker-output")
         reader.start()
@@ -158,6 +162,10 @@ def boot_main(path):
         while process.poll() is None:
             if not parent_alive() and not orphan:
                 orphan = True
+                from pgn_output_spool import bound_job_context
+                current_context = bound_job_context(root, token)
+                if current_context is not None:
+                    stop = current_context['stop']
                 stop.write_text(
                     "terminal closed: suspend at the next safe boundary\n", encoding="utf-8"
                 )
@@ -203,45 +211,60 @@ def boot_main(path):
             "stdout": str(root / "stdout.log"),
         }
         result.update(output_info)
+        if "output_spool" in result:
+            from pgn_output_spool import seal_job
+            result["schema"] = "PGN_OWNER_OUTPUT_V2"
+            try:
+                result["output_job"] = seal_job(root, token, cmd)
+                if orphan and result['output_job'] is not None:
+                    from pgn_output_spool import bound_job_context
+                    current_context = bound_job_context(root, token)
+                    if current_context is not None:
+                        state = current_context['checkpoint']
+                        result['checkpoint'] = str(state)
+                        result['recovery_ticket_id'] = current_context['folder'].name
+            except BaseException as error:
+                result["error"] = "Output job seal: " + str(error)
         committed_file = root / "committed-identity.json"
         if committed_file.is_file():
             result["committed_identity_sha256"] = (
                 hashlib.sha256(committed_file.read_bytes()).hexdigest().upper()
             )
-        if state.is_file() and state.stat().st_size == 64:
+        current_checkpoint_authorized = result.get('schema') != 'PGN_OWNER_OUTPUT_V2' or not orphan or bool(result.get('recovery_ticket_id'))
+        if current_checkpoint_authorized and state.is_file() and state.stat().st_size == 64:
             result["checkpoint_sha256"] = hashlib.sha256(state.read_bytes()).hexdigest().upper()
+        elif not current_checkpoint_authorized:
+            result['checkpoint'] = None
         atomic(root / "done.json", result)
-        if orphan:
-            atomic(root.parent / "native-owner-recovery.json", dict(result, owner_folder=root.name))
+        if orphan and current_checkpoint_authorized:
+            recovery_folder = root.parent
+            if result.get('recovery_ticket_id'):
+                recovery_folder = root.parent.parent / result['recovery_ticket_id']
+            atomic(recovery_folder / "native-owner-recovery.json", dict(result, owner_folder=root.name))
     return 0 if code == 0 and closed and failure is None else 1
 
 
 class _Output:
     def __init__(self, owner):
+        from pgn_output_spool import Reader
         self.owner = owner
-        self.file = None
+        self.reader = Reader(owner.root / "output", lambda: (owner.root / "done.json").is_file())
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        while True:
-            if self.file is None and (self.owner.root / "stdout.log").is_file():
-                self.file = (self.owner.root / "stdout.log").open("r", encoding="utf-8")
-            line = self.file.readline() if self.file else ""
-            if line:
-                return line
-            if (self.owner.root / "done.json").is_file():
-                line = self.file.readline() if self.file else ""
-                if line:
-                    return line
-                raise StopIteration
-            time.sleep(0.01)
+        return next(self.reader)
+
+    @property
+    def position(self):
+        return self.reader.position
+
+    def acknowledge(self, offset):
+        return self.reader.acknowledge(self.owner.token, offset)
 
     def close(self):
-        if self.file:
-            self.file.close()
-            self.file = None
+        self.reader.close()
 
 
 class DetachedWindowsProcess:
@@ -333,6 +356,17 @@ class DetachedWindowsProcess:
 
     def commit_identity(self, path):
         self.identity = str(Path(path).resolve())
+
+    def bind_output(self, path, sequence, nonce, command):
+        from pgn_output_spool import commit_job
+        return commit_job(self.root, self.token, nonce, sequence, command, self.stdout.position, path)
+
+    def dispatch_output(self, binding):
+        from pgn_output_spool import dispatch_job
+        dispatch_job(self.root, binding)
+
+    def acknowledge_output(self, end_offset):
+        return self.stdout.acknowledge(end_offset)
 
     def resume(self):
         if self.resumed:

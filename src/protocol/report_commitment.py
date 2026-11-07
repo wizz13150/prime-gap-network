@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from public_attribution import attribution, validate_attribution
 
 MAX_REPORT_BYTES = 65536
 SEGMENTS = 100
@@ -72,13 +73,15 @@ def validate_computed_report(report, work):
     return body
 
 
-def seal_report(report, work, nonce=None):
+def seal_report(report, work, nonce=None, *, discoverer=None):
     body = validate_computed_report(report, work)
     nonce = secrets.token_hex(32) if nonce is None else hash_text(nonce)
     sealed = dict(schema="PGN_NETWORK_RANGE_REPORT_V1", genesis=hash_text(work["genesis"]),
                   request_id=hash_text(work["request_id"]), ticket=hash_text(work["ticket"]),
                   issue_context=hash_text(work["work_id"]), target_numerator=work["target_numerator"],
                   target_denominator=work["target_denominator"], commitment_nonce=nonce, computed=body)
+    if discoverer is not None:
+        sealed['discoverer'] = attribution(discoverer)
     if len(canonical_bytes(sealed)) > MAX_REPORT_BYTES:
         raise ValueError("Network report exceeds capacity")
     return dict(body=sealed, report_root=digest(sealed), scientific_accepted=False)
@@ -90,6 +93,8 @@ def verify_report_reveal(sealed, expected_root):
     if len(canonical_bytes(sealed)) > MAX_REPORT_BYTES or body["schema"] != "PGN_NETWORK_RANGE_REPORT_V1":
         raise ValueError("Unsupported or oversized report reveal")
     hash_text(body["commitment_nonce"])
+    if 'discoverer' in body:
+        validate_attribution(body['discoverer'])
     if sealed["report_root"] != expected_root or digest(body) != expected_root:
         raise ValueError("Report reveal differs from the immutable commitment")
     computed = body["computed"]

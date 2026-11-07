@@ -10,6 +10,7 @@ inline QRegularExpression publicNameCharacters() {
 inline std::optional<QString> canonicalPublicName(const QString& draft) {
     if (draft.size() > publicNameMaximumLength || !publicNameCharacters().match(draft).hasMatch()) return {};
     auto name = draft.normalized(QString::NormalizationForm_C).trimmed();
+    if (name.size() > publicNameMaximumLength) return {};
     if (name.isEmpty()) return QString("PGN");
     if (!QRegularExpression("[\\p{L}\\p{N}]").match(name).hasMatch()) return {};
     return name;

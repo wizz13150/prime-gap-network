@@ -3,6 +3,7 @@
 #include <QTemporaryDir>
 #include <QPushButton>
 #include <QLabel>
+#include <QPixmap>
 #include <iostream>
 #include <stdexcept>
 int main(int argc,char** argv){
@@ -21,5 +22,6 @@ int main(int argc,char** argv){
   pgn::ui::WalletSetupWizard wizard(application,"PGN testnet",[](const auto&){return QString("Deployment write refused");});wizard.setSelection(choice);wizard.show();wizard.next();wizard.next();wizard.button(QWizard::FinishButton)->click();require(wizard.result()!=QDialog::Accepted&&wizard.findChild<QLabel*>("pgn-wallet-setup-error")->text()=="Deployment write refused");
  }
  const auto existing=temp.filePath("existing");QDir().mkpath(existing+"/wallets");require(pgn::wallet::validateWalletSetup({existing,"saved_wallet",true},application).isEmpty());require(!pgn::wallet::validateWalletSetup({existing,"saved_wallet",false},application).isEmpty());require(!QFileInfo::exists(target));
- std::cout<<"PASS "<<checks<<" wallet setup checks: OS-data default, explicit custom/existing selection, no installation or filesystem writes before Finish, cancel and failed commit preserved\n";
+  {pgn::ui::WalletSetupWizard wizard(application,"PGN testnet",[&](const auto&){++commits;return QString{};});wizard.setDeferredChange(true);wizard.setSelection(choice);wizard.show();wizard.next();wizard.next();app.processEvents();require(wizard.button(QWizard::FinishButton)->text()=="Save folder change");require(wizard.findChild<QLabel*>("pgn-wallet-setup-review")->text().contains("new keys"));if(argc>1){QDir().mkpath(QString::fromLocal8Bit(argv[1]));QPixmap image(wizard.size());wizard.render(&image);require(image.save(QDir(QString::fromLocal8Bit(argv[1])).filePath("wallet-folder-change-review.png")));}wizard.reject();require(commits==1&&!QFileInfo::exists(target));}
+  std::cout<<"PASS "<<checks<<" wallet setup checks: OS-data default, explicit custom/existing selection, no installation or filesystem writes before Finish, cancel and failed commit preserved; deferred change and new keys explicit\n";
 }

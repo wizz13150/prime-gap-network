@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QTimer>
+#include <QLabel>
 #include <iostream>
 #include <memory>
 int main(int argc,char** argv){
@@ -26,6 +27,14 @@ int main(int argc,char** argv){
  auto* sourceTable=bench->findChild<QTableWidget*>("pgn-engine-source");auto* sourceCell=sourceTable->item(0,0);sourceTable->setCurrentCell(0,0);sourceTable->selectRow(0);pgn::ui::presentEngineTools(bench.get(),source);
  if(sourceCell!=sourceTable->item(0,0)||sourceTable->currentRow()!=0)return 15;
  const auto profileValue=[&](const QString& key){for(int i=0;i<sourceTable->rowCount();++i)if(sourceTable->item(i,0)->text()==key)return sourceTable->item(i,1)->text();return QString{};};
+ const auto startText=profileValue("start"),endText=profileValue("end");
+ if(!startText.startsWith(source.domainStart+"\n")||!startText.contains("e20")||!startText.contains("2^")||startText==endText)return 24;
+ for(int row=0;row<sourceTable->rowCount();++row)if(sourceTable->item(row,0)->text()=="start"&&sourceTable->rowHeight(row)<4*sourceTable->fontMetrics().lineSpacing())return 25;
+ const auto originalStart=source.domainStart,originalEnd=source.domainEnd;
+ source.domainStart="39614081257132168796771971072";source.domainEnd="39614081257132168796771975168";
+ pgn::ui::presentEngineTools(bench.get(),source);const auto exact=bench->property("pgn_engine_profile").toJsonObject();
+ if(exact.value("start")!=source.domainStart||exact.value("end")!=source.domainEnd||profileValue("start").split('\n').value(2)==profileValue("end").split('\n').value(2))return 26;
+ source.domainStart=originalStart;source.domainEnd=originalEnd;pgn::ui::presentEngineTools(bench.get(),source);
  if(profileValue("version")!="Unavailable"||profileValue("engine_artifact_sha256")!="Unavailable"||profileValue("number_bits")!="Unavailable")return 17;
  source.numberBits=68;pgn::ui::presentEngineTools(bench.get(),source);
  if(profileValue("number_bits")!="68"||profileValue("version")!="Unavailable")return 18;
@@ -37,6 +46,9 @@ int main(int argc,char** argv){
  auto receipt=bench->property("pgn_benchmark_last_receipt").toJsonObject();
  if(receipt["positions"].toString()!="6000"||receipt["tests"].toString()!="6000"||receipt["retained_gaps"].toString()!="12"||receipt["positions_per_second"].toDouble()!=200||receipt["source_seconds"].toDouble()!=30||receipt["network_published"].toBool()||receipt["controlled_comparison"].toBool())return 5;
  if(bench->property("pgn_benchmark_saved_count").toInt()!=1||!measure->isEnabled()||cancel->isEnabled())return 6;
+ auto* measured=bench->findChild<QTableWidget*>("pgn-benchmark-history");
+ if(measured->columnCount()!=8||measured->item(0,2)->text().split('\n').value(0)!="6000"||!measured->item(0,2)->text().contains("6.0000e3")||!measured->item(0,2)->text().contains("2^")||measured->rowHeight(0)<4*measured->fontMetrics().lineSpacing())return 27;
+
  measure->click();source.runId="changed-run";source.raw["pgn_source_time_ns"]="62000000000";pgn::ui::presentEngineTools(bench.get(),source);
  if(bench->property("pgn_benchmark_saved_count").toInt()!=1||!bench->property("pgn_benchmark_error").toString().contains("identity"))return 7;
  measure->click();cancel->click();if(cancel->isEnabled()||!measure->isEnabled())return 8;
@@ -47,6 +59,10 @@ int main(int argc,char** argv){
  const auto path=root.path()+"/input.json";QFile file(path);if(!file.open(QIODevice::WriteOnly))return 10;file.write(QJsonDocument(input).toJson());file.close();
  if(!pgn::ui::importEngineProfile(config.get(),path))return 11;const auto imported=config->property("pgn_engine_imported_profile").toJsonObject();
  if(imported.contains("ssh_key")||imported.contains("command")||config->property("pgn_engine_actual_run").toString()!="actual-run")return 12;
+ auto* importedTable=config->findChild<QTableWidget*>("pgn-engine-imported-profile");bool found=false;
+ for(int row=0;row<importedTable->rowCount();++row)if(importedTable->item(row,0)->text()=="start"){found=true;const auto text=importedTable->item(row,1)->text();if(!text.startsWith(source.domainStart+"\n")||!text.contains("2^"))return 28;}
+ if(!found||imported.value("start").toString()!=source.domainStart||imported.value("end").toString()!=source.domainEnd)return 29;
+
  if(!file.open(QIODevice::WriteOnly|QIODevice::Truncate))return 13;file.write("{}");file.close();if(pgn::ui::importEngineProfile(config.get(),path))return 13;
  if(bench->minimumSizeHint().height()>600)return 14;
  // Exercise the actual export buttons and file-dialog acceptance. The test
@@ -67,5 +83,6 @@ int main(int argc,char** argv){
  QFile exportedProfile(profileExport);if(!exportedProfile.open(QIODevice::ReadOnly))return 22;
  const auto savedProfile=QJsonDocument::fromJson(exportedProfile.readAll()).object();
  if(savedProfile.value("schema")!="pgn-source-profile-v1"||savedProfile.value("applied").toBool(true)||savedProfile.value("profile").toObject().contains("ssh_key"))return 23;
+ if(argc>1){for(int width:{820,1380}){bench->resize(width,760);app.processEvents();bench->grab().save(QString::fromLocal8Bit(argv[1])+QString("/source-notation-%1.png").arg(width));}}
  std::cout<<"PASS actual30s raw source benchmark/save/identity guard/cancel/hardware unknown/import whitelist; no runtime mutation\n";return 0;
 }

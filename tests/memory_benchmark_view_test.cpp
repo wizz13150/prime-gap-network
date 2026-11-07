@@ -14,6 +14,8 @@
 #include <QPluginLoader>
 #include <QFileInfo>
 #include <QElapsedTimer>
+#include <QLabel>
+#include <QRegularExpression>
 #include <iostream>
 #define REQUIRE(x) do{if(!(x)){std::cerr<<"FAIL line "<<__LINE__<<": "<<#x<<'\n';return 1;}}while(0)
 class ClosedExecutor final:public pgn::ui::MemoryBenchmarkExecutor {
@@ -70,7 +72,10 @@ int main(int argc,char** argv) {
     auto* selector=memory->findChild<QComboBox*>("pgn-benchmark-memory-device");REQUIRE(selector&&selector->count()==2&&selector->currentData()==source.gpuUuid);
     // Cancellation wins over a late measurement callback. The captured original
     // is restored and no new measurement is scheduled after the release barrier.
-    backend->hold=true;start->click();REQUIRE(cancel->isEnabled());const int before=backend->measures;cancel->click();
+    backend->hold=true;start->click();REQUIRE(cancel->isEnabled());
+    const auto workStatus=memory->findChild<QLabel*>("pgn-benchmark-memory-status")->text();
+    REQUIRE(workStatus.contains("positions + warmup")&&workStatus.count("2^")>=2&&QRegularExpression("[0-9]e[0-9]").match(workStatus).hasMatch());
+    const int before=backend->measures;cancel->click();
     REQUIRE(backend->setting==backend->original&&!cancel->isEnabled());
     REQUIRE(memory->property("pgn_benchmark_memory_receipt").toJsonObject().value("complete")==false);
     REQUIRE(memory->property("pgn_benchmark_memory_receipt").toJsonObject().value("restore_confirmed")==true);

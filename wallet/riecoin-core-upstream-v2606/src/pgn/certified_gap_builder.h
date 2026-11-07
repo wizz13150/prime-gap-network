@@ -27,4 +27,16 @@ GapBuildResult buildBoundedCertifiedGap(const Integer& lower, const Integer& gap
 GapBuildResult buildCertifiedGapFromPrimeCertificates(const Integer& lower,const Integer& gap,
     const std::vector<PrimeCertificateNode>& lower_certificate,const std::vector<PrimeCertificateNode>& upper_certificate,
     CertifiedGapLimits,const std::function<bool()>& cancelled={});
+// Optional untrusted witnesses for sparse interiors the local small-base
+// producer cannot resolve. Offset is one-based from lower, strictly increasing.
+// Existing certificate/encoding/verifier semantics do not change. Hints cannot
+// omit an interior: the resulting proof still contains every gap-1 position.
+struct SuppliedCompositeWitness {
+  std::uint64_t offset;
+  CompositeWitness witness;
+};
+GapBuildResult buildCertifiedGapFromPrimeCertificatesAndWitnesses(const Integer& lower,const Integer& gap,
+    const std::vector<PrimeCertificateNode>& lower_certificate,const std::vector<PrimeCertificateNode>& upper_certificate,
+    std::span<const SuppliedCompositeWitness> witnesses,CertifiedGapLimits,
+    const std::function<bool()>& cancelled={});
 } // namespace pgn::core

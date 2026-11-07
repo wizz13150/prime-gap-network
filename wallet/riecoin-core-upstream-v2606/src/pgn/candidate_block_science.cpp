@@ -3,6 +3,7 @@
 #include <pgn/proposed_ticket_requests.h>
 #include <pgn/native_report_commitment.h>
 #include <pgn/native_report_audit.h>
+#include <pgn/native_work_duty_admission.h>
 #include <consensus/merkle.h>
 #include <kernel/cs_main.h>
 #include <primitives/block.h>
@@ -105,6 +106,8 @@ NativeBlockScienceCheck VerifyNativeCandidateBlockScience(const CCoinsView& view
     const auto proposed=VerifyProposedTicketRequests(view,parent,*registry,block,budget.schedule.scan,budget.schedule.maximum_requests);
     if(!proposed.batch)return {proposed.verdict==ProposedRequestVerdict::BudgetExceeded?NativeBlockScienceVerdict::BudgetExceeded:
         NativeBlockScienceVerdict::InvalidBlock,{},{}};
+    if(!VerifyProposedNativeWorkDuties(view,parent,history,*proposed.batch,budget.policy,budget.schedule,budget.signature))
+        return {NativeBlockScienceVerdict::InvalidBlock,{},{}};
     std::optional<CandidateBlockScienceProof> proof;
     try{proof=Decode(*payload,*policy.policy,budget);}catch(const std::invalid_argument&){return {NativeBlockScienceVerdict::InvalidEncoding,{},{}};}
     const auto reserved=DeriveNativeCandidateReservation(view,parent,*ranges.policy,history,budget.schedule,proof->request);

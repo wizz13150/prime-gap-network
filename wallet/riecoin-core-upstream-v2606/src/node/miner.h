@@ -85,6 +85,15 @@ public:
     /** Construct a new block template */
     std::unique_ptr<CBlockTemplate> CreateNewBlock();
 
+    /** Select maintained mempool packages for a caller-owned block seed.
+     * The seed must contain one complete coinbase, including the Core witness
+     * commitment/reserve, and name the current parent. Native callers retain
+     * their own header, subsidy and fee policy. This is selection only: the
+     * caller must finalize coinbase, witness/Merkle commitments and validation.
+     * vTxFees contains actual GetFee() values; m_coinbase_tx is not populated.
+     */
+    std::unique_ptr<CBlockTemplate> SelectTransactionsForBlock(CBlock block);
+
     /** The number of transactions in the last assembled block (excluding coinbase transaction) */
     inline static std::optional<int64_t> m_last_block_num_txs{};
     /** The weight of the last assembled block (including reserved weight for block header, txs count and coinbase tx) */

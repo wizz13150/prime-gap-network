@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import hashlib
+import threading
 
 
 def _atomic(path, value):
@@ -161,8 +162,28 @@ class GpuLease:
             self.fd = None
 
 
+def _job_limit_bytes(cpu_budget=None):
+    limit=C.create_string_buffer(144)
+    C.c_uint32.from_buffer(limit,16).value=0x2000
+    if cpu_budget is not None:
+        if (type(cpu_budget)is not dict or set(cpu_budget)!={'logical_cpu','memory_mib'}
+                or type(cpu_budget['logical_cpu'])is not int
+                or not 0<=cpu_budget['logical_cpu']<min(64,os.cpu_count()or 1)
+                or type(cpu_budget['memory_mib'])is not int
+                or not 64<=cpu_budget['memory_mib']<=4096):
+            raise ValueError('Explicit single-CPU preparation resource budget required')
+        # Extended x64 Job limits: affinity, Idle priority, eight descendants,
+        # finite total memory and kill-on-owner-close. No GPU lease is created.
+        C.c_uint32.from_buffer(limit,16).value=0x2238
+        C.c_uint32.from_buffer(limit,40).value=8
+        C.c_size_t.from_buffer(limit,48).value=1<<cpu_budget['logical_cpu']
+        C.c_uint32.from_buffer(limit,56).value=0x40
+        C.c_size_t.from_buffer(limit,120).value=cpu_budget['memory_mib']*1024**2
+    return limit
+
+
 class WindowsOwnedProcess:
-    def __init__(self, command, environment, lease, stdout=subprocess.PIPE, cwd=None):
+    def __init__(self, command, environment, lease, stdout=subprocess.PIPE, cwd=None, *, cpu_budget=None):
         import _winapi
         import msvcrt
 
@@ -181,9 +202,8 @@ class WindowsOwnedProcess:
         self._winapi = _winapi
         try:
             self.job = _check(self.k.CreateJobObjectW(None, None))
-            # JOBOBJECT_EXTENDED_LIMIT_INFORMATION x64; only KILL_ON_JOB_CLOSE.
-            limit = C.create_string_buffer(144)
-            C.c_uint32.from_buffer(limit, 16).value = 0x2000
+            # Existing GPU callers retain exactly their original limits.
+            limit = _job_limit_bytes(cpu_budget)
             _check(self.k.SetInformationJobObject(self.job, 9, limit, 144))
             self._null = open(os.devnull, "rb")
             input_handle = msvcrt.get_osfhandle(self._null.fileno())
@@ -392,9 +412,18 @@ def create_owned(
         raise
 
 
-def run_checked(command, environment, gpu_uuid, folder, stdout, timeout=180):
-    """Finite numeric child with the same ownership gate, not a Native gain test."""
-    process = create_owned(command, environment, gpu_uuid, stdout=stdout)
+def run_checked(command, environment, gpu_uuid, folder, stdout, timeout=180,
+                maximum_output_bytes=2*1024*1024):
+    """Finite diagnostic, owned as before, with a byte-bounded binary output.
+
+    Overflow or a failed output sink fails the diagnostic; never silently accept
+    a truncated successful run. Authoritative session/output-spool data does not
+    pass through this function.
+    """
+    if type(maximum_output_bytes)is not int or not 0<maximum_output_bytes<=2*1024*1024:
+        raise ValueError("Diagnostic output budget must be1..2097152bytes")
+    process = create_owned(command, environment, gpu_uuid, stdout=subprocess.PIPE)
+    drainer=None;errors=[];written=0
     try:
         record = {
             "pid": process.pid,
@@ -415,11 +444,44 @@ def run_checked(command, environment, gpu_uuid, folder, stdout, timeout=180):
         identity = folder / "owner-identity.json"
         _atomic(identity, record)
         process.commit_identity(identity)
+        def drain():
+            nonlocal written
+            try:
+                while True:
+                    chunk=process.stdout.buffer.read1(65536)
+                    if not chunk:break
+                    remaining=maximum_output_bytes-written
+                    accepted=chunk[:remaining]
+                    while accepted:
+                        count=stdout.write(accepted)
+                        if not isinstance(count,int)or count<=0 or count>len(accepted):
+                            raise OSError("Diagnostic sink did not write its bytes")
+                        written+=count;accepted=accepted[count:]
+                    if len(chunk)>remaining:
+                        raise ValueError("Diagnostic output exceeds admitted byte budget")
+                stdout.flush()
+            except BaseException as error:errors.append(error)
+        drainer=threading.Thread(target=drain,name="bounded-finite-diagnostic",daemon=True)
+        drainer.start()
         process.resume()
-        result = process.wait(timeout=timeout)
-        return result, {"pid": process.pid, "birth": str(process.birth), "closed": True}
+        until=time.monotonic()+timeout
+        while True:
+            if errors:raise errors[0]
+            remaining=until-time.monotonic()
+            if remaining<=0:raise subprocess.TimeoutExpired(command,timeout)
+            try:result=process.wait(timeout=min(.05,remaining));break
+            except subprocess.TimeoutExpired:pass
+        drainer.join(5)
+        if drainer.is_alive():raise RuntimeError("Diagnostic output did not close")
+        if errors:raise errors[0]
+        return result, {"pid": process.pid, "birth": str(process.birth), "closed": True,
+                        "output_bytes":written,"maximum_output_bytes":maximum_output_bytes}
     except BaseException:
         process.terminate()
         raise
     finally:
         process.close()
+        if drainer is not None:
+            drainer.join(5)
+            if drainer.is_alive():raise RuntimeError("Diagnostic output reader did not stop")
+        process.stdout.close()

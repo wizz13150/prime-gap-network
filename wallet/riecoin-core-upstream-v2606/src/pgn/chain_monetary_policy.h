@@ -3,7 +3,14 @@
 #include <pgn/chain_range_policy.h>
 #include <pgn/issued_supply_curve.h>
 #include <pgn/gold_epoch_policy.h>
+#include <pgn/audit_settlement_network_activation.h>
 namespace pgn::core {
+inline constexpr std::string_view AuditSettlementPolicyTag{"PGN-AUDIT-SETTLEMENT-CANDIDATE-1"};
+struct AuditSettlementDefinition {uint16_t page_outputs;};
+inline std::optional<CScript> BuildCandidateAuditSettlementPolicy(uint16_t page_outputs){
+    if(!page_outputs||page_outputs>128)return {};
+    return CScript{}<<OP_RETURN<<Bytes{AuditSettlementPolicyTag.begin(),AuditSettlementPolicyTag.end()}<<Bytes{1,1,uint8_t(page_outputs),uint8_t(page_outputs>>8)};
+}
 inline constexpr std::string_view MonetaryPolicyEnvelopeTag{"PGNMONEY-POLICY-CANDIDATE-1"};
 struct FeeRoutingDefinition {uint32_t numerator,denominator;};
 struct MonetaryPolicyDefinition {
@@ -42,12 +49,16 @@ struct ChainMonetaryPolicyCheck;
 class ChainMonetaryPolicy {
     uint256 m_chain,m_genesis,m_id;MonetaryPolicyDefinition m_definition;
     std::optional<GoldEpochDefinition> m_epochs;
-    ChainMonetaryPolicy(uint256 c,uint256 g,uint256 id,MonetaryPolicyDefinition d,std::optional<GoldEpochDefinition> epochs={}):m_chain(c),m_genesis(g),m_id(id),m_definition(d),m_epochs(epochs){}
+    std::optional<AuditSettlementDefinition> m_audits;
+    std::optional<AuditSettlementActivation> m_activation;
+    ChainMonetaryPolicy(uint256 c,uint256 g,uint256 id,MonetaryPolicyDefinition d,std::optional<GoldEpochDefinition> epochs={},std::optional<AuditSettlementDefinition> audits={},std::optional<AuditSettlementActivation> activation={}):m_chain(c),m_genesis(g),m_id(id),m_definition(d),m_epochs(epochs),m_audits(audits),m_activation(activation){}
     friend ChainMonetaryPolicyCheck ReadChainMonetaryPolicy(const CCoinsView&,const CBlockIndex&,const NativeRequestHistoryArchive&,RequestHistoryArchiveBudget,RangePolicyReadBudget);
 public:
     const uint256& Chain()const{return m_chain;}const uint256& Genesis()const{return m_genesis;}const uint256& Id()const{return m_id;}
     const MonetaryPolicyDefinition& Definition()const{return m_definition;}
     const std::optional<GoldEpochDefinition>& Epochs()const{return m_epochs;}
+    const std::optional<AuditSettlementDefinition>& Audits()const{return m_audits;}
+    const std::optional<AuditSettlementActivation>& Activation()const{return m_activation;}
 };
 struct ChainMonetaryPolicyCheck {ChainRangePolicyVerdict verdict;std::optional<ChainMonetaryPolicy> policy;};
 inline ChainMonetaryPolicyCheck ReadChainMonetaryPolicy(const CCoinsView& view,const CBlockIndex& parent,
@@ -68,8 +79,48 @@ inline ChainMonetaryPolicyCheck ReadChainMonetaryPolicy(const CCoinsView& view,c
            first->gold+first->silver+first->bronze+first->red+first->audit!=definition->curve.initial_subsidy)
             return {ChainRangePolicyVerdict::InvalidConfiguration,{}};
     }
+    std::optional<AuditSettlementDefinition> audits;
+    const auto settlement=ReadCandidateGenesisPolicyPayload(view,parent,archive,archive_budget,budget,AuditSettlementPolicyTag);
+    if(settlement.verdict!=ChainRangePolicyVerdict::MissingConfiguration){
+        if(!settlement.genesis||!epochs||settlement.payload.size()!=4||settlement.payload[0]!=1||settlement.payload[1]!=1)
+            return {ChainRangePolicyVerdict::InvalidConfiguration,{}};
+        const auto page=uint16_t(settlement.payload[2])|(uint16_t(settlement.payload[3])<<8);
+        if(!page||page>128)return {ChainRangePolicyVerdict::InvalidConfiguration,{}};
+        audits=AuditSettlementDefinition{uint16_t(page)};
+    }
     HashWriter id{TaggedHash("PGN/CANDIDATE/NATIVE-MONETARY-POLICY/1")};id<<p.genesis->Chain()<<p.genesis->Block()<<p.payload;
-    return {ChainRangePolicyVerdict::Confirmed,ChainMonetaryPolicy{p.genesis->Chain(),p.genesis->Block(),id.GetHash(),*definition,epochs}};
+    if(audits)id<<settlement.payload;
+    const auto monetary_id=id.GetHash();
+    std::optional<AuditSettlementActivation> activation;
+    if(const auto configured=ConfiguredAuditSettlementActivation();configured&&
+       (configured->chain==p.genesis->Chain()||configured->genesis==p.genesis->Block())){
+        if(!configured->Valid()||audits||!epochs||configured->chain!=p.genesis->Chain()||configured->genesis!=p.genesis->Block()||configured->monetary_policy!=monetary_id)
+            return {ChainRangePolicyVerdict::InvalidConfiguration,{}};
+        activation=configured;
+        if(int64_t(parent.nHeight)+1>=configured->height){
+            const auto* anchor=parent.GetAncestor(configured->anchor_height);
+            if(!anchor||!AuditSettlementActivationBinds(*configured,p.genesis->Chain(),p.genesis->Block(),monetary_id,
+                anchor->GetBlockHash(),anchor->nHeight,int64_t(parent.nHeight)+1))return {ChainRangePolicyVerdict::InvalidConfiguration,{}};
+            if(parent.nHeight>=configured->height){
+                const auto activated=archive.Load(view,parent,configured->height,archive_budget);
+                if(!activated.block)return {ChainRangePolicyVerdict::MissingHistory,{}};
+                const auto expected=AuditSettlementActivationReceipt(*configured);size_t found{};
+                for(const auto& output:activated.block->Coinbase()->vout){
+                    if(output.nValue)return {ChainRangePolicyVerdict::InvalidConfiguration,{}};
+                    auto at=output.scriptPubKey.begin();opcodetype op;Bytes tag;
+                    if(output.scriptPubKey.GetOp(at,op)&&op==OP_RETURN&&output.scriptPubKey.GetOp(at,op,tag)&&
+                       tag==Bytes{AuditSettlementActivationTag.begin(),AuditSettlementActivationTag.end()}){
+                        if(output.scriptPubKey!=expected||++found!=1)return {ChainRangePolicyVerdict::InvalidConfiguration,{}};
+                    }
+                }
+                if(found!=1)return {ChainRangePolicyVerdict::InvalidConfiguration,{}};
+            }
+            audits=AuditSettlementDefinition{configured->page_outputs};
+        }
+    }
+    // Existing monetary policy identity is preserved; the activation contract
+    // has its own digest and mandatory activation-block commitment.
+    return {ChainRangePolicyVerdict::Confirmed,ChainMonetaryPolicy{p.genesis->Chain(),p.genesis->Block(),monetary_id,*definition,epochs,audits,activation}};
 }
 struct SubsidyDistributionQuote {CAmount winner,near_miss,audit;};
 inline std::optional<SubsidyDistributionQuote> QuoteSubsidyDistribution(CAmount gross,const MonetaryPolicyDefinition& d){

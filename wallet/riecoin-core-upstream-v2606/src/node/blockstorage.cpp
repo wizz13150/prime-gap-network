@@ -513,7 +513,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                     const auto q=pgn::core::DeriveHistoricalMeritTarget(*pindex->pprev,*own_retarget);
                     if(!q||pindex->nBits!=q->target_q16)return false;
                 }else if(pindex->nBits!=*pinned_bootstrap_bits||
-                    (pindex->pprev&&pgn::core::ClassifyAdaptiveHeader(*pindex->pprev,*own_retarget)==pgn::core::AdaptiveHeaderKind::Scientific))return false;
+                    (!GetParams().IsTestChain()&&pindex->pprev&&pgn::core::ClassifyAdaptiveHeader(*pindex->pprev,*own_retarget)==pgn::core::AdaptiveHeaderKind::Scientific))return false;
             }else if(pindex->nBits!=0&&(!pinned_bootstrap_bits||pindex->nBits!=*pinned_bootstrap_bits))return false;
             const auto unit=pgn::core::QuoteConfiguredNativeHeaderWork(GetParams().GenesisBlock(),GetConsensus().hashGenesisBlock,
                 {uint32_t(MAX_BLOCK_WEIGHT),32,uint64_t(MAX_BLOCK_WEIGHT),65},*private_fixed_block_work,pindex->nNonce,pindex->nBits);

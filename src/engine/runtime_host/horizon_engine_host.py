@@ -69,6 +69,25 @@ def emit(value):
     print(json.dumps(value, separators=(",", ":")), flush=True)
 
 
+def close_durable_output(store, job, *args, **kwargs):
+    """No caller observation or process close substitutes for the WAL return."""
+    store.closed(*args, **kwargs)
+    return job.acknowledge_output()
+
+
+def commit_bound_output(store, job, owner_file):
+    job.commit_identity(owner_file)
+    locator = job.output_recovery_locator()
+    if locator is not None:
+        # Instance-started is the existing WAL event that updates the trusted
+        # active_chunk as well as the full metadata snapshot. A cache-only JSON
+        # field would be overwritten by read_session_metadata after a crash.
+        instance = store.meta['current_chunk']['instance']
+        instance['output_owner'] = locator
+        store.append('instance_started', instance=instance)
+        store.save()
+
+
 def instance_alive(instance):
     if os.name == "nt":
         from pgn_owned import _kernel, _recorded_alive
@@ -82,25 +101,197 @@ def instance_alive(instance):
 
 
 class EngineService:
-    def __init__(self, bundle, state_root, gpu_uuid, architecture, observer=emit):
+    def __init__(self, bundle, state_root, gpu_uuid, architecture, observer=emit, *, complement=None):
         self.bundle = Path(bundle).resolve(strict=True)
         self.root = Path(state_root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         if not re.fullmatch(r"GPU-[0-9a-fA-F-]{36}", gpu_uuid):
             raise ValueError("Actual GPU UUID required")
         self.gpu_uuid, self.architecture = gpu_uuid, architecture
+        self.complement = complement
+        self.scientific_raw_report_provisional = getattr(complement, 'requires_preseal', False)
         self.observer = observer
         self.environment = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu_uuid)
         self.manager = Manager(SimpleNamespace(), self.root, gpu_uuid, create_owned)
         self.proof = PrimeProof(self.bundle)
+        if getattr(complement, 'requires_preseal', False):
+            if not callable(getattr(complement, 'prepared_source_for', None)):
+                raise ValueError('Prepared source resolver required before report sealing')
+            self.finalize_report = self.finalize_prepared_report
+            self.register_preparation = self.register_prepared_source
+            self.acknowledge_preparation = self.acknowledge_prepared_source
+        elif getattr(complement, 'prepared_source', None) is not None:
+            from horizon_preparation_provider import PreparedSourcePlan
+            if not isinstance(complement.prepared_source, PreparedSourcePlan):
+                raise ValueError('Bound prepared source required for report finalization')
+            self.finalize_report = self.finalize_prepared_report
         self.rates = WorkRates()
         self.rate_identity = None
         self.checked = set()
         self.lease = ArtifactLease()
         self.lease.__enter__()
+        from horizon_archive_lane import ArchiveLane
+        try:
+            self.archives = ArchiveLane(self.root, self.observer)
+        except BaseException:
+            self.lease.__exit__(None, None, None)
+            raise
 
     def workers(self):
+        if getattr(self, 'complement', None) is not None:
+            return self.complement.workers()
         return qualified_workers(self.bundle,self.architecture)
+
+    def require_report_finalization(self):
+        # Called before MiningFlow starts its GPU queue. The configuration is
+        # durable before COMPLETE, so even a restarted archive sweep sees it.
+        self.report_finalization_required = True
+
+    def _cached_finalization(self,folder,configuration,computed=None):
+        from horizon_preparation_process import regular
+        from report_commitment import validate_computed_report
+        file=folder/'source-finalization.json';checksum=folder/'source-finalization.sha256'
+        if not file.exists()or not checksum.exists():return None
+        raw=regular(file,8*2**20)
+        if regular(checksum,65)!=hashlib.sha256(raw).hexdigest().encode()+b'\n':
+            raise ValueError('Retained scientific finalization checksum changed')
+        value=json.loads(raw)
+        if (value.get('schema')!='PGN_SCOPED_SOURCE_FINALIZATION_V1'or value.get('ticket_id')!=folder.name
+                or value.get('configuration_sha256')!=hashlib.sha256(json.dumps(configuration,
+                    sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()):
+            raise ValueError('Retained scientific finalization belongs to another configuration')
+        corrected=value['corrected_report'];work=dict(ticket=folder.name,start=configuration['start'],
+            length=str(int(configuration['end'])-int(configuration['start'])))
+        validate_computed_report(corrected,work)
+        if computed is not None and computed['sha256']not in(value['original_report_sha256'],corrected['sha256']):
+            raise ValueError('Retained scientific finalization differs from the computed report')
+        return corrected
+
+    def register_prepared_source(self,tickets):
+        # Completed source provenance survives factor-cache retirement. Do not
+        # restart its CPU scan merely because a sealed/archived ticket replays.
+        pending=[]
+        for ticket in tickets:
+            cfg=self.complement.bind_configuration(ticket_configuration(ticket))
+            cfg=dict(cfg,preseal_required=True)
+            folder=self.root/'tickets'/cfg['ticket_id']
+            if self._cached_finalization(folder,cfg)is None:pending.append(ticket)
+        if pending:self.complement.register_preparation(pending)
+
+    def finalize_prepared_report(self, work, computed):
+        """Read every retained primary pair, then refine off the GPU lane."""
+        from report_commitment import validate_computed_report
+        from sparse_gap_repair import bounded
+        validate_computed_report(computed, work)
+        ticket = work['ticket']
+        if not re.fullmatch('[0-9a-f]{64}', ticket):
+            raise ValueError('Exact retained ticket identity required')
+        folder = self.root / 'tickets' / ticket
+        with self.archives.use_ticket(folder):
+            if (folder/'source-finalization.json').exists()and(folder/'source-finalization.sha256').exists():
+                from horizon_ticket_archive import load as archived_ticket
+                from pgn_session import read_session_metadata
+                archived=archived_ticket(folder)
+                cfg=archived['configuration']if archived is not None else read_session_metadata(folder)['configuration']
+                cached=self._cached_finalization(folder,cfg,computed)
+                if (cfg['ticket_id']!=ticket or cfg['start']!=work['start']
+                        or int(cfg['end'])-int(cfg['start'])!=int(work['length'])):
+                    raise ValueError('Retained finalization belongs to another issued range')
+                if cached is not None:return cached
+            controller = SessionControllerLock(folder)
+            store = None
+            try:
+                store = SessionStore.load(folder)
+                configuration = dict(store.meta['configuration'])
+                if (store.meta['state'] != 'COMPLETE'
+                        or store.meta.get('current_chunk') is not None
+                        or int(store.meta.get('positions', -1)) != int(configuration['end']) - int(configuration['start'])
+                        or configuration.get('ticket_id') != ticket
+                        or configuration.get('start') != work['start']
+                        or int(configuration['end']) - int(configuration['start']) != int(work['length'])):
+                    raise ValueError('Finalization needs the complete original issued computation')
+                pairs = tuple(bounded(store.gaps.items()))
+            finally:
+                if store is not None:
+                    store.close()
+                controller.release()
+            resolver = getattr(self.complement, 'prepared_source_for', None)
+            prepared = resolver(configuration) if callable(resolver) else self.complement.prepared_source
+            refined = prepared.refine(computed, configuration, pairs)
+            corrected = refined.report
+            # Preserve the exact consequence before reproducible factor caches
+            # retire. Best100 alone cannot reconstruct a corrected full index.
+            marker = dict(schema='PGN_SCOPED_SOURCE_FINALIZATION_V1', ticket_id=ticket,
+                original_report_sha256=computed['sha256'], corrected_report=corrected,
+                configuration_sha256=hashlib.sha256(json.dumps(configuration,sort_keys=True,
+                    separators=(',',':'),allow_nan=False).encode()).hexdigest(),
+                added=[[str(a),str(b)] for a,b in refined.added],
+                removed=[[str(a),str(b)] for a,b in refined.removed],
+                source=dict(producer_sha256=prepared.bundle.producer_sha256,
+                    receipt_sha256=prepared.bundle.receipt_sha256,
+                    witness_sha256=list(prepared.bundle.witness_sha256),
+                    cutoff=prepared.bundle.cutoff,whole95_coverage=False))
+            encoded=(json.dumps(marker,sort_keys=True,separators=(',',':'),allow_nan=False)+'\n').encode()
+            if len(encoded)>8*2**20:
+                raise BufferError('Scientific correction provenance exceeds its budget; original index retained')
+            from horizon_preparation_process import regular
+            file=folder/'source-finalization.json'
+            if file.exists():
+                if regular(file,8*2**20)!=encoded:
+                    raise ValueError('Immutable scientific correction provenance changed')
+            else:
+                atomic_bytes(file,encoded)
+            digest=hashlib.sha256(encoded).hexdigest().encode()+b'\n'
+            checksum=folder/'source-finalization.sha256'
+            if checksum.exists():
+                if regular(checksum,65)!=digest:
+                    raise ValueError('Scientific correction provenance checksum changed')
+            else:
+                atomic_bytes(checksum,digest)
+            return corrected
+
+    def acknowledge_prepared_source(self, ticket):
+        """Called only after the search seal or corrected audit count is durable."""
+        from horizon_preparation_process import regular
+        if type(ticket)is not str or not re.fullmatch('[0-9a-f]{64}',ticket):
+            raise ValueError('Exact finalized ticket identity required')
+        folder=self.root/'tickets'/ticket
+        raw=regular(folder/'source-finalization.json',8*2**20)
+        if regular(folder/'source-finalization.sha256',65)!=hashlib.sha256(raw).hexdigest().encode()+b'\n':
+            raise ValueError('Scientific correction provenance is unavailable; source cache retained')
+        marker=json.loads(raw)
+        if marker.get('schema')!='PGN_SCOPED_SOURCE_FINALIZATION_V1' or marker.get('ticket_id')!=ticket:
+            raise ValueError('Source acknowledgement belongs to another computation')
+        self.complement.acknowledge_preparation(ticket)
+
+    def retain_audit_partition(self,audit,part,computed=None):
+        from horizon_network_audits import partition_ticket
+        from horizon_ticket_archive import audit_handoff_context as archived_ticket
+        from pgn_session import read_session_metadata
+        ticket=partition_ticket(audit,part)['ticket_id'];folder=self.root/'tickets'/ticket
+        with self.archives.use_ticket(folder):
+            archived=archived_ticket(folder)
+            cfg=archived['configuration']if archived is not None else read_session_metadata(folder)['configuration']
+            from horizon_audit_partition_archive import retain
+            if cfg.get('preseal_required',False):
+                final=self._cached_finalization(folder,cfg,computed)
+                if final is None:raise ValueError('Audit count has no completed scientific finalization')
+            else:
+                # Legacy arithmetic still needs an immutable attribution role.
+                # Recording its local count does not qualify its arithmetic.
+                from horizon_ticket_archive import read_json
+                final=computed if computed is not None else archived['report']if archived is not None else read_json(folder/'report.json',65536)
+            retain(folder,cfg,audit,part,final)
+        self.archives.offer(folder)
+
+    def native_plan(self, command):
+        if getattr(self, 'complement', None) is not None:
+            command = self.complement.plan(command)
+        return command
+
+    def native_command(self, command, native_positions):
+        return (self.complement.launch(command, native_positions)
+                if getattr(self, 'complement', None) is not None else command)
 
     def boundary_pair(self, end):
         lower = end - 1 if end % 2 == 0 else end - 2
@@ -141,7 +332,7 @@ class EngineService:
         folder = store.folder / ("diagnostic-" + str(time.time_ns()))
         folder.mkdir()
         command = [str(worker), "--self-test", "--device", "0", "--output-directory", str(folder)]
-        with (folder / "worker.log").open("w", encoding="utf8") as output:
+        with (folder / "worker.log").open("wb") as output:
             code, receipt = run_checked(command, self.environment, self.gpu_uuid, folder, output, timeout=180)
         if code or file_sha(worker) != image:
             raise RuntimeError("Optimized engine diagnostic failed")
@@ -149,13 +340,35 @@ class EngineService:
 
     def run_ticket(self, ticket, maximum_piece=64 * 10**12):
         configuration = ticket_configuration(ticket)
+        register = getattr(self, 'register_preparation', None)
+        if callable(register):
+            register([ticket])
         if type(maximum_piece) is not int or not 0 < maximum_piece <= 64 * 10**12:
             raise ValueError("Physical-piece budget outside engine contract")
+        if getattr(self, 'complement', None) is not None:
+            configuration = self.complement.bind_configuration(configuration)
+            maximum_piece = min(maximum_piece, self.complement.maximum_piece)
+        if getattr(self, 'report_finalization_required', False):
+            configuration = dict(configuration, preseal_required=True)
         folder = self.root / "tickets" / configuration["ticket_id"]
         folder.mkdir(parents=True, exist_ok=True)
+        with self.archives.use_ticket(folder):
+            result = self._run_reserved_ticket(folder, configuration, maximum_piece)
+        if result.get("state") != "PAUSED":
+            self.archives.offer(folder)
+        return result
+
+    def _run_reserved_ticket(self, folder, configuration, maximum_piece):
         controller = SessionControllerLock(folder)
         store = None
         try:
+            if (folder / "session.json").is_file():
+                from horizon_ticket_archive import result as archived_result
+                archived = archived_result(folder, configuration)
+                if archived is not None:
+                    self.observer(dict(type="progress", phase="COMPUTED",
+                                       ticket_id=configuration["ticket_id"], report_sha256=archived["sha256"]))
+                    return archived
             store = SessionStore.load(folder) if SessionStore.exists(folder) else SessionStore.create(
                 folder, configuration, {"uuid": self.gpu_uuid, "model": "controller-observed GPU"})
             if store.meta["configuration"] != configuration:
@@ -201,7 +414,8 @@ class EngineService:
                         continue
                     query = lambda worker, first, length: query_plan(
                         worker, first, length, self.environment, self.child_options(),
-                        piece.minimum_gap, pin, plan_provider=self.manager.query)
+                        piece.minimum_gap, pin, plan_provider=self.manager.query,
+                        command_transform=self.native_plan)
                     # Probe the live qualified profile first. Trying a larger
                     # cold profile first would destroy an already fitting K32
                     # resident on an 8 GiB card at every work boundary.
@@ -233,6 +447,7 @@ class EngineService:
                 command = [str(worker), "--engine", "walk", "--start", identity["start"], "--length", identity["length"],
                     "--gap-min", str(identity["gap_min"]), "--emit-min-gap", str(cfg["emit_min_gap"]),
                     "--device", "0", "--no-records", "--state", str(checkpoint), "--stop-file", str(stop)]
+                command = self.native_command(command, native_positions)
                 before = time.monotonic()
                 job = self.manager.create(command, self.environment)
                 clock = job.clock(before, dt.datetime.now(dt.timezone.utc))
@@ -241,8 +456,9 @@ class EngineService:
                 atomic_bytes(owner_file, json.dumps(dict(pid=job.pid, birth=str(job.birth),
                     image_sha256=identity["worker_sha256"], configuration_sha256=store.configuration_hash(),
                     wal_sequence=store.sequence, session_id=store.meta["session_id"],
-                    profile_k=identity["profile_k"], emit_min_gap=cfg["emit_min_gap"], job_nonce=job.nonce)).encode())
-                job.commit_identity(owner_file)
+                    profile_k=identity["profile_k"], emit_min_gap=cfg["emit_min_gap"], job_nonce=job.nonce,
+                    ticket_id=cfg['ticket_id'])).encode())
+                commit_bound_output(store, job, owner_file)
                 rate_identity = (identity["worker_sha256"], identity["profile_k"], identity["gap_min"], int(identity["start"]) >> 64)
                 self.rates.begin_piece(preserve_window=not job.first and rate_identity == self.rate_identity,
                                        minimum_positions=native_positions, minimum_tests=native_tests)
@@ -318,8 +534,11 @@ class EngineService:
                 complete = native_positions == int(identity["length"])
                 if not complete:
                     store.capture_closed_checkpoint(checkpoint, native_positions, native_tests)
-                store.closed("CHUNK_COMPLETE" if complete else "PAUSED", active, paused,
-                             chunk_complete=complete, instance_closed=instance_closed, work_receipt=receipt)
+                close_durable_output(store, job, "CHUNK_COMPLETE" if complete else "PAUSED", active, paused,
+                                     chunk_complete=complete, instance_closed=instance_closed, work_receipt=receipt)
+                # EOF, work receipt and job.close are not durability authority.
+                # Only the returned SessionStore.closed journal commit permits
+                # retirement of this exact delivered terminal prefix.
                 if not complete:
                     self.publish(store, "PAUSED")
                     return {"state": "PAUSED", "ticket_id": cfg["ticket_id"]}
@@ -347,16 +566,28 @@ class EngineService:
 
     def close(self):
         try:
-            self.manager.shutdown()
+            close=getattr(getattr(self,'complement',None),'close',None)
+            try:
+                if callable(close):close()
+            finally:self.manager.shutdown()
         finally:
-            self.lease.__exit__(None, None, None)
+            try:
+                self.archives.close()
+            finally:
+                self.lease.__exit__(None, None, None)
 
 
 def main():
+    if "--prepare-local-cpu" in sys.argv:
+        from horizon_local_runtime import main as local_main
+        return local_main([value for value in sys.argv[1:] if value != "--prepare-local-cpu"]+["--cpu-only"])
     bootstrap = os.environ.get("PGN_PRIVATE_OWNER_BOOTSTRAP")
     if bootstrap:
         from pgn_detached_worker import boot_main
         return boot_main(bootstrap)
+    if "--compact-completed" in sys.argv:
+        from horizon_ticket_archive import main as retention_main
+        return retention_main()
     if "--peer-relay" in sys.argv:
         from horizon_peer_relay import main as relay_main
         return relay_main([value for value in sys.argv[1:] if value != "--peer-relay"])
@@ -369,6 +600,9 @@ def main():
     if "--prepare-local" in sys.argv:
         from horizon_local_runtime import main as prepare_main
         return prepare_main([value for value in sys.argv[1:] if value != "--prepare-local"])
+    if "--network-status" in sys.argv:
+        from horizon_testnet_admission import main as admission_main
+        return admission_main([value for value in sys.argv[1:] if value != "--network-status"])
     if "--network" in sys.argv:
         from horizon_network_worker import main as network_main
         return network_main()
@@ -385,12 +619,16 @@ def main():
     parser.add_argument("--piece-limit", type=int, default=64 * 10**12)
     parser.add_argument("--check-installation", action="store_true")
     args = parser.parse_args()
-    service = EngineService(args.bundle, args.state_root, args.gpu, args.architecture)
+    from horizon_scientific_bundle import create_engine
+    service = create_engine(args.bundle, args.state_root, args.gpu, args.architecture, emit)
     try:
         if args.check_installation:
             workers = service.workers()
+            actual_source=module_metadata(workers[0][1])['source_manifest_sha256']
             emit(dict(type="installation", verified=True, optimized_only=True,
-                      profiles=[k for k, _ in workers], native_source_manifest=NATIVE_SOURCE,
+                      profiles=[k for k, _ in workers], native_source_manifest=actual_source,
+                      scientific_preseal_required=bool(getattr(service,'scientific_raw_report_provisional',False)),
+                      scope="Installed component integrity; no GPU kernel or network acceptance tested",
                       application="PGN Horizon", standalone_product_required=False))
             return 0
         stream = [args.job.read_text(encoding="utf8")] if args.job else sys.stdin

@@ -48,7 +48,7 @@ struct CandidateRangeScheduleReader::State {
 CandidateRangeScheduleReader::CandidateRangeScheduleReader()=default;
 CandidateRangeScheduleReader::~CandidateRangeScheduleReader()=default;
 int32_t CandidateRangeScheduleReader::ProgressHeight()const{return m_state?m_state->height:-1;}
-RangeScheduleCheck CandidateRangeScheduleReader::Read(const CCoinsView& view,const CBlockIndex& parent,
+RangeScheduleCheck CandidateRangeScheduleReader::Advance(const CCoinsView& view,const CBlockIndex& parent,
     const ChainRangePolicy& policy,const NativeRequestHistoryArchive& archive,RangeScheduleBudget budget)
 {
     AssertLockHeld(cs_main);
@@ -170,9 +170,36 @@ RangeScheduleCheck CandidateRangeScheduleReader::Read(const CCoinsView& view,con
         m_more_work=true;
         return {RangeScheduleVerdict::BudgetExceeded,{}};
     }
-    CandidateRangeSchedule complete=result;
-    complete.active.reserve(active.size());
-    for(const auto& [slot,lease]:active)complete.active.push_back(lease);
-    return {RangeScheduleVerdict::ReconstructedCandidate,std::move(complete)};
+    // State::result contains only summary counters. Full materialization is an
+    // explicit projection; a single reservation lookup must not pay for it.
+    return {RangeScheduleVerdict::ReconstructedCandidate,result};
+}
+RangeScheduleCheck CandidateRangeScheduleReader::Read(const CCoinsView& view,const CBlockIndex& parent,
+    const ChainRangePolicy& policy,const NativeRequestHistoryArchive& archive,RangeScheduleBudget budget){
+    auto complete=Advance(view,parent,policy,archive,budget);
+    if(!complete.schedule)return complete;
+    complete.schedule->active.reserve(m_state->active.size());
+    for(const auto& [slot,lease]:m_state->active)complete.schedule->active.push_back(lease);
+    return complete;
+}
+RangeScheduleCheck CandidateRangeScheduleReader::Visit(const CCoinsView& view,const CBlockIndex& parent,
+    const ChainRangePolicy& policy,const NativeRequestHistoryArchive& archive,RangeScheduleBudget budget,
+    const std::function<void(const CandidateRangeLease&)>& visitor){
+    auto complete=Advance(view,parent,policy,archive,budget);
+    if(!complete.schedule)return complete;
+    for(const auto& [slot,lease]:m_state->active)visitor(lease);
+    return complete;
+}
+RangeLeaseCheck CandidateRangeScheduleReader::ReadLease(const CCoinsView& view,const CBlockIndex& parent,
+    const ChainRangePolicy& policy,const NativeRequestHistoryArchive& archive,RangeScheduleBudget budget,const uint256& request){
+    const auto complete=Advance(view,parent,policy,archive,budget);
+    if(!complete.schedule)return {complete.verdict,{}};
+    const auto slot=m_state->by_request.find(request);
+    if(slot==m_state->by_request.end())return {complete.verdict,{},m_state->active.size()};
+    const auto lease=m_state->active.find(slot->second);
+    if(lease==m_state->active.end()||lease->second.owner.Id()!=request){
+        m_state.reset();return {RangeScheduleVerdict::InvalidHistory,{}};
+    }
+    return {complete.verdict,lease->second,m_state->active.size()};
 }
 }

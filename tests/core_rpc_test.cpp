@@ -10,5 +10,9 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);using namespace p
  for(const auto& invalid:{QByteArray("{\"jsonrpc\":\"2.0\",\"result\":7,\"error\":{\"code\":-1},\"id\":\"unique\"}"),QByteArray("{\"jsonrpc\":\"2.0\",\"error\":null,\"id\":\"unique\"}"),QByteArray("[]"),QByteArray("{"),QByteArray("{\"result\":7,\"error\":null,\"id\":\"old\"}"),QByteArray("{\"result\":7,\"error\":null,\"id\":1}"),QByteArray("{\"result\":7,\"id\":\"unique\"}"),QByteArray("{\"error\":null,\"id\":\"unique\"}"),QByteArray("{\"result\":7,\"error\":{},\"id\":\"unique\"}"),QByteArray("{\"jsonrpc\":\"1.0\",\"result\":7,\"error\":null,\"id\":\"unique\"}"),QByteArray(262145,' ')} )
   if(decodeCoreRpcResponse(invalid,"unique").error.isEmpty())return 3;
  if(decodeCoreRpcResponse("{\"result\":null,\"error\":null,\"id\":\"unique\"}","unique").value.isUndefined())return 4;
+ const QByteArray failure="{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"Wrong request shape\"},\"id\":\"unique\"}";
+ if(!decodeCoreRpcResponse(failure,"unique").error.contains("-32602")||decodeCoreRpcResponse(failure,"old").error.contains("Wrong request shape"))return 5;
+ const auto secret=QByteArray("prv")+QByteArray(64,'1');const auto privateError=QByteArray("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-5,\"message\":\"")+secret+"\"},\"id\":\"unique\"}";
+ if(decodeCoreRpcResponse(privateError,"unique").error.contains(QString::fromLatin1(secret)))return 6;
  std::cout<<"PASS exact request identity, valid genuine Core response forms, bounded/error/malformed/foreign rejection and PID-birth-generation lifecycle isolation\n";
 }

@@ -6,6 +6,8 @@
 #include <pgn/proposed_ticket_requests.h>
 #include <pgn/native_report_commitment.h>
 #include <pgn/native_report_audit.h>
+#include <pgn/native_audit_settlement.h>
+#include <pgn/native_work_duty_admission.h>
 namespace pgn::core {
 struct NativeBlockBootstrapBudget {
     RangePolicyReadBudget policy;RequestReplayBudget requests;
@@ -52,26 +54,44 @@ struct NativeBootstrapBlockCheck {NativeBootstrapBlockVerdict verdict;std::optio
 inline NativeBootstrapBlockCheck VerifyNativeBootstrapBlock(const CCoinsView& view,const CBlockIndex& parent,
     const NativeRequestHistoryArchive& history,const CBlock& block,const NativeBlockBootstrapBudget& budget,
     const NativeBlockScienceBudget* science_budget=nullptr){
+    std::optional<ChainMonetaryPolicy> monetary;
+    if(science_budget){
+        const auto checked=ReadChainMonetaryPolicy(view,parent,history,science_budget->schedule.archive,science_budget->policy);
+        if(!checked.policy)return {NativeBootstrapBlockVerdict::HistoryHeld,{}};
+        monetary=checked.policy;
+    }
+    const bool continuation=budget.ledger_continuation||(monetary&&monetary->Audits()&&monetary->Activation()&&monetary->Activation()->coordination_after_gold);
     const auto phase=InspectNativeBootstrapPhase(view,parent,budget.maximum_phase_blocks);
-    if(phase==NativeBootstrapPhaseVerdict::Scientific&&!budget.ledger_continuation)return {NativeBootstrapBlockVerdict::ScientificPhase,{}};
+    if(phase==NativeBootstrapPhaseVerdict::Scientific&&!continuation)return {NativeBootstrapBlockVerdict::ScientificPhase,{}};
     if(phase==NativeBootstrapPhaseVerdict::BudgetExceeded)return {NativeBootstrapBlockVerdict::BudgetExceeded,{}};
-    if(phase!=NativeBootstrapPhaseVerdict::Bootstrap&&!(phase==NativeBootstrapPhaseVerdict::Scientific&&budget.ledger_continuation))return {NativeBootstrapBlockVerdict::HistoryHeld,{}};
-    // Bootstrap cannot pay coins, carry spends or hide a failed science proof.
-    // Ordinary permissionless signed requests remain zero-valued coinbase data.
+    if(!NativeLedgerAllowsCoordination(phase,continuation))return {NativeBootstrapBlockVerdict::HistoryHeld,{}};
+    // Coordination carries no spends or scientific subsidy. A versioned audit
+    // page may mint ONLY its exact previously reserved audit obligations.
     if(block.hashPrevBlock!=parent.GetBlockHash()||block.vtx.size()!=1||!block.vtx.front()||
        !block.vtx.front()->IsCoinBase()||HasNativeCandidateBlockScienceEnvelope(block))return {NativeBootstrapBlockVerdict::InvalidBlock,{}};
-    for(const auto& output:block.vtx.front()->vout)if(output.nValue!=0)return {NativeBootstrapBlockVerdict::InvalidBlock,{}};
+    if(!science_budget)for(const auto& output:block.vtx.front()->vout)if(output.nValue!=0)return {NativeBootstrapBlockVerdict::InvalidBlock,{}};
     const auto policy=ReadChainBootstrapHashPolicy(view,parent,history,budget.requests.archive,budget.policy);
     if(!policy.policy)return {NativeBootstrapBlockVerdict::HistoryHeld,{}};
     // Pay the cheap authenticated work check before request signature work.
     const auto work=VerifyNativeBootstrapHash(view,parent,*policy.policy,block);
     if(!work.proof)return {NativeBootstrapBlockVerdict::InvalidWork,{}};
+    if(science_budget){
+        const NativeAuditSettlementContext context{history,science_budget->policy,science_budget->schedule,science_budget->signature};
+        const auto settlement=PrepareNativeAuditCoordinationPlan(view,parent,block,*monetary,context);
+        if(!settlement)return {NativeBootstrapBlockVerdict::HistoryHeld,{}};
+        if(!VerifyAuditSettlementOutputs(settlement->page,*block.vtx.front(),{},0))return {NativeBootstrapBlockVerdict::InvalidBlock,{}};
+    }
     std::optional<VerifiedRequestRegistry> registry;
     const auto replay=ReplayConfirmedRequestHistoryToParent(view,parent,history,registry,budget.requests);
     if(replay.verdict!=RequestReplayVerdict::AtParent||!registry)return {replay.verdict==RequestReplayVerdict::BudgetExceeded?
         NativeBootstrapBlockVerdict::BudgetExceeded:NativeBootstrapBlockVerdict::HistoryHeld,{}};
     const auto proposed=VerifyProposedTicketRequests(view,parent,*registry,block,budget.requests.scan,budget.requests.maximum_total_requests);
     if(!proposed.batch)return {proposed.verdict==ProposedRequestVerdict::BudgetExceeded?NativeBootstrapBlockVerdict::BudgetExceeded:NativeBootstrapBlockVerdict::InvalidRequest,{}};
+    const auto duties=ConfiguredNativeWorkDutyActivation();
+    if(duties&&int64_t(parent.nHeight)+1>=duties->height&&!proposed.batch->Requests().empty()&&
+       (!science_budget||!VerifyProposedNativeWorkDuties(view,parent,history,*proposed.batch,
+            science_budget->policy,science_budget->schedule,science_budget->signature,duties)))
+        return {NativeBootstrapBlockVerdict::InvalidRequest,{}};
     bool has_report{};for(const auto& out:block.vtx.front()->vout)has_report|=IsNativeReportScript(out.scriptPubKey);
     if(has_report&&(!science_budget||!VerifyProposedNativeReportCommitments(view,parent,history,block,science_budget->policy,science_budget->schedule,science_budget->signature)))
         return {NativeBootstrapBlockVerdict::InvalidRequest,{}};

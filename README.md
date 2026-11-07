@@ -11,7 +11,27 @@ Prime Gap Network (PGN) is a collaborative initiative conceived by **Rob Smith**
 
 **PGN Horizon** is the network client in this repository: an integrated wallet, optimized search engines, automatic work tickets, independent audits, and views of network evidence. It owns its engine runtime and does not require an installed Scout application.
 
-## Current status
+## Working source snapshot
+
+The working tree is preparing the next **Windows testnet** preview. Its new
+scientific factory is scoped to `[2^66, 10^21)`. SM86/K64 has hardware
+qualification; SM120/K64 currently has compilation and loader qualification,
+with physical GPU testing still needed. The standalone Scout release is
+separate and is not modified by this snapshot.
+
+[Component build provenance](docs/COMPONENT-BUILDS.md) describes the signed
+updater, exact CUDA inputs and supported memory profile.
+[Scientific observation storage](docs/scientific-gap-observations.md) explains
+full local gap-pair conservation, collection cutoffs and correction records.
+The stable CPU component's matching sources are identified in
+[CPU source provenance](docs/CPU-SOURCE-PROVENANCE.json); its scientific network
+admission remains experimental.
+
+The previous alpha below uses an older testnet epoch. It must not be confused
+with a new package for the reset network. This source snapshot does not itself
+announce a newly published binary release.
+
+## Current published status
 
 Horizon is a **private development testnet preview**, with play coins. The [0.1.0-alpha.1 pre-release](https://github.com/wizz13150/prime-gap-network/releases/tag/v0.1.0-alpha.1) is available for a small Windows and Ubuntu trial. It is not a production launch, a completed implementation of the final monetary rules, or a demonstrated large-network deployment.
 
@@ -74,3 +94,4 @@ Researchers, developers and volunteer testers are welcome. Introduce yourself in
 - **Rob Smith (robert44444uk)** — originator of PGN and its scientific and network design.
 - **Wizz** — software implementation and integration.
 - The upstream Riecoin, Bitcoin, Gapcoin and mathematical software contributors whose work underpins the project. Existing component licence and copyright notices are retained in their respective source trees and distribution notices.
+

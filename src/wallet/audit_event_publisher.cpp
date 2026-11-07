@@ -59,7 +59,7 @@ void AuditEventPublisher::publish(AuditOperation operation,Completion completion
     rpc_("getpgnauditevent",args,[guard,args,operation,gate=std::move(gate)](QJsonValue value,QString error){
         if(!guard)return;if(!error.isEmpty()){guard->fail(error);return;}
         const auto proposal=value.toObject();
-        if(proposal.value("available")!=true){guard->fail("No independent audit assignment is available");return;}
+        if(proposal.value("available")!=true){const auto reason=proposal.value("reason").toString();guard->fail(reason.isEmpty()?QString("No independent audit assignment is available"):reason.left(240));return;}
         if(gate&&!gate(proposal)){guard->fail("Proposed audit exceeds this device's capabilities; no assignment signed");return;}
         if(proposal.value("accepted")!=false||!hash(proposal.value("parent").toString())||!hash(proposal.value("request_id").toString())||
            !proposal.value("challenge").toString().startsWith("PGN/UNAPPROVED/SCRIPT-WORK/1:")){guard->fail("Native audit proposal identity is invalid");return;}

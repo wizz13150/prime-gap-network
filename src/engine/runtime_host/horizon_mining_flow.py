@@ -8,7 +8,11 @@ import time
 from horizon_network_audits import NetworkAudits
 from horizon_gpu_queue import ResidentGpuQueue
 from horizon_report_outbox import ReportOutbox
+from horizon_preseal_queue import PresealQueue
 from horizon_ticket_prefetch import TicketPrefetch
+from horizon_work_cycle import WorkCycleJournal
+from horizon_core_rpc import CoreRpcError
+from horizon_ticket_archive import SCHEMA as COMPLETED_TICKET_SCHEMA
 from pgn_native_contract import fields
 from pgn_session import atomic_bytes
 from report_commitment import canonical_bytes
@@ -25,16 +29,45 @@ def save(file, value):
     atomic_bytes(file, raw)
 
 class AuditGpuProxy:
-    def __init__(self, flow):
+    def __init__(self, flow, position):
         self.flow = flow
+        self.position = position
         self.audit = None
 
+    def finalize_report(self, work, computed):
+        # NetworkAudits calls this after its GPU Future returns, on the audit
+        # preparation thread. Never do expensive residual work in on_result.
+        finalizer = getattr(self.flow.worker.source, 'finalize_report', None)
+        return finalizer(work, computed) if callable(finalizer) else computed
+
+    def register_preparation(self, tickets):
+        register = getattr(self.flow.worker.source, 'register_preparation', None)
+        if callable(register):
+            register(tickets)
+
+    def acknowledge_preparation(self, ticket):
+        acknowledge = getattr(self.flow.worker.source, 'acknowledge_preparation', None)
+        if callable(acknowledge):
+            acknowledge(ticket)
+
+    def retain_audit_partition(self,audit,part,computed=None):
+        retain=getattr(self.flow.worker.source,'retain_audit_partition',None)
+        if callable(retain):retain(audit,part,computed)
+
     def run_ticket(self, ticket, maximum_piece):
+        audit = self.audit.current_audit
+        self.flow.bind_audit_cycle(self.position, audit)
         presentation = dict(self.audit.presentation)
         presentation["folder"] = self.flow.worker.root / "tickets" / ticket["ticket_id"]
         # Keep queue metadata serializable; restore the local path when active.
         presentation["folder"] = str(presentation["folder"])
-        future = self.flow.gpu.submit(ticket, dict(role="audit", presentation=presentation), maximum_piece)
+        if audit.get("work_cycle"):
+            cycle = self.flow.cycles.snapshot(audit["work_cycle"])
+            presentation["title"] = "Ticket " + cycle["work"]["ticket_number"] + " · Audit " + str(self.position + 1) + "/2"
+        future = self.flow.gpu.submit(ticket, dict(role="audit", presentation=presentation,
+                                     work_cycle=audit.get("work_cycle"), audit_position=self.position,
+                                     audit_request_id=audit["request_id"], audit_slot=audit["slot"],
+                                     audit_attempt=audit["attempt"]), maximum_piece)
         while not self.flow.worker.quitting.is_set():
             try:
                 return future.result(.2)
@@ -43,16 +76,27 @@ class AuditGpuProxy:
         raise CancelledError("Audit work retained for restart")
 
 class MiningFlow:
-    def __init__(self, worker):
+    def __init__(self, worker, *, finalize=None):
         self.closed = False
         self.worker = worker
-        self.outbox = ReportOutbox(worker.root)
+        self.outbox = ReportOutbox(worker.root, discoverer=getattr(worker, 'public_name', None))
+        self.finalizer = finalize if finalize is not None else getattr(worker.source, 'finalize_report', None)
+        if self.finalizer is not None and not callable(self.finalizer):
+            raise ValueError('A callable scientific report finalizer is required')
+        if self.finalizer is not None:
+            retain = getattr(worker.source, 'require_report_finalization', None)
+            if not callable(retain):
+                raise ValueError('Scientific finalization requires durable source-index retention')
+            retain()
+        self.preseal = PresealQueue(worker.root)
+        self.cycles = WorkCycleJournal(worker.root / "work-cycles", worker.args.genesis)
         self.changed = threading.Event()
         self.prior_active = read(worker.root / "gpu-active.json") if (worker.root / "gpu-active.json").exists() else {}
         current = read(worker.root / "controller.json") if (worker.root / "controller.json").exists() else {}
         self.view_sequence = max(int(current.get("sequence", 0)), int(self.prior_active.get("sequence", 0)))
         self.gpu = ResidentGpuQueue(worker.source, worker.running, worker.quitting,
-                                    self.activate, self.completed, self.paused, self.failed, self.waiting)
+                                    self.activate, self.completed, self.paused, self.failed, self.waiting,
+                                    may_start=self.may_start_work)
         allocator = object.__new__(type(worker))
         allocator.args, allocator.rpc = worker.args, worker.rpc
         allocator.root = worker.root / "prepared-ticket"
@@ -67,17 +111,166 @@ class MiningFlow:
         for index in range(2):
             folder = worker.root / "audit-lanes" / str(index)
             folder.mkdir(parents=True, exist_ok=True)
-            proxy = AuditGpuProxy(self)
+            proxy = AuditGpuProxy(self, index)
             lane = SimpleNamespace(root=folder, args=worker.args, rpc=worker.rpc,
                                    running=worker.running, network_lock=worker.network_lock,
                                    source=proxy, address=worker.address, ledger=worker.ledger)
-            audit = NetworkAudits(lane)
+            audit = NetworkAudits(lane,
+                on_assigned=lambda value, index=index: self.bind_audit_cycle(index, value),
+                on_reassigned=lambda value, block, index=index: self.reopen_audit_cycle(index, value, block),
+                reassignment_needed=lambda value, index=index: self.audit_reassignment_needed(index, value),
+                on_committed=lambda value, block, index=index: self.audit_committed(index, value, block),
+                before_commit=lambda value, index=index: self.before_audit_commit(index, value))
             proxy.audit = audit
             self.audit_lanes.append(audit)
+        self.audit_pressure_notice = None
+        worker.audit_service_snapshot = self.audit_service_snapshot
+        self.pressure_thread = threading.Thread(target=self.refresh_audit_pressure, name="audit-service-policy", daemon=True)
         self.report_thread = threading.Thread(target=self.publish_reports, name="report-publication", daemon=True)
-        self.audit_threads = [threading.Thread(target=self.audit_work, args=(audit,),
+        self.finalize_thread = (threading.Thread(target=self.finalize_reports, name="report-finalization", daemon=True)
+                                if self.finalizer is not None else None)
+        self.audit_threads = [threading.Thread(target=self.audit_work, args=(audit, i),
                               name="audit-preparation-" + str(i), daemon=True)
                               for i, audit in enumerate(self.audit_lanes)]
+
+    def may_start_work(self, job):
+        if (job.context['role'] == 'search' and self.finalizer is not None
+                and not self.preseal.capacity_available()):
+            return False
+        cycle = job.context.get("work_cycle")
+        if job.context["role"] == "audit":
+            return cycle is None or self.cycles.may_audit(cycle, job.context["audit_position"])
+        if job.context.get("legacy_assignment"):
+            return True
+        state = self.cycles.snapshot(cycle)
+        return not state["hold"] and (self.cycles.may_search(cycle) or
+                                      state["stage"] == "running" or
+                                      state["stage"] == "completed" and not job.context.get("prepared"))
+
+    def bind_audit_cycle(self, position, audit):
+        cycle = audit.get("work_cycle") or self.cycles.bound_audit(audit["request_id"], audit["slot"], audit["attempt"], position)
+        if cycle:
+            state = self.cycles.snapshot(cycle)
+            task = state["audits"][position]
+            if not task or (task.get("request"), task.get("slot"), task.get("attempt")) != (audit["request_id"], audit["slot"], audit["attempt"]):
+                self.cycles.hold(cycle, "Audit assignment changed; retained work needs reconciliation")
+                raise RuntimeError("Audit assignment changed; private computation retained")
+            if task["stage"] == "committed" and not self.replaying_audit(state, position, audit):
+                self.cycles.hold(cycle, "Audit confirmation changed branch; retained work needs reconciliation")
+                raise RuntimeError("Previously committed audit is assigned again; private answer retained")
+        else:
+            cycle = self.cycles.pending(position, retry_permissions=True)
+            if cycle is None:
+                return
+            # on_assigned follows the Core-confirmed assignment. A later
+            # permission grant can clear only a recognized permission hold.
+            self.cycles.attach(cycle, position, dict(stage="assigned", request=audit["request_id"], slot=audit["slot"], attempt=audit["attempt"]), permission_verified=True)
+        audit["work_cycle"] = cycle
+        save(self.audit_lanes[position].folder / "current.json", audit)
+
+    def before_audit_commit(self, position, audit):
+        self.bind_audit_cycle(position, audit)
+        cycle = audit.get("work_cycle")
+        if cycle is None:
+            return True
+        while not self.worker.quitting.is_set() and self.worker.running.is_set():
+            state = self.cycles.snapshot(cycle)
+            replay = self.replaying_audit(state, position, audit)
+            if state["hold"] and not replay:
+                raise RuntimeError(state["hold"])
+            if position == 0:
+                return True
+            first = state['audits'][0]
+            if first and first['stage'] in ('committed', 'unavailable'):
+                if not replay or self.audit_reference_current(first):
+                    return True
+            with self.gpu.condition:
+                self.gpu.condition.wait(.5 if replay else .1)
+        return False
+
+    def audit_committed(self, position, audit, block):
+        cycle = audit.get("work_cycle") or self.cycles.bound_audit(audit["request_id"], audit["slot"], audit["attempt"], position)
+        if cycle:
+            if audit.get('replay_previous_block'):
+                state = self.cycles.snapshot(cycle)
+                # Repeated callback after both local publication and hold
+                # release is an idempotent acknowledgement, not a new replay.
+                task = state['audits'][position]
+                if not task or (task.get('request'), task.get('slot'), task.get('attempt')) != (audit['request_id'], audit['slot'], audit['attempt']):
+                    raise ValueError('Replay confirmation belongs to another retained attempt')
+                if state['hold'] or task.get('block') != block:
+                    self.cycles.replace_audit_confirmation(cycle, position, audit['request_id'], audit['slot'], audit['attempt'], audit['replay_previous_block'], block)
+                    self.refresh_cycle_confirmations(cycle)
+            else:
+                self.cycles.published(cycle, position, audit["request_id"], audit["slot"], audit["attempt"], block)
+            self.gpu.wake()
+
+    def reopen_audit_cycle(self, position, audit, previous_block):
+        cycle = audit.get('work_cycle') or self.cycles.bound_audit(audit['request_id'], audit['slot'], audit['attempt'], position)
+        if cycle:
+            started = self.cycles.reopen_audit(cycle, position, audit['request_id'], audit['slot'], audit['attempt'], previous_block)
+            if started:
+                audit['replay_previous_block'] = previous_block
+            else:
+                audit.pop('replay_previous_block', None)
+            audit['work_cycle'] = cycle
+            self.gpu.wake()
+
+    @staticmethod
+    def replaying_audit(state, position, audit):
+        task = state['audits'][position]
+        return (state['stage'] in ('running', 'completed') and state['hold'] == WorkCycleJournal.reorg_hold
+                and task is not None and task.get('stage') == 'committed'
+                and task.get('block') == audit.get('replay_previous_block')
+                and (task.get('request'), task.get('slot'), task.get('attempt')) == (audit['request_id'], audit['slot'], audit['attempt']))
+
+    def audit_reference_current(self, task):
+        if not isinstance(task, dict):
+            return False
+        block = task.get('block') if task.get('stage') == 'committed' else task.get('anchor') if task.get('stage') == 'unavailable' else None
+        if not block:
+            return False
+        try:
+            header = self.worker.rpc.call('getblockheader', [block, True])
+        except CoreRpcError as error:
+            if error.code == -5:
+                return False
+            raise
+        if (not isinstance(header, dict) or header.get('hash') != block or type(header.get('height')) is not int
+                or header['height'] < 0 or type(header.get('confirmations')) is not int):
+            raise ValueError('Audit service confirmation header is invalid')
+        return header['confirmations'] > 0 and self.worker.rpc.call('getblockhash', [header['height']]) == block
+
+    def refresh_cycle_confirmations(self, cycle):
+        state = self.cycles.snapshot(cycle)
+        if state['hold'] != WorkCycleJournal.reorg_hold:
+            return False
+        if 'native_service' in state:
+            # The consuming request, not a replay in a local audit lane, owns
+            # these credits. Re-observe Core before replacing its orphaned
+            # issuance anchor, without reopening completed scientific work.
+            changed = self.prepare_cycle(dict(state['work'], genesis=self.worker.args.genesis))
+            return changed or self.cycles.release_reorg_hold(cycle, state['audits'])
+        before = self.worker.rpc.call('getbestblockhash')
+        if not all(self.audit_reference_current(task) for task in state['audits']):
+            return False
+        if self.worker.rpc.call('getbestblockhash') != before:
+            return False
+        return self.cycles.release_reorg_hold(cycle, state['audits'])
+
+    def report_ready(self, entry):
+        request = entry['work']['request_id']
+        if not self.cycles.contains(request):
+            return True # Preserved legacy reports are not retagged as new cycles.
+        cycle = self.cycles.snapshot(request)
+        return cycle['stage'] == 'completed' and self.cycles.ready(cycle)
+
+    def audit_reassignment_needed(self, position, audit):
+        cycle = audit.get('work_cycle') or self.cycles.bound_audit(audit['request_id'], audit['slot'], audit['attempt'], position)
+        if not cycle:
+            return False
+        task = self.cycles.snapshot(cycle)['audits'][position]
+        return task is not None and task['stage'] == 'committed'
 
     def job(self, work):
         start, end = int(work["start"]), int(work["start"]) + int(work["length"])
@@ -89,7 +282,18 @@ class MiningFlow:
                     target_merit_q16=numerator * 65536 // denominator)
 
     def prepared(self, work):
-        self.gpu.submit(self.job(work), dict(role="search", work=work, prepared=True), self.worker.args.piece_limit)
+        self.prepare_cycle(work)
+        self.gpu.submit(self.job(work), dict(role="search", work=work, prepared=True, work_cycle=work["request_id"]), self.worker.args.piece_limit)
+
+    def prepare_cycle(self, work):
+        previous = (self.cycles.snapshot(work['request_id']).get('native_service')
+                    if self.cycles.contains(work['request_id']) else None)
+        native = None
+        if 'native_audit_service' in work or previous is not None:
+            from horizon_native_work_duty import observe
+            with self.worker.network_lock:
+                native = observe(self.worker.rpc, work, self.worker.args.genesis, previous)
+        return self.cycles.prepare(work, native_service=native)
 
     def promote(self, work, sequence):
         with self.worker.state_lock:
@@ -117,64 +321,160 @@ class MiningFlow:
             else:
                 self.promote(work, job.view_sequence)
             worker.current = work
+            if not job.context.get("legacy_assignment"):
+                self.cycles.advance(work["request_id"], "running")
             worker.audits.presentation = None
         else:
             worker.audits.presentation = dict(job.context["presentation"])
+        bind = getattr(worker.source, "bind_cycle", None)
+        if bind is not None:
+            cycle = job.context.get("work_cycle")
+            if cycle:
+                bind(job.ticket, job.context, self.cycles.snapshot(cycle))
+            else:
+                worker.source.clear_cycle()
         save(worker.root / "gpu-active.json", dict(ticket_id=job.ticket["ticket_id"],
              sequence=job.view_sequence, role=job.context["role"], context=job.context))
         (worker.root / "pause.request").unlink(missing_ok=True)
 
     def completed(self, job, result):
         if job.context["role"] == "search":
-            self.outbox.put(job.context["work"], result)
+            self.queue_report(job.context["work"], result)
+            if not job.context.get("legacy_assignment"):
+                self.cycles.advance(job.context["work"]["request_id"], "completed")
         self.changed.set()
         save(self.worker.root / "pipeline-timing.json", dict(schema="PGN_PIPELINE_TIMING_V1",
              measurement="Host job handoff; CUDA kernel trace still required", transitions=list(self.gpu.timings)))
 
+    def queue_report(self, work, result):
+        # Heavy scientific repair never runs on the GPU completion callback.
+        # The caller must supply a qualified finalizer; the queue itself does
+        # not confer scientific coverage or reinterpret legacy commitments.
+        if self.finalizer is None:
+            return self.outbox.put(work, result)
+        return self.preseal.put(work, result)
+
+    def finalize_reports(self):
+        while not self.worker.quitting.is_set():
+            try:
+                acknowledge = getattr(getattr(self.worker, 'source', None), 'acknowledge_preparation', None)
+                changed = self.preseal.pump(self.finalizer, self.outbox,
+                                           cancelled=self.worker.quitting.is_set,
+                                           on_sealed=(lambda work: acknowledge(work['ticket'])) if callable(acknowledge) else None)
+                if changed:
+                    self.changed.set()
+                    self.gpu.wake()
+                    continue
+            except Exception as error:
+                if self.worker.quitting.is_set():
+                    break
+                self.worker.network_notice = str(error)[:400]
+                self.worker.quitting.wait(1)
+            self.worker.quitting.wait(.1)
+
     def paused(self):
         self.worker.release_device()
+        if self.worker.current is None and self.worker.audits.presentation is None:
+            self.worker.message('Mining paused; no GPU task is running', 'Paused')
+            return
         self.worker.progress(dict(phase="PAUSED_ACK"))
 
     def waiting(self):
-        detail = self.prefetch.error or "Preparing the next signed network ticket"
+        detail = ("Waiting for required audit submissions" if self.gpu.search_waiting_for_audits else
+                  self.prefetch.error or "Preparing the next signed network ticket")
         self.worker.message(detail, "Waiting for next ticket")
 
     def failed(self, error):
         self.worker.message(str(error), "Needs attention")
 
     def publish_reports(self):
-        next_poll = 0
+        from horizon_report_poll import ReportPoller
+        poller = ReportPoller(self.worker.audits, self.audit_lanes)
+        next_recheck = 0
         while not self.worker.quitting.is_set():
             try:
+                if time.monotonic() >= next_recheck:
+                    next_recheck = time.monotonic() + 2
+                    for cycle in self.cycles.reorg_held():
+                        with self.worker.network_lock:
+                            self.refresh_cycle_confirmations(cycle)
                 entry = self.outbox.first()
                 if entry:
                     with self.worker.network_lock:
-                        self.worker.submit(None, work=entry["work"])
-                    self.outbox.acknowledge(entry["work"]["request_id"], entry["report_root"])
-                    continue
-                now = time.monotonic()
-                if now >= next_poll:
+                        # A publication may have waited behind other network
+                        # I/O. Recheck service after acquiring that lane, not
+                        # before waiting for it. No journal lock spans RPC.
+                        if self.report_ready(entry):
+                            self.worker.submit(None, work=entry["work"])
+                        else:
+                            self.worker.network_notice = 'Audit confirmation repair pending; computed report retained'
+                            entry = None
+                    if entry:
+                        self.outbox.acknowledge(entry["work"]["request_id"], entry["report_root"])
+                if poller.due():
                     with self.worker.network_lock:
-                        self.worker.audits.reveal_owner_reports()
-                        self.worker.audits.reveal_committed()
-                        for audit in self.audit_lanes:
-                            audit.reveal_committed()
-                    next_poll = now + 5
-                self.worker.network_notice = None
+                        self.worker.network_notice = poller.poll()
+                if entry:
+                    continue
             except Exception as error:
                 self.worker.network_notice = str(error)[:400]
                 self.worker.quitting.wait(1)
             self.changed.wait(.1)
             self.changed.clear()
 
-    def audit_work(self, audit):
+    def audit_service_snapshot(self):
+        value = self.gpu.audit_service_view()
+        value["measurement_notice"] = self.audit_pressure_notice
+        return value
+
+    def refresh_audit_pressure(self):
+        # Read-only management I/O never runs in the GPU execution lane.
+        while not self.worker.quitting.is_set():
+            try:
+                state = self.worker.rpc.call("getpgnnetworkmetrics", [2, 60, 600])
+                if state.get("schema") != "PGN_NETWORK_METRICS_V1" or state.get("genesis") != self.worker.args.genesis:
+                    raise ValueError("Audit service measurement belongs to another chain or schema")
+                queue = state["audit_queue"]
+                waiting, assigned = queue["awaiting"], queue["assigned"]
+                if type(waiting) is not int or type(assigned) is not int or waiting < 0 or assigned < 0:
+                    raise ValueError("Invalid audit compute queue counts")
+                self.gpu.update_audit_backlog(waiting + assigned, state["audit_enabled_operators"], queue["oldest_compute_pending_age_seconds"])
+                self.audit_pressure_notice = None
+            except Exception as error:
+                # A failed read is not a zero backlog. Keep the last allocation.
+                self.audit_pressure_notice = str(error)[:240]
+            self.worker.quitting.wait(5)
+
+    def audit_work(self, audit, position):
         while not self.worker.quitting.is_set():
             if not self.worker.running.wait(.2):
                 continue
             try:
+                pending = self.cycles.pending(position, retry_permissions=True)
                 outcome = audit.process_one()
                 if outcome == "none":
-                    self.worker.quitting.wait(5)
+                    proposal = audit.last_unavailable or {}
+                    # A prefetch during another calculation cannot waive the
+                    # next cycle's audits before its actual service boundary.
+                    with self.gpu.condition:
+                        active = self.gpu.active
+                        at_boundary = active is None or active.context.get("work_cycle") == pending
+                    if pending and at_boundary and self.cycles.pending(position, retry_permissions=True) == pending:
+                        reason = proposal.get("unavailable_reason")
+                        if proposal.get("genesis") != self.worker.args.genesis:
+                            raise ValueError("Audit availability belongs to another or unknown chain")
+                        if reason == "no_eligible_independent_work":
+                            # Availability and its anchor must come from the
+                            # same Core read, not a later unrelated tip query.
+                            anchor = proposal.get("parent")
+                            self.cycles.attach(pending, position, dict(stage="unavailable", anchor=anchor, reason=reason), permission_verified=True)
+                            self.gpu.wake()
+                        elif reason in ("auditor_not_registered", "audit_permission_disabled"):
+                            self.cycles.hold_permission(pending, reason)
+                        elif reason:
+                            self.cycles.hold(pending, proposal.get("reason", reason)[:240])
+                    with self.gpu.condition:
+                        self.gpu.condition.wait(5 if self.gpu.active is not None else .1)
             except Exception as error:
                 if self.worker.quitting.is_set():
                     break
@@ -188,29 +488,42 @@ class MiningFlow:
             resumed = work is not None
             if work is not None:
                 session = worker.root / "tickets" / work["ticket"] / "session.json"
-                if session.exists() and read(session, 262144).get("state") == "COMPLETE":
+                saved = read(session, 262144) if session.exists() else {}
+                if saved.get("state") == "COMPLETE" or saved.get("schema") == COMPLETED_TICKET_SCHEMA:
                     worker.current = work
                     result = worker.source.run_ticket(self.job(work), worker.args.piece_limit)
-                    self.outbox.put(work, result)
+                    self.queue_report(work, result)
+                    if self.cycles.contains(work["request_id"]):
+                        self.cycles.advance(work["request_id"], "completed")
                     work = None
                     resumed = False
-            if work is None:
-                work = self.allocator.assign()
-        self.promote(work, self.view_sequence)
-        journal = self.allocator.root / "controller.json"
-        if journal.exists():
-            value = read(journal)
-            if value.get("work", {}).get("ticket") == work["ticket"]:
-                value["stage"] = "CONSUMED"
-                save(journal, value)
-        self.gpu.submit(self.job(work), dict(role="search", work=work, prepared=False), worker.args.piece_limit)
-        if resumed and self.view_sequence > 0:
-            self.gpu.jobs[work["ticket"]].view_sequence = self.view_sequence
-        self.prefetch.start()
-        self.report_thread.start()
-        for thread in self.audit_threads:
-            thread.start()
+        if work is not None:
+            native = work.get('native_audit_service', {}).get('enforced') is True
+            legacy_assignment = resumed and not native and not self.cycles.contains(work["request_id"])
+            if not legacy_assignment:
+                self.prepare_cycle(work)
+            self.promote(work, self.view_sequence)
+            journal = self.allocator.root / "controller.json"
+            if journal.exists():
+                value = read(journal)
+                if value.get("work", {}).get("ticket") == work["ticket"]:
+                    value["stage"] = "CONSUMED"
+                    save(journal, value)
+            self.gpu.submit(self.job(work), dict(role="search", work=work, prepared=False,
+                            work_cycle=None if legacy_assignment else work["request_id"], legacy_assignment=legacy_assignment), worker.args.piece_limit)
+            if resumed and self.view_sequence > 0:
+                self.gpu.jobs[work["ticket"]].view_sequence = self.view_sequence
         try:
+            # The existing preparation lane also obtains the first new ticket.
+            # A native audit-duty refusal therefore leaves the execution and
+            # audit lanes running instead of deadlocking before they start.
+            self.prefetch.start()
+            self.report_thread.start()
+            if self.finalize_thread is not None:
+                self.finalize_thread.start()
+            self.pressure_thread.start()
+            for thread in self.audit_threads:
+                thread.start()
             if self.prior_active.get("role") == "audit":
                 until = time.monotonic() + 5
                 identity = self.prior_active["ticket_id"]
@@ -229,9 +542,10 @@ class MiningFlow:
             self.gpu.wake()
             self.changed.set()
             self.prefetch.close(5)
-            self.report_thread.join(5)
-            for thread in self.audit_threads:
-                thread.join(5)
+            for thread in [self.report_thread, self.finalize_thread, self.pressure_thread, *self.audit_threads]:
+                if thread is not None and thread.ident is not None:
+                    thread.join(5)
             worker.release_device()
             worker.source.close()
+            self.cycles.close()
             self.closed = True

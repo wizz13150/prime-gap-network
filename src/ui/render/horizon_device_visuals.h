@@ -129,7 +129,7 @@ inline void frame(QPainter& painter,const QRectF& pod,const QColor& color,bool a
 inline QRectF gauge(QPainter& painter,const QPointF& center,qreal radius,double fraction,
                   const QColor& color,const QString& value,const QString& label,
                   qreal labelWidth=0.,qreal labelGap=4.,int labelPixels=7,bool riecoin=false,
-                  const QColor& valueColor=QColor{}){
+                  const QColor& valueColor=QColor{},QRectF* labelBounds=nullptr){
     fraction=std::clamp(fraction,0.,1.);
     const QRectF ring(center.x()-radius,center.y()-radius,radius*2,radius*2);
     painter.save();painter.setBrush(Qt::NoBrush);
@@ -157,7 +157,9 @@ inline QRectF gauge(QPainter& painter,const QPointF& center,qreal radius,double 
     painter.drawText(valueArea,Qt::AlignCenter,displayed);
     painter.setFont(font(labelPixels,QFont::DemiBold,true,riecoin));painter.setPen(alpha(color,190));
     const qreal width=labelWidth>0?labelWidth:radius*2;
-    painter.drawText(QRectF(center.x()-width/2,center.y()+radius+labelGap,width,14),Qt::AlignCenter,label);
+    const QRectF labelArea(center.x()-width/2,center.y()+radius+labelGap,width,14);
+    if(labelBounds)*labelBounds=painter.boundingRect(labelArea,Qt::AlignCenter,label);
+    painter.drawText(labelArea,Qt::AlignCenter,label);
     painter.restore();
     return valueBounds;
 }

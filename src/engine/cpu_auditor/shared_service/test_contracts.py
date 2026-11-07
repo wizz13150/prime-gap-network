@@ -3,12 +3,13 @@ sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent))
 from contracts import validate,SCHEMA,PROBE,SOURCE,COVERAGE
 from merit_policy import minimum_gap,next_piece,next_threshold_integer
 from service import Service,validate_reply
+import cycle_work
 START=199833824235735044953
 def audit():
  return dict(schema=SCHEMA,ticket_id='a'*64,ticket_start=str(START),ticket_end=str(START+200000000000000),partitions=[dict(index=i,start=str(START+i*2000000000000),end=str(START+(i+1)*2000000000000))for i in[0,9,20,40,99]])
 def reply(task,cpu=0):
  o,a,b,k,seq,g=task
- return dict(type='result',state='COMPLETE',backend='cpu_shared_gpu_lineage68',job_id=seq,start=str(a),end=str(b),positions=str(b-a),minimum_gap=g,pinned_cpu=cpu,affinity_verified=True,canonical_source_manifest_sha256=SOURCE,coverage_contract=COVERAGE,production_admitted=False,implementation='shared_scalar',sieve_layout='canonical_tiled',count='1',seconds=.001)
+ return dict(type='result',state='COMPLETE',backend='cpu_shared_gpu_lineage68',job_id=seq,start=str(a),end=str(b),positions=str(b-a),minimum_gap=g,pinned_cpu=cpu,affinity_verified=True,canonical_source_manifest_sha256=SOURCE,coverage_contract=COVERAGE,production_admitted=False,implementation='shared_scalar64',sieve_layout='canonical_tiled',count='1',seconds=.001,schema='PGN_CPU_SHARED_OWNED_PIECE_V2',audit_only=False,owned_frontier=dict(start=str(a),end=str(b),gap_owner='lower_prime',right_crossing_verified=True),records_verification=cycle_work.RECORDS,best=[dict(lower_prime=str(a),upper_prime=str(a+g),gap=g)],candidate_tests='3',memory_pages=dict(schema='PGN_CPU_WORKER_MEMORY_PAGES_V1',allocator_supported=True,verified=False,compute_buffer_used=False,allocated_bytes='0',bitmap_bytes='0',large_page_bytes_in_use='0',last_error=0))
 class Tests(unittest.TestCase):
  def test_audit_contract(self):
   self.assertEqual(len(validate(audit())),5)
@@ -32,7 +33,7 @@ class Tests(unittest.TestCase):
    v=dict(r);v[key]=value
    with self.assertRaises(ValueError):validate_reply(v,t,0,False)
  def test_ordered_frontier_duplicate_and_checkpoint_bound(self):
-  s=Service.__new__(Service);s.workers={};s.completed={};s.committed=0;s.counts=[0];s.compute_seconds=0.;s.max_buffered=0;s.completed_piece_count=0;s.total=1000;s.probe=True;s.request=dict(schema=PROBE,start=str(START),end=str(START+1000));s.result=None;s.state='RUNNING';s.enabled=True;s.simd=False;s.saves=[];s.persist=lambda:s.saves.append((s.committed,list(s.counts)))
+  s=Service.__new__(Service);s.best=[];s.tests=0;s.parts=[dict(index=0,start=str(START),end=str(START+100))];s.workers={};s.completed={};s.committed=0;s.counts=[0];s.compute_seconds=0.;s.max_buffered=0;s.completed_piece_count=0;s.total=1000;s.probe=True;s.request=dict(schema=PROBE,start=str(START),end=str(START+1000));s.result=None;s.state='RUNNING';s.enabled=True;s.simd=False;s.saves=[];s.persist=lambda:s.saves.append((s.committed,list(s.counts)))
   class W:pass
   a,b=W(),W()
   for i,w in enumerate([a,b]):w.cpu=i;w.task=(i*100,START+i*100,START+(i+1)*100,0,i+1,960);w.positions=0;w.native_seconds=0.;s.workers[i]=w
@@ -40,7 +41,7 @@ class Tests(unittest.TestCase):
   s.native_event(a,reply(a.task));self.assertEqual(s.committed,200);self.assertEqual(s.counts,[2]);self.assertEqual(s.saves,[(200,[2])]);self.assertEqual(len(s.completed),0)
   with self.assertRaises(ValueError):s.native_event(a,reply((0,START,START+100,0,1,960)))
  def test_no_partial_full_audit(self):
-  s=Service.__new__(Service);s.workers={};s.completed={};s.committed=0;s.counts=[0];s.compute_seconds=0.;s.max_buffered=0;s.completed_piece_count=0;s.total=100;s.probe=False;s.result=None;s.simd=False;s.persist=lambda:None
+  s=Service.__new__(Service);s.best=[];s.tests=0;s.parts=[dict(index=0,start=str(START),end=str(START+100))];s.workers={};s.completed={};s.committed=0;s.counts=[0];s.compute_seconds=0.;s.max_buffered=0;s.completed_piece_count=0;s.total=100;s.probe=False;s.result=None;s.simd=False;s.persist=lambda:None
   class W:pass
   w=W();w.cpu=0;w.task=(0,START,START+100,0,1,960);w.positions=0;w.native_seconds=0.;s.workers={0:w}
   with self.assertRaises(ValueError):s.native_event(w,reply(w.task))

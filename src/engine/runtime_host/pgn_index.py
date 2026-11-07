@@ -1,11 +1,44 @@
 """Disk-backed exact gap index. RAM bound is independent of run gap count."""
 
 from bisect import bisect_right
+from contextlib import contextmanager
 from collections.abc import MutableMapping
+from pathlib import Path
 import json
 import sqlite3
 import threading
 from pgn_projection import Projection
+
+# SQLite enforces the main database page limit, including uncheckpointed pages.
+MAX_SESSION_INDEX_BYTES = 128 * 1024 * 1024
+MAX_WAL_WRITE_START_BYTES = 32 * 1024 * 1024
+
+
+class SessionIndexBudgetExceeded(BufferError):
+    code = 'SESSION_INDEX_BUDGET_REACHED'
+
+
+class SessionIndexWalBudgetExceeded(SessionIndexBudgetExceeded):
+    code = 'SESSION_INDEX_WAL_BUDGET_REACHED'
+
+
+def index_page_budget(connection):
+    page_size = int(connection.execute('PRAGMA page_size').fetchone()[0])
+    pages = int(connection.execute('PRAGMA page_count').fetchone()[0])
+    if (not 512 <= page_size <= 65536 or page_size & (page_size-1)
+            or MAX_SESSION_INDEX_BYTES < page_size):
+        raise SessionIndexBudgetExceeded('Session index storage budget is too small')
+    maximum = MAX_SESSION_INDEX_BYTES // page_size
+    # max_page_count cannot be set below current use. Refuse before any schema,
+    # binding or projection mutation; existing data remains available to readers.
+    if pages > maximum:
+        raise SessionIndexBudgetExceeded(
+            'Session index exceeds its storage budget; existing history retained'
+        )
+    actual = int(connection.execute(f'PRAGMA max_page_count={maximum}').fetchone()[0])
+    if actual != maximum:
+        raise SessionIndexBudgetExceeded('SQLite did not enforce the session index budget')
+    return maximum
 
 
 def blob(number):
@@ -20,12 +53,37 @@ class GapIndex(MutableMapping):
     def __init__(self, path, session_id, configuration, configuration_hash):
         self._writer_thread = threading.get_ident()
         self.configuration = json.loads(json.dumps(configuration))
-        self.db = sqlite3.connect(str(path))
+        self.path = Path(path).resolve()
+        self.db = sqlite3.connect(str(self.path))
+        try:
+            self._initialize(session_id, configuration, configuration_hash)
+        except BaseException:
+            self.db.close()
+            raise
+
+    def _initialize(self, session_id, configuration, configuration_hash):
+        index_page_budget(self.db)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
-        self.db.execute("PRAGMA cache_size=-4096")  # At most4MiB page cache.
+        self.db.execute("PRAGMA cache_size=-4096")  # Suggested clean-page target.
+        # No page can be written repeatedly to WAL by a cache spill inside one
+        # transaction. Dirty-page memory may rise to the128MiB database cap.
+        self.db.execute("PRAGMA cache_spill=OFF")
+        if self.db.execute("PRAGMA cache_spill").fetchone() != (0,):
+            raise SessionIndexBudgetExceeded('SQLite did not disable transaction spilling')
         self.db.execute("PRAGMA temp_store=FILE")
-        self.db.executescript("""
+        with self.write_transaction():
+            self._initialize_schema(session_id, configuration, configuration_hash)
+
+    def _schema(self, sql):
+        # These are fixed internal DDL statements. executescript() would commit
+        # an existing transaction, defeating the single-commit WAL bound.
+        for statement in sql.split(';'):
+            if statement.strip():
+                self.db.execute(statement)
+
+    def _initialize_schema(self, session_id, configuration, configuration_hash):
+        self._schema("""
           CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY,v TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS gaps(lo BLOB PRIMARY KEY,hi BLOB NOT NULL,gap INTEGER NOT NULL,seq INTEGER NOT NULL,bin INTEGER NOT NULL) WITHOUT ROWID;
           CREATE INDEX IF NOT EXISTS gaps_gap ON gaps(gap DESC,lo);
@@ -37,7 +95,6 @@ class GapIndex(MutableMapping):
         if prior is not None and prior != binding:
             raise ValueError("SQLite/session input binding mismatch")
         self.put_meta("binding", binding)
-        self.db.commit()
         start, end = (int(configuration[k]) for k in ("start", "end"))
         bins = int(configuration.get("bins", 100))
         self.bounds = [start + (end - start) * i // bins for i in range(bins + 1)]
@@ -51,12 +108,53 @@ class GapIndex(MutableMapping):
                     + " INTEGER NOT NULL DEFAULT0".replace("DEFAULT0", "DEFAULT 0")
                 )
                 migrated = True
-        self.db.executescript("""
+        self._schema("""
           CREATE INDEX IF NOT EXISTS gaps_visible_count_rank ON gaps(visible,count_ok,gap DESC,lo);
           CREATE INDEX IF NOT EXISTS gaps_visible_detail_rank ON gaps(visible,detail_ok,gap DESC,lo);
           CREATE INDEX IF NOT EXISTS gaps_visible_count_recent ON gaps(visible,count_ok,seq DESC);
         """)
-        self.projection = Projection(self, configuration, rebuild=migrated)
+        self.projection = Projection(self, configuration, rebuild=migrated, commit=False)
+
+    def wal_bytes(self):
+        try:
+            return self.path.with_name(self.path.name + '-wal').stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    def reserve_write(self):
+        self._assert_writer()
+        if self.db.in_transaction:
+            raise RuntimeError('Session index already has an unresolved transaction')
+        if self.wal_bytes() <= MAX_WAL_WRITE_START_BYTES:
+            return
+        # Never remove a WAL file by hand. SQLite may checkpoint/truncate only
+        # when every reader permits it. A pinned reader yields immediate, typed
+        # backpressure instead of unbounded growth or a five-second busy wait.
+        timeout = int(self.db.execute('PRAGMA busy_timeout').fetchone()[0])
+        try:
+            self.db.execute('PRAGMA busy_timeout=0')
+            try:
+                self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+            except sqlite3.OperationalError as error:
+                if getattr(error, 'sqlite_errorcode', None) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                    raise
+        finally:
+            self.db.execute(f'PRAGMA busy_timeout={timeout}')
+        if self.wal_bytes() > MAX_WAL_WRITE_START_BYTES:
+            raise SessionIndexWalBudgetExceeded(
+                'Session index WAL budget reached; close the long-running history reader and retry; durable work retained'
+            )
+
+    @contextmanager
+    def write_transaction(self):
+        self.reserve_write()
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            # Recheck while holding the SQLite writer lock: another writer may
+            # have committed between the checkpoint and BEGIN IMMEDIATE.
+            if self.wal_bytes() > MAX_WAL_WRITE_START_BYTES:
+                raise SessionIndexWalBudgetExceeded('Session index WAL changed before writer admission; durable work retained')
+            yield
 
     def meta(self, key, default=None):
         row = self.db.execute("SELECT v FROM meta WHERE k=?", (key,)).fetchone()
@@ -106,7 +204,7 @@ class GapIndex(MutableMapping):
         self._assert_writer()
         kind = event["type"]
         next_projection = self.projection.value
-        with self.db:
+        with self.write_transaction():
             if kind == "gap":
                 next_projection = self._insert_gap(
                     int(event["lower"]), int(event["upper"]), event["sequence"]
@@ -423,6 +521,24 @@ class GapIndex(MutableMapping):
 
 def read_metadata_snapshot(path):
     """Read committed metadata only. No schema init, migration or projection write."""
+    return _read_metadata_snapshot(path, (
+        "binding", "session_metadata", "journal_sequence", "progress", "state",
+        "timing", "active_chunk", "next_range", "prepared_replacement",
+        "completed_chunk_count", "projection",
+    ))
+
+
+def read_presentation_snapshot(path):
+    """The same atomic read, limited to the three fields a live frame consumes.
+
+    Recovery metadata is deliberately not decoded at presentation frequency.
+    Required identity, frontier and projection are still read in one transaction;
+    there is no cache that could hide a rollback or a newly recorded gap.
+    """
+    return _read_metadata_snapshot(path, ("binding", "progress", "projection"))
+
+
+def _read_metadata_snapshot(path, keys):
     from pathlib import Path
 
     path = Path(path).resolve()
@@ -434,19 +550,6 @@ def read_metadata_snapshot(path):
     try:
         connection.execute("PRAGMA query_only=ON")
         connection.execute("BEGIN")
-        keys = (
-            "binding",
-            "session_metadata",
-            "journal_sequence",
-            "progress",
-            "state",
-            "timing",
-            "active_chunk",
-            "next_range",
-            "prepared_replacement",
-            "completed_chunk_count",
-            "projection",
-        )
         placeholders = ",".join("?" for _ in keys)
         rows = connection.execute(
             "SELECT k,v FROM meta WHERE k IN (" + placeholders + ")", keys

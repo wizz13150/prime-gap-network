@@ -5,10 +5,18 @@
 #include <QFile>
 #include <QElapsedTimer>
 #include <QThread>
+#include <QJsonDocument>
 #include <iostream>
 int main(int argc,char** argv){
  QApplication app(argc,argv);if(argc!=2)return 2;QTemporaryDir folder;if(!folder.isValid())return 3;
- int reads=0;auto* view=pgn::ui::createDiagnosticCaptureView(QString::fromLocal8Bit(argv[1]),[&]{++reads;return QJsonObject{{"phase","Searching"},{"positions","1000"},{"message","C:/Users/example/device-status"}};});
+ const QJsonObject inventory{{"schema","PGN_LOCAL_COMPONENT_VIEW_V1"},{"components",QJsonArray{
+  QJsonObject{{"id","ui"},{"state","matched_local_manifest"},{"version","2026.11.7.45"},{"primary_bound",true},{"code_root","C:/Users/example/private-location"},{"private_key","INERT-DO-NOT-COPY"}},
+  QJsonObject{{"id","cpu"},{"state","unidentified"},{"version","99.0"},{"reason","password=INERT-DO-NOT-COPY"}}}}};
+ const auto software=pgn::ui::diagnosticComponentSnapshot(inventory);const auto entries=software.value("components").toArray();
+ if(!software.value("available").toBool()||entries.size()!=2||entries[0].toObject().value("version")!="2026.11.7.45"||!entries[1].toObject().value("version").isNull()||QJsonDocument(software).toJson().contains("DO-NOT-COPY"))return 10;
+ auto duplicates=inventory;duplicates.insert("components",QJsonArray{entries[0],entries[0]});if(pgn::ui::diagnosticComponentSnapshot(duplicates).value("available").toBool())return 11;
+ if(pgn::ui::diagnosticComponentSnapshot({}).value("available").toBool())return 12;
+ int reads=0;auto* view=pgn::ui::createDiagnosticCaptureView(QString::fromLocal8Bit(argv[1]),[&]{++reads;return QJsonObject{{"phase","Searching"},{"software",software},{"positions","1000"},{"message","C:/Users/example/device-status"}};});
  auto* start=view->findChild<QPushButton*>("pgn-diagnostics-start");auto* stop=view->findChild<QPushButton*>("pgn-diagnostics-stop");
  const auto file=folder.filePath("capture.zip");if(!start||!stop||QFile::exists(file)||reads)return 4;
  start->click();start->click();if(reads!=1||view->property("pgn_capture_samples").toInt()!=1)return 5;

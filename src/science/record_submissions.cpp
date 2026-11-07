@@ -2,6 +2,8 @@
 #include "booking/decimal_range.h"
 #include "verification/bounded_gap_verifier.h"
 #include <certified_gap_builder.h>
+#include <prime_certificate_builder.h>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -16,6 +18,31 @@
 
 namespace pgn::science {
 namespace {
+// Reuse native exact certificate semantics for supplied endpoints above the
+// bounded-MR leaf domain. This is asynchronous record qualification, never a
+// mining-path test. A hard factorization stays pending, not prime or composite.
+pgn::core::GapBuildResult recordGapEvidence(const pgn::core::Integer& lower,
+    const pgn::core::Integer& gap,pgn::core::CertifiedGapLimits limits,
+    const std::function<bool()>& cancelled,QElapsedTimer& largerDomainBudget){
+    using namespace pgn::core;
+    auto built=buildBoundedCertifiedGap(lower,gap,limits,cancelled);
+    if(built.verdict!=GapBuildVerdict::UnsupportedDomain)return built;
+    // Aggregate wall budget prevents a large candidate list from monopolizing
+    // the background pool; per-endpoint division/witness limits also apply.
+    if(!largerDomainBudget.isValid())largerDomainBudget.start();
+    QElapsedTimer pairBudget;pairBudget.start();
+    const auto stop=[&]{return (cancelled&&cancelled())||largerDomainBudget.elapsed()>=1000||pairBudget.elapsed()>=100;};
+    const auto deferred=[&]{return GapBuildResult{cancelled&&cancelled()?GapBuildVerdict::Cancelled:GapBuildVerdict::BudgetExceeded,std::nullopt,0};};
+    if(stop())return deferred();
+    const PrimeBuildBudget budget{limits.endpoint_limits,20000,64};
+    const auto first=buildSuppliedPrimeCertificate(lower,budget,stop);
+    if(!first.evidence||stop())return deferred();
+    const auto last=buildSuppliedPrimeCertificate(lower+gap,budget,stop);
+    if(!last.evidence||stop())return deferred();
+    built=buildCertifiedGapFromPrimeCertificates(lower,gap,*first.evidence,*last.evidence,limits,stop);
+    if(built.verdict==GapBuildVerdict::Cancelled&&!(cancelled&&cancelled()))return deferred();
+    return built;
+}
 void need(bool ok,const char* why){if(!ok)throw std::runtime_error(why);}
 quint32 integer(const QJsonValue& value){const auto n=value.toInteger(-1);need(value.isDouble()&&n>0&&n<=UINT32_MAX&&value.toDouble()==double(n),"Invalid record-reference gap size");return quint32(n);}
 QString decimal(const QString& text){need(!text.isEmpty()&&text.size()<=160&&booking::canonicalUnsigned(text)==text,"Invalid exact record coordinate");return text;}
@@ -49,7 +76,7 @@ bool improvesRecordReference(const RecordReference& ref,quint32 gap,const QStrin
 }
 RecordSubmissions collectRecordSubmissions(const QString& database,const QString& reference,const std::atomic_bool* cancelled){
     RecordSubmissions out;sqlite3* db{};sqlite3_stmt* query{};
-    const auto stopped=[&]{return cancelled&&cancelled->load();};
+    const auto stopped=[&]{return cancelled&&cancelled->load();};QElapsedTimer largerDomainBudget;
     try{
         const auto ref=readRecordReference(reference);need(ref.valid(),ref.error.toUtf8().constData());out.referenceUtc=ref.observedUtc;out.referenceUrl=ref.sourceUrl;
         need(QFileInfo(database).isFile()&&sqlite3_open_v2(database.toUtf8().constData(),&db,SQLITE_OPEN_READONLY|SQLITE_OPEN_NOMUTEX,nullptr)==SQLITE_OK,"Record archive unavailable");sqlite3_busy_timeout(db,200);
@@ -68,7 +95,7 @@ RecordSubmissions collectRecordSubmissions(const QString& database,const QString
             const auto prior=best.constFind(gap);if(prior!=best.cend()&&booking::compareUnsigned(prior->lower,lower)<=0)continue;
             const pgn::core::Integer p{lower.toStdString()},g{size.toStdString()};
             const pgn::core::CertifiedGapLimits limits{{128,32,32},10000};
-            const auto built=pgn::core::buildBoundedCertifiedGap(p,g,limits,stopped);
+            const auto built=recordGapEvidence(p,g,limits,stopped,largerDomainBudget);
             if(built.verdict==pgn::core::GapBuildVerdict::Cancelled||stopped()){out.cancelled=true;break;}
             if(built.verdict!=pgn::core::GapBuildVerdict::Built){++out.pending;continue;}
             if(!built.evidence||pgn::core::verifyCertifiedGap(*built.evidence,limits).verdict!=pgn::core::CertifiedGapVerdict::VerifiedConsecutiveGap){++out.rejected;continue;}
@@ -87,7 +114,7 @@ RecordSubmissions collectRecordSubmissions(const QString& database,const QString
 }
 RecordSubmissions collectRecordSubmissionsFromPairs(const QVector<SubmissionRecord>& pairs,const QString& reference,const std::atomic_bool* cancelled){
     RecordSubmissions out;
-    const auto stopped=[&]{return cancelled&&cancelled->load();};
+    const auto stopped=[&]{return cancelled&&cancelled->load();};QElapsedTimer largerDomainBudget;
     try{
         need(pairs.size()<=10000,"Ticket candidate budget exceeded");const auto ref=readRecordReference(reference);need(ref.valid(),ref.error.toUtf8().constData());out.referenceUtc=ref.observedUtc;out.referenceUrl=ref.sourceUrl;
         QHash<quint32,SubmissionRecord> best;
@@ -97,7 +124,7 @@ RecordSubmissions collectRecordSubmissionsFromPairs(const QVector<SubmissionReco
             if(!improvesRecordReference(ref,gap,lower))continue;
             const auto prior=best.constFind(gap);if(prior!=best.cend()&&booking::compareUnsigned(prior->lower,lower)<=0)continue;
             const pgn::core::Integer p{lower.toStdString()},g{gap};const pgn::core::CertifiedGapLimits limits{{128,32,32},10000};
-            const auto built=pgn::core::buildBoundedCertifiedGap(p,g,limits,stopped);
+            const auto built=recordGapEvidence(p,g,limits,stopped,largerDomainBudget);
             if(built.verdict==pgn::core::GapBuildVerdict::Cancelled||stopped()){out.cancelled=true;break;}
             if(built.verdict!=pgn::core::GapBuildVerdict::Built){++out.pending;continue;}
             if(!built.evidence||pgn::core::verifyCertifiedGap(*built.evidence,limits).verdict!=pgn::core::CertifiedGapVerdict::VerifiedConsecutiveGap){++out.rejected;continue;}

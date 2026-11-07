@@ -13,7 +13,7 @@ import shutil
 import subprocess
 
 
-SOURCE_ID = "96c600d3486ded57b400fcd4428e904f6a3743e49f587dc85e93847d9ffdde13"
+SOURCE_ID = "512a3f83b873ab3014d8bf5b0bba81bb9507dbeefbac5623318bbc78aff6dddf"
 
 
 def digest(path):
@@ -34,15 +34,15 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args()
     source = Path(__file__).resolve().parents[1] / "src/engine/prime_gap_native"
-    manifest = source / "SOURCE-MANIFEST.json"
+    manifest = source / "SCIENTIFIC-SOURCE-INPUTS.json"
     if digest(manifest) != SOURCE_ID:
         raise ValueError("Native input manifest differs from the qualified source")
-    for entry in json.loads(manifest.read_text(encoding="utf-8"))["files"]:
-        path = source / entry["file"]
+    for name, entry in json.loads(manifest.read_text(encoding="utf-8")).items():
+        path = source / name
         if path.resolve().parent != source.resolve():
             raise ValueError("Native input must be an immediate source file")
         if path.stat().st_size != entry["bytes"] or digest(path) != entry["sha256"].lower():
-            raise ValueError("Native input authentication failed: " + entry["file"])
+            raise ValueError("Native input authentication failed: " + name)
 
     proof = arguments.proof_runtime.resolve()
     proof_manifest = proof / "manifest.json"
@@ -69,11 +69,11 @@ def main():
     output = arguments.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     flags = [
-        "-O3", "-DNDEBUG", "--std=c++17", "--threads", "1", "--split-compile", "4",
+        "-O3", "-DNDEBUG", "--std=c++17", "--threads", "1",
         "-lineinfo", "-dlto", "-rdc=true", "--cudart", "shared", "-lcudadevrt",
         "-DPGN_RELEASE_ENABLE_PUBLIC_PERIG=0", "-DPGN_DESCRIPTOR_LANES=2",
         "-DPGN_DESCRIPTOR_BLOCKS=64", "-DPGN_EULER96_LAZY", "-DPGN_EULER96",
-        "-DPGN_EULER96_FIXED_HIGH10", "-DPGN_PRESIEVE_GROUPS=1", "-DPGN_MARK_FULL_FAST",
+        "-DPGN_PRESIEVE_GROUPS=1", "-DPGN_MARK_FULL_FAST",
         "-DPGN_MARK_BANK_ROTATE", "-DPGN_FUSED_SIEVE", "-DPGN_VERIFY_GAPS",
     ]
     if os.name == "nt":
@@ -87,7 +87,7 @@ def main():
     completed = []
     for architecture in dict.fromkeys(arguments.architectures):
         suffix = ".exe" if os.name == "nt" else ""
-        image = output / ("pgn68-worker-sm" + str(architecture) + "-k64" + suffix)
+        image = output / ("prime-gap-worker-sm" + str(architecture) + "-k64" + suffix)
         command = [compiler, *flags, "-arch=sm_" + str(architecture),
                    "-DPGN_RELEASE_BUILD_ARCH=" + str(architecture), "search_worker.cu", "-o", str(image)]
         if arguments.dry_run:
@@ -95,8 +95,10 @@ def main():
             continue
         subprocess.run(command, cwd=source, check=True)
         image_digest = digest(image)
-        for profile in (8, 16, 32, 64):
-            target = output / ("pgn68-worker-sm" + str(architecture) + "-k" + str(profile) + suffix)
+        # Only K64 is qualified. Do not create differently named copies that
+        # would imply untested lower-memory profiles exist.
+        for profile in (64,):
+            target = image
             if target != image:
                 shutil.copyfile(image, target)
             metadata = {

@@ -25,6 +25,7 @@ struct CandidateRangeSchedule {
     uint64_t issued{},expired{},hashes{};
 };
 struct RangeScheduleCheck {RangeScheduleVerdict verdict;std::optional<CandidateRangeSchedule> schedule;};
+struct RangeLeaseCheck {RangeScheduleVerdict verdict;std::optional<CandidateRangeLease> lease;size_t active_count{};};
 // cs_main held. NO caller occupancy, selected request list, seed or range.
 // Replays EVERY authenticated native block from this chain's genesis and ALL
 // unique signed requests. At block h, assignments use the already known source
@@ -42,6 +43,12 @@ struct RangeScheduleCheck {RangeScheduleVerdict verdict;std::optional<CandidateR
 // No allocation proportional to the numeric slot domain. No node/DB writes.
 RangeScheduleCheck ReconstructCandidateRangeSchedule(const CCoinsView&,const CBlockIndex&,
     const ChainRangePolicy&,const NativeRequestHistoryArchive&,RangeScheduleBudget);
+// Same complete authenticated replay, but only one indexed lease is copied.
+RangeLeaseCheck ReconstructCandidateRangeLease(const CCoinsView&,const CBlockIndex&,
+    const ChainRangePolicy&,const NativeRequestHistoryArchive&,RangeScheduleBudget,const uint256& request);
+RangeScheduleCheck VisitCandidateRangeSchedule(const CCoinsView&,const CBlockIndex&,
+    const ChainRangePolicy&,const NativeRequestHistoryArchive&,RangeScheduleBudget,
+    const std::function<void(const CandidateRangeLease&)>&);
 
 struct CandidateReservationCheck;
 class NativeCandidateReservation {

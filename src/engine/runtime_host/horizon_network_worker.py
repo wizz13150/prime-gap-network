@@ -23,13 +23,46 @@ from horizon_network_audits import NetworkAudits
 from horizon_gold_proof import build as build_gap_proof, assemble as assemble_gold_proof
 from horizon_engine_host import EngineService
 from horizon_status_stream import ticket_frame
+from horizon_testnet_admission import AdmissionMonitor
 from pgn_native_contract import fields
-from pgn_session import atomic_bytes
-from report_commitment import seal_report
+from pgn_session import atomic_bytes, SessionControllerBusy
+from report_commitment import seal_report, verify_report_reveal, hash_text, MAX_REPORT_BYTES
+from horizon_public_profile import PublicProfile
 
 
 def save(file, value):
     atomic_bytes(Path(file), (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
+
+
+def validate_report_proposal(proposal, work, report_root, previous=None):
+    """Own-Core proposal must still name the exact locally completed ticket."""
+    if not isinstance(proposal, dict) or proposal.get('accepted') is not False:
+        raise ValueError('A report proposal is not network acceptance')
+    for key, expected in dict(genesis=work['genesis'], request_id=work['request_id'],
+                              ticket=work['ticket'], report_root=report_root).items():
+        if proposal.get(key) != expected:
+            raise ValueError('Report proposal no longer matches completed work: ' + key)
+    for key in ('parent', 'report_id'):
+        if hash_text(proposal.get(key)) == '0' * 64:
+            raise ValueError('Explicit current report proposal identity required')
+    challenge = proposal.get('challenge')
+    if type(challenge) is not str or not 0 < len(challenge) <= 1024:
+        raise ValueError('Bounded report signing challenge required')
+    if previous is not None and any(proposal.get(key) != previous.get(key)
+                                    for key in ('parent', 'report_id', 'challenge')):
+        raise RuntimeError('Report proposal changed while signing; exact local report retained')
+    return proposal
+
+
+def report_confirmed(rows, work, report_root):
+    if not isinstance(rows, list) or len(rows) > 1 or any(not isinstance(row, dict) for row in rows):
+        raise ValueError('Confirmed report lookup must be an explicit bounded list')
+    for row in rows:
+        if row.get('request_id') == work['request_id'] and row.get('report_root') == report_root:
+            if row.get('ticket') != work['ticket']:
+                raise ValueError('Confirmed report belongs to another ticket; local report retained')
+            return True
+    return False
 
 
 @contextmanager
@@ -60,16 +93,33 @@ class NetworkWorker:
         self.args = args
         self.root = args.state_root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.public_profile = PublicProfile(self.root)
         self.rpc = CoreRpc(args.rpc_port, args.cookie, args.genesis, args.wallet)
         self.running, self.quitting = threading.Event(), threading.Event()
         self.running.set()
         self.current = None
-        self.source = EngineService(args.bundle, self.root, args.gpu, args.architecture, observer=self.progress)
+        from horizon_scientific_bundle import DESCRIPTOR, create_engine
+        required = getattr(args, 'require_scientific_source', False)
+        self.cpu_only = getattr(args, 'cpu_only', False)
+        if self.cpu_only:
+            if args.import_work:
+                raise ValueError('CPU-only mining cannot import a legacy GPU checkpoint')
+            from horizon_cpu_source import CpuOnlyNormalSource
+            self.source = CpuOnlyNormalSource(self.root, self.emit, stopping=self.quitting,
+                                             running=self.running, observer=self.progress)
+        elif required or (Path(args.bundle) / DESCRIPTOR).exists():
+            self.source = create_engine(args.bundle, self.root, args.gpu, args.architecture,
+                                        self.progress, required=required, stopping=self.quitting)
+        else:
+            self.source = EngineService(args.bundle, self.root, args.gpu, args.architecture, observer=self.progress)
+        from horizon_cpu_bridge import LogicalMinerCpuResources
+        if not self.cpu_only:
+            self.source = LogicalMinerCpuResources(self.source, self.root, self.emit)
         self.sequence = 0
-        self.last_emit = 0.0
         self.device_lease = None
         self.off_announced = False
         self.audits = NetworkAudits(self)
+        self.admission = AdmissionMonitor.from_worker(self)
         if args.import_work and not (self.root / "controller.json").exists():
             work = json.loads(args.import_work.read_bytes())
             if work["genesis"] != args.genesis:
@@ -77,13 +127,62 @@ class NetworkWorker:
             save(self.root / "controller.json", dict(stage="ASSIGNED", sequence=2, work=work))
 
     def emit(self, frame):
+        admission = getattr(self, "admission", None)
+        if admission is not None:
+            frame["network_admission"] = admission.snapshot()
+        policy = getattr(self, "audit_service_snapshot", None)
+        if policy is not None:
+            frame["audit_service"] = policy()
         with self.output_lock:
-            print(json.dumps(frame, separators=(",", ":")), flush=True)
+            if getattr(self, "output_disconnected", False):
+                return False
+            encoded = json.dumps(frame, separators=(",", ":"))
+            try:
+                print(encoded, flush=True)
+            except OSError:
+                # Losing the presentation pipe must request a safe checkpoint,
+                # not escape into EngineService's forced-computation failure.
+                self.output_disconnected = True
+                self.running.clear()
+                self.quitting.set()
+                cancel = getattr(getattr(self, "source", None), "cancel_cpu_transport", None)
+                if cancel is not None:
+                    cancel("Normal miner control output disconnected")
+                atomic_bytes(self.root / "pause.request", b"control output disconnected\n")
+                return False
+            return True
 
     def message(self, text, phase="Starting"):
         self.emit(dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", phase=phase, message=text[:400]))
 
     def progress(self, event):
+        from horizon_progress_cadence import ProgressCadence
+        cadence=getattr(self,'progress_cadence',None)
+        if cadence is None:self.progress_cadence=cadence=ProgressCadence()
+        item=self.audits.presentation
+        identity=(str(item.get('folder')),item.get('request_id'),self.sequence) if item else (
+            (self.current or {}).get('ticket'),(self.current or {}).get('request_id'),self.sequence)
+        started=time.monotonic_ns()
+        if not cadence.admit(event,identity,started):return
+        try:
+            self._present_progress(event)
+        finally:
+            cadence.observe_cost(time.monotonic_ns()-started)
+
+    def _present_progress(self, event):
+        if getattr(self, 'cpu_only', False):
+            current = self.source.current_frame
+            if current is not None:
+                frame = dict(current, local_sequence=self.sequence)
+                if event.get('phase') == 'PAUSED_ACK':
+                    frame.update(phase='Paused',speed_rate=None,average_rate=None,compute_tests_rate=None,eta_rate=None)
+                if self.audits.presentation:
+                    item = self.audits.presentation
+                    frame.update(request_id=item['request_id'],title=item['title'],work_role='audit',record_pairs=[])
+                elif self.current:
+                    frame.update(request_id=self.current['request_id'],title='Ticket '+str(self.current.get('ticket_number','')),work_role='search')
+                self.emit(frame)
+            return
         if self.audits.presentation:
             try:
                 item = self.audits.presentation
@@ -99,10 +198,6 @@ class NetworkWorker:
             return
         if event.get("phase") == "PAUSED":
             return
-        now = time.monotonic()
-        if event.get("phase") == "SEARCHING" and now - self.last_emit < .5:
-            return
-        self.last_emit = now
         try:
             frame = ticket_frame(self.root / "tickets" / self.current["ticket"], self.sequence, self.current.get("ticket_number"))
             frame["request_id"] = self.current["request_id"]
@@ -118,12 +213,46 @@ class NetworkWorker:
         except (OSError, ValueError, KeyError):
             self.message("Checkpoint saved; GPU released" if event.get("phase") == "PAUSED_ACK" else "Starting · preparing the first coherent checkpoint", "Paused" if event.get("phase") == "PAUSED_ACK" else "Starting")
 
+    def configure_cpu_resource(self, control):
+        device = control.get("device_id", "")
+        try:
+            if set(control) != {"action", "id", "device_id", "inventory", "enabled", "threads", "affinity"}:
+                raise ValueError("Exact CPU resource and budget fields required")
+            receipt = self.source.configure_cpu(device, control["inventory"], control["enabled"], control["threads"], control["affinity"])
+            self.emit(dict(schema="PGN_HORIZON_CPU_NORMAL_EVENT_V1", type="control", device_id=device,
+                           id=control["id"], applied=True, resource_enabled=control["enabled"], status=receipt["status"]))
+        except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+            self.emit(dict(schema="PGN_HORIZON_CPU_NORMAL_EVENT_V1", type="control", device_id=device,
+                           id=control.get("id"), applied=False, message=str(error)[:300]))
+
+    def public_name(self):
+        return self.public_profile.name()
+
     def controls(self):
         for line in sys.stdin:
             try:
-                if len(line) > 4096:
+                action = None
+                if len(line) > 65536:
                     continue
-                action = json.loads(line).get("action")
+                control = json.loads(line)
+                if not isinstance(control, dict):
+                    raise ValueError("Object control required")
+                action = control.get("action")
+                if action == 'public_profile':
+                    name = self.public_profile.update(control)
+                    self.emit(dict(schema='PGN_PUBLIC_PROFILE_STATUS_V1', applied=True, name=name))
+                    continue
+                if action == "cpu_reply":
+                    if set(control) != {"action", "device_id", "bridge_id", "response"}:
+                        raise ValueError("Exact CPU bridge response required")
+                    self.source.accept_cpu_reply(control["device_id"], control["bridge_id"], control["response"])
+                    continue
+                if action == "cpu_configure":
+                    # The input reader must remain free to deliver CPU replies
+                    # while this management operation waits for a boundary.
+                    threading.Thread(target=self.configure_cpu_resource, args=(control,), daemon=True,
+                                     name="cpu-resource-control").start()
+                    continue
                 save(self.root / "last-control.json", dict(action=action, observed_utc=time.time()))
                 if action in ("pause", "stop", "quit"):
                     self.running.clear()
@@ -134,13 +263,23 @@ class NetworkWorker:
                     (self.root / "pause.request").unlink(missing_ok=True)
                     self.running.set()
             except (ValueError, OSError):
-                self.message("Control request could not be applied", "Needs attention")
+                if action == 'public_profile':
+                    self.emit(dict(schema='PGN_PUBLIC_PROFILE_STATUS_V1', applied=False,
+                                   message='Public name was not changed; retry saving the profile'))
+                elif action in ("cpu_reply", "cpu_configure"):
+                    self.emit(dict(schema="PGN_HORIZON_CPU_NORMAL_EVENT_V1", type="cpu_notice",
+                                   device_id=control.get("device_id", ""), message="CPU control reply retained for reconciliation"))
+                else:
+                    self.message("Control request could not be applied", "Needs attention")
         save(self.root / "last-control.json", dict(action="input_closed", observed_utc=time.time()))
         self.running.clear()
         self.quitting.set()
+        cancel = getattr(self.source, "cancel_cpu_transport", None)
+        if cancel is not None:
+            cancel("Normal miner controller input closed")
         atomic_bytes(self.root / "pause.request", b"controller disconnected\n")
 
-    def ledger(self, envelopes):
+    def ledger(self, envelopes, *, on_intent=None):
         if not self.args.pilot_coordination:
             raise RuntimeError("Final Gold-only coordinator transport is not connected")
         operation=hashlib.sha256(json.dumps(envelopes,separators=(",", ":")).encode()).hexdigest()
@@ -149,14 +288,19 @@ class NetworkWorker:
             if journal.stat().st_size>262144:
                 raise ValueError("Coordination journal exceeds its recovery budget")
             previous=json.loads(journal.read_bytes())
-            if not previous.get("confirmed"):
+            same_operation = previous.get("operation_sha256") == operation
+            if not previous.get("confirmed") or (envelopes and same_operation):
                 # Resolve the retained exact candidate before creating another.
                 # An unresolved publication never disappears behind a new one.
+                previous["confirmed"] = False
+                save(journal, previous)
+                if on_intent is not None and same_operation:
+                    on_intent(previous)
                 confirm_candidate(self.rpc,previous)
                 previous["confirmed"]=True
                 save(journal,previous)
-                if previous.get("operation_sha256")==operation:
-                    return
+                if same_operation:
+                    return dict(block_hash=previous["hash"], operation_sha256=operation)
         template = self.rpc.call("getpgnbootstraptemplate", [envelopes])
         block = bytearray.fromhex(template["block"])
         target = int(template["numeric_target"], 16)
@@ -172,18 +316,26 @@ class NetworkWorker:
         if len(json.dumps(intent).encode())>262144:
             raise ValueError("Coordination candidate exceeds its durable journal budget")
         save(self.root / "coordination-intent.json", intent)
+        if on_intent is not None:
+            on_intent(intent)
         confirm_candidate(self.rpc,intent)
         intent["confirmed"] = True
         save(self.root / "coordination-intent.json", intent)
+        return dict(block_hash=intent["hash"], operation_sha256=operation)
 
     def address(self):
         if self.args.miner:
-            return self.args.miner
-        try:
-            known = self.rpc.call("getaddressesbylabel", ["Horizon miner"], wallet=True)
-        except RuntimeError:
-            known = {}
-        return next(iter(known)) if known else self.rpc.call("getnewaddress", ["Horizon miner", "bech32"], wallet=True)
+            selected = self.args.miner
+        else:
+            try:
+                known = self.rpc.call("getaddressesbylabel", ["Horizon miner"], wallet=True)
+            except RuntimeError:
+                known = {}
+            selected = next(iter(known)) if known else self.rpc.call("getnewaddress", ["Horizon miner", "bech32"], wallet=True)
+        admission = getattr(self, "admission", None)
+        if admission is not None:
+            admission.select_identity(selected)
+        return selected
 
     def request_state(self, request_id):
         if len(request_id) != 64 or any(c not in "0123456789abcdef" for c in request_id):
@@ -194,6 +346,7 @@ class NetworkWorker:
         return state
 
     def assign(self, recover_only=False):
+        duty=None
         journal = self.root / "controller.json"
         if journal.is_file():
             if journal.stat().st_size > 262144:
@@ -240,6 +393,8 @@ class NetworkWorker:
             self.sequence = int(saved["sequence"])
         else:
             miner = self.address()
+            from horizon_native_work_duty import gate
+            duty=gate(self.rpc,miner,self.args.genesis)
             request = self.rpc.call("getpgnticketrequest", [miner, self.args.reward])
             signature = self.rpc.call("signmessage", [miner, request["challenge"]], wallet=True)
             request = self.rpc.call("getpgnticketrequest", signed_request_parameters(request, miner, self.args.reward, signature))
@@ -247,6 +402,8 @@ class NetworkWorker:
             save(journal, dict(stage="REQUEST_SIGNED", sequence=self.sequence, request=request))
         state = self.request_state(request["request_id"])
         if not any(lease["request"] == request["request_id"] for lease in state["leases"]):
+            from horizon_native_work_duty import gate
+            duty=gate(self.rpc,self.address(),self.args.genesis)
             intent = self.root / "coordination-intent.json"
             if intent.is_file():
                 previous = json.loads(intent.read_bytes())
@@ -267,6 +424,9 @@ class NetworkWorker:
         work = self.rpc.call("getpgnscientificwork", [request["request_id"], "00" * 32])
         if work["accepted"] is not False or work["genesis"] != self.args.genesis:
             raise ValueError("Unexpected work identity or acceptance state")
+        if duty is not None and duty['enforced']:
+            if work.get('native_audit_service',{}).get('enforced')is not True:
+                raise ValueError('Core must expose the confirmed native service receipt for this new request')
         save(journal, dict(stage="ASSIGNED", sequence=self.sequence, work=work))
         return work
 
@@ -282,21 +442,32 @@ class NetworkWorker:
         work = self.current if work is None else work
         file = self.root / "tickets" / work["ticket"] / "network-report.json"
         if file.exists():
+            if file.stat().st_size > MAX_REPORT_BYTES:
+                raise ValueError('Retained network report exceeds capacity')
             sealed = json.loads(file.read_bytes())
         else:
-            sealed = seal_report(result, work)
+            sealed = seal_report(result, work, discoverer=self.public_name())
             save(file, sealed)
+        body = verify_report_reveal(sealed, sealed['report_root'])
+        if sealed.get('scientific_accepted') is not False or any(body.get(key) != work.get(source)
+                for key, source in (('genesis', 'genesis'), ('request_id', 'request_id'), ('ticket', 'ticket'),
+                                    ('issue_context', 'work_id'), ('target_numerator', 'target_numerator'),
+                                    ('target_denominator', 'target_denominator'))):
+            raise ValueError('Retained network report belongs to different issued work')
+        if (body['computed']['start'] != work['start'] or
+                int(body['computed']['end']) - int(work['start']) != int(work['length'])):
+            raise ValueError('Retained network report covers another interval')
         confirmed = self.rpc.call("getpgnreports", [0, 1, work["request_id"]])
-        if any(r["request_id"] == work["request_id"] and r["report_root"] == sealed["report_root"] for r in confirmed):
+        if report_confirmed(confirmed, work, sealed['report_root']):
             self.mark_report_confirmed(work, sealed)
             return
         miner = self.address()
-        challenge = self.rpc.call("getpgnreportcommit", [work["request_id"], sealed["report_root"]])
+        challenge = validate_report_proposal(self.rpc.call("getpgnreportcommit", [work["request_id"], sealed["report_root"]]), work, sealed['report_root'])
         signature = self.rpc.call("signmessage", [miner, challenge["challenge"]], wallet=True)
-        request = self.rpc.call("getpgnreportcommit", [work["request_id"], sealed["report_root"], signature])
+        request = validate_report_proposal(self.rpc.call("getpgnreportcommit", [work["request_id"], sealed["report_root"], signature]), work, sealed['report_root'], challenge)
         self.ledger([request["envelope"]])
         confirmed = self.rpc.call("getpgnreports", [0, 1, work["request_id"]])
-        if not any(r["request_id"] == work["request_id"] and r["report_root"] == sealed["report_root"] for r in confirmed):
+        if not report_confirmed(confirmed, work, sealed['report_root']):
             raise RuntimeError("Completed report was not confirmed; local work is retained")
         self.mark_report_confirmed(work, sealed)
 
@@ -325,41 +496,75 @@ class NetworkWorker:
         return "accepted"
 
     def acquire_device(self):
+        if getattr(self, 'cpu_only', False):
+            return
         if self.device_lease is None:
             self.device_lease = legacy_lease(self.args.legacy_lease)
             self.device_lease.__enter__()
 
     def release_device(self):
+        if getattr(self, 'cpu_only', False):
+            return
         self.source.manager.shutdown()
         if self.device_lease is not None:
             self.device_lease.__exit__(None, None, None)
             self.device_lease = None
 
+    def wait_cpu_admission(self):
+        from horizon_testnet_admission import join_status
+        while not self.quitting.is_set():
+            if not self.running.is_set() or not any(v['enabled'] for v in self.source.options.values()):
+                self.quitting.wait(.2)
+                continue
+            status = join_status(self.rpc, self.args.genesis, self.address())
+            if status['registered'] and status['normal_cycle_permission']:
+                return True
+            message = 'Miner registration or audit permission is required; no new CPU work has been requested'
+            self.message(message, 'Registration required')
+            for device, choice in tuple(self.source.options.items()):
+                if choice['enabled']:
+                    self.emit(dict(schema='PGN_HORIZON_CPU_NORMAL_EVENT_V1',device_id=device,type='cpu_notice',
+                                   reason_code='registration_required',message=message))
+            self.quitting.wait(2)
+        return False
+
     def run(self):
-        self.rpc.verify()
-        if self.args.wallet not in self.rpc.call("listwallets"):
-            self.rpc.call("loadwallet", [self.args.wallet])
-        threading.Thread(target=self.controls, name="mining-controls", daemon=True).start()
-        if getattr(self.args,"wait_for_network_sync",False)and not wait_for_network(self):
-            self.source.close()
-            return
-        from horizon_mining_flow import MiningFlow
-        flow = MiningFlow(self)
+        admission = getattr(self, "admission", None)
         try:
-            flow.run()
-        finally:
-            if not flow.closed:
-                self.release_device()
+            self.rpc.verify()
+            if self.args.wallet not in self.rpc.call("listwallets"):
+                self.rpc.call("loadwallet", [self.args.wallet])
+            if admission is not None:
+                admission.start()
+            threading.Thread(target=self.controls, name="mining-controls", daemon=True).start()
+            if getattr(self, 'cpu_only', False) and not self.wait_cpu_admission():
                 self.source.close()
+                return
+            if getattr(self.args,"wait_for_network_sync",False)and not wait_for_network(self):
+                self.source.close()
+                return
+            from horizon_mining_flow import MiningFlow
+            flow = MiningFlow(self)
+            try:
+                flow.run()
+            finally:
+                if not flow.closed:
+                    self.release_device()
+                    self.source.close()
+                    flow.cycles.close()
+        finally:
+            if admission is not None:
+                admission.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--network", action="store_true")
+    parser.add_argument("--cpu-only", action="store_true", help="Use selected CPU resources within the normal ticket/audit cycle")
     parser.add_argument("--bundle", required=True, type=Path)
     parser.add_argument("--state-root", required=True, type=Path)
-    parser.add_argument("--gpu", required=True)
-    parser.add_argument("--architecture", required=True, type=int, choices=(86, 120))
+    parser.add_argument("--gpu")
+    parser.add_argument("--architecture", type=int, choices=(86, 120))
     parser.add_argument("--rpc-port", required=True, type=int)
     parser.add_argument("--cookie", required=True, type=Path)
     parser.add_argument("--genesis", required=True)
@@ -370,15 +575,23 @@ def main():
     parser.add_argument("--proof-builder", type=Path)
     parser.add_argument("--piece-limit", type=int, default=64 * 10**12)
     parser.add_argument("--pilot-coordination", action="store_true")
+    parser.add_argument("--require-scientific-source", action="store_true")
     parser.add_argument("--wait-for-network-sync", action="store_true")
     parser.add_argument("--bootstrap-height", type=int)
     parser.add_argument("--bootstrap-hash")
     parser.add_argument("--import-work", type=Path)
     args = parser.parse_args()
+    if not args.cpu_only and (not args.gpu or args.architecture is None):
+        parser.error('GPU mining requires --gpu and --architecture')
+    if args.cpu_only and (args.gpu or args.architecture is not None or args.import_work or args.legacy_lease):
+        parser.error('CPU-only work uses its own normal-cycle state and no GPU identity or legacy checkpoint')
     if args.proof_builder is None:
         args.proof_builder = args.bundle / "bin" / ("pgn-gap-evidence.exe" if os.name == "nt" else "pgn-gap-evidence")
     try:
         NetworkWorker(args).run()
+    except SessionControllerBusy as error:
+        print(json.dumps(dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", phase="Waiting for controller", error_code=error.code, message=str(error)[:400])), flush=True)
+        return 1
     except Exception as error:
         print(json.dumps(dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", phase="Needs attention", message=str(error)[:400])), flush=True)
         return 1

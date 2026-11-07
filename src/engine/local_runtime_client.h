@@ -11,15 +11,29 @@
 #include <cmath>
 
 namespace pgn::engine {
+// QProcess can emit finished from its base destructor while killing a child.
+// The owner may already have destroyed the widgets captured by consume.
+class LocalRuntimeQueryProcess final : public QProcess {
+public:
+ using QProcess::QProcess;
+ ~LocalRuntimeQueryProcess() override {
+  for(auto* child:children())if(auto* timer=qobject_cast<QTimer*>(child))timer->stop();
+  QObject::disconnect(this,nullptr,nullptr,nullptr);
+  if(state()!=QProcess::NotRunning){kill();waitForFinished(1000);}
+ }
+};
+
 // Finite discovery/preparation only. No work is opened by these commands.
 inline void localRuntimeQuery(QObject* owner,const QString& program,const QStringList& arguments,
                              const QJsonObject& input,std::function<void(QJsonObject,QString)> consume){
- auto* process=new QProcess(owner);auto* deadline=new QTimer(process);deadline->setSingleShot(true);
+ auto* process=new LocalRuntimeQueryProcess(owner);auto* deadline=new QTimer(process);deadline->setSingleShot(true);
  auto bytes=std::make_shared<QByteArray>();auto done=std::make_shared<bool>(false);
  const auto finish=[process,deadline,done,consume](QJsonObject value,const QString& error){
   if(*done)return;*done=true;deadline->stop();
   if(process->state()!=QProcess::NotRunning)process->kill();
-  consume(value,error);process->deleteLater();
+  // The callback may synchronously delete owner, including its children.
+  // Keep this signal emitter alive until Qt has returned from delivery.
+  process->setParent(nullptr);process->deleteLater();consume(value,error);
  };
  QObject::connect(process,&QProcess::readyReadStandardOutput,process,[process,bytes,finish]{
   bytes->append(process->readAllStandardOutput());if(bytes->size()>262144)finish({},"Local runtime response exceeds 256 KiB");

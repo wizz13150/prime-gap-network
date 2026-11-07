@@ -10,9 +10,9 @@ bool admitted(const Integer& n,std::uint32_t bits) {
   return bits && n>=0 && (n==0 || boost::multiprecision::msb(n)<bits);
 }
 }
-GapBuildResult buildCertifiedGapFromPrimeCertificates(const Integer& lower,const Integer& gap,
+GapBuildResult buildCertifiedGapFromPrimeCertificatesAndWitnesses(const Integer& lower,const Integer& gap,
     const std::vector<PrimeCertificateNode>& lower_certificate,const std::vector<PrimeCertificateNode>& upper_certificate,
-    CertifiedGapLimits limits,const std::function<bool()>& cancelled) {
+    std::span<const SuppliedCompositeWitness> witnesses,CertifiedGapLimits limits,const std::function<bool()>& cancelled) {
   std::uint64_t built=0;
   const auto stop=[&]{return cancelled && cancelled();};
   const auto fail=[&](GapBuildVerdict verdict){return GapBuildResult{verdict,std::nullopt,built};};
@@ -25,6 +25,21 @@ GapBuildResult buildCertifiedGapFromPrimeCertificates(const Integer& lower,const
   const Integer upper=lower+gap;
   if(!admitted(upper,endpoint.max_integer_bits) || gap-1>limits.max_interior_positions)
     return fail(GapBuildVerdict::BudgetExceeded);
+  // Entire hint structure is admitted before endpoint modular arithmetic or
+  // interior allocation. The independent consumer will verify the final proof.
+  if(witnesses.size()>limits.max_interior_positions || witnesses.size()>gap-1)
+    return fail(GapBuildVerdict::InvalidPair);
+  std::uint64_t previous=0;
+  for(const auto& hint:witnesses) {
+    if(stop())return fail(GapBuildVerdict::Cancelled);
+    if(hint.offset<=previous || hint.offset>=gap || hint.witness.value<2 ||
+        (hint.witness.kind!=CompositeWitnessKind::Divisor&&hint.witness.kind!=CompositeWitnessKind::StrongTestFailure))
+      return fail(GapBuildVerdict::InvalidPair);
+    if(!admitted(hint.witness.value,endpoint.max_integer_bits))
+      return fail(GapBuildVerdict::BudgetExceeded);
+    if(hint.witness.value>=lower+hint.offset)return fail(GapBuildVerdict::InvalidPair);
+    previous=hint.offset;
+  }
   try {
     const auto first=verifyPrimeCertificate(lower,lower_certificate,endpoint);
     if(first!=CertificateVerdict::VerifiedPrime)
@@ -38,10 +53,18 @@ GapBuildResult buildCertifiedGapFromPrimeCertificates(const Integer& lower,const
     if(positions>proof.interior.max_size())return fail(GapBuildVerdict::BudgetExceeded);
     proof.interior.reserve(static_cast<std::size_t>(positions));
     Integer n=lower+1;
+    std::size_t hint_index=0;
     for(std::uint64_t i=0;i<positions;++i,++n) {
       if(stop())return fail(GapBuildVerdict::Cancelled);
       bool found=false;
-      for(const auto base:BASES)if(n>base && n%base==0) {
+      if(hint_index<witnesses.size()&&witnesses[hint_index].offset==i+1) {
+        const auto& witness=witnesses[hint_index++].witness;
+        const bool valid=witness.kind==CompositeWitnessKind::Divisor
+            ? n%witness.value==0 : verifyStrongCompositeWitness(n,witness.value);
+        if(!valid)return fail(GapBuildVerdict::InvalidPair);
+        proof.interior.push_back(witness);found=true;
+      }
+      if(!found)for(const auto base:BASES)if(n>base && n%base==0) {
         proof.interior.push_back({CompositeWitnessKind::Divisor,base});found=true;break;
       }
       if(!found)for(const auto base:BASES)if(verifyStrongCompositeWitness(n,base)) {
@@ -55,6 +78,11 @@ GapBuildResult buildCertifiedGapFromPrimeCertificates(const Integer& lower,const
   }catch(const std::bad_alloc&) {
     return fail(GapBuildVerdict::BudgetExceeded);
   }
+}
+GapBuildResult buildCertifiedGapFromPrimeCertificates(const Integer& lower,const Integer& gap,
+    const std::vector<PrimeCertificateNode>& lower_certificate,const std::vector<PrimeCertificateNode>& upper_certificate,
+    CertifiedGapLimits limits,const std::function<bool()>& cancelled) {
+  return buildCertifiedGapFromPrimeCertificatesAndWitnesses(lower,gap,lower_certificate,upper_certificate,{},limits,cancelled);
 }
 GapBuildResult buildBoundedCertifiedGap(const Integer& lower,const Integer& gap,
     CertifiedGapLimits limits,const std::function<bool()>& cancelled){

@@ -20,7 +20,76 @@ def _json(path, maximum=1048576):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _bindings(store, root, token, identity, final):
+def _transport_v2(store, root, token, final):
+    from pgn_output_spool import verified_segments, _encoded, _binding_name, BINDING_SCHEMA
+    job = final.get('output_job')
+    if not isinstance(job, dict):
+        return None
+    binding = job.get('binding')
+    instance = store.meta['current_chunk'].get('instance') or {}
+    if not isinstance(binding, dict) or binding.get('schema') != BINDING_SCHEMA or binding.get('token') != token or binding.get('nonce') != instance.get('job_nonce'):
+        return None
+    locator = instance.get('output_owner')
+    if locator is not None:
+        from pgn_output_spool import recovery_locator
+        if locator != recovery_locator(root, binding):
+            return None
+    name = _binding_name(binding.get('sequence'), binding.get('nonce'))
+    if hashlib.sha256(_encoded(binding)).hexdigest() != job.get('binding_sha256') or _json(root / name) != binding:
+        return None
+    identity_name = name[:-5] + '.identity.json'
+    if binding.get('identity') != identity_name or _sha(root / identity_name).lower() != binding.get('identity_sha256'):
+        return None
+    if locator is not None and _json(root / identity_name).get('ticket_id') != store.folder.name:
+        return None
+    bootstrap = _json(root / 'bootstrap.json')
+    wire = bootstrap.get('command', [])
+    if wire.count('--resident-directory') != 1:
+        return None
+    receipt_path = Path(wire[wire.index('--resident-directory') + 1]) / f'{binding["sequence"]}.done.json'
+    receipt = _json(receipt_path, 65536)
+    if receipt != job.get('work_receipt') or _sha(receipt_path).lower() != job.get('work_receipt_sha256'):
+        return None
+    if (receipt.get('schema'), receipt.get('sequence'), receipt.get('nonce'), receipt.get('pid'), receipt.get('exit')) != ('SCOUT_RESIDENT_JOB_V1', binding['sequence'], binding['nonce'], instance.get('pid'), 0) or type(receipt.get('exit')) is not int:
+        return None
+    seal = final.get('output_spool')
+    paths = verified_segments(root / 'output', seal, token)
+    start = binding.get('output_start')
+    if type(start) is not int or not seal['base_offset'] <= start <= seal['end_offset']:
+        return None  # already ACKed output is not replayed or invented
+    return dict(command=binding['command'], identity=root / identity_name,
+                identity_sha256=binding['identity_sha256'], seal=seal, paths=paths, start=start)
+
+
+def _output_lines(root, transport):
+    if transport is None:
+        with (root / 'stdout.log').open(encoding='utf-8') as stream:
+            yield from stream
+        return
+    offset = transport['seal']['base_offset']
+    boundary = offset == transport['start']
+    for path in transport['paths']:
+        with path.open('rb') as stream:
+            while True:
+                raw = stream.readline(65537)
+                if not raw:
+                    break
+                if len(raw) > 65536 or not raw.endswith(b'\n'):
+                    raise ValueError('Invalid segmented recovery line')
+                before = offset
+                offset += len(raw)
+                if before < transport['start'] < offset:
+                    raise ValueError('Bound output start is not a delivered line boundary')
+                if offset == transport['start']:
+                    boundary = True
+                if before >= transport['start']:
+                    boundary = True
+                    yield raw.decode('utf-8')
+    if not boundary or offset != transport['seal']['end_offset']:
+        raise ValueError('Bound output recovery frontier changed')
+
+
+def _bindings(store, root, token, identity, final, transport=None):
     bootstrap = _json(root / "bootstrap.json")
     ready = _json(root / "ready.json")
     if bootstrap.get("token") != token or ready.get("token") != token:
@@ -37,7 +106,7 @@ def _bindings(store, root, token, identity, final):
         str(instance.get("birth")),
     ):
         return False
-    command = bootstrap.get("command")
+    command = transport['command'] if transport is not None else bootstrap.get("command")
     if (
         not isinstance(command, list)
         or not command
@@ -72,11 +141,12 @@ def _bindings(store, root, token, identity, final):
         or Path(value("--stop-file")).resolve() != store.folder / "stop.request"
     ):
         return False
-    commitment = root / "committed-identity.json"
+    commitment = transport['identity'] if transport is not None else root / "committed-identity.json"
+    commitment_sha = transport['identity_sha256'] if transport is not None else final.get('committed_identity_sha256')
     if (
         not commitment.is_file()
-        or not final.get("committed_identity_sha256")
-        or _sha(commitment) != str(final["committed_identity_sha256"]).upper()
+        or not commitment_sha
+        or _sha(commitment) != str(commitment_sha).upper()
     ):
         return False
     saved = _json(commitment, 32768)
@@ -96,7 +166,7 @@ def _bindings(store, root, token, identity, final):
     ):
         return False
     log = root / "stdout.log"
-    if (
+    if transport is None and (
         not log.is_file()
         or type(final.get("stdout_bytes")) is not int
         or log.stat().st_size != final["stdout_bytes"]
@@ -115,27 +185,52 @@ def _bindings(store, root, token, identity, final):
 def recover(store):
     receipt = store.folder / "native-owner-recovery.json"
     chunk = store.meta.get("current_chunk")
-    if not receipt.is_file() or not chunk:
+    if not chunk:
         return False
-    result = _json(receipt)
+    instance = chunk.get("instance") or {}
+    # SessionStore.closed already committed this exact work and its trusted
+    # checkpoint. Its normal owner receipt is not an orphan to replay.
+    if instance.get("closed") is True and instance.get("work_closed") is True:
+        return False
+    locator = instance.get("output_owner")
+    if not receipt.is_file() and locator is None:
+        return False
+    result = _json(receipt) if receipt.is_file() else dict(token=locator.get('token'))
     identity = chunk["identity"]
     token = result.get("token", "")
     if not re.fullmatch("[a-f0-9]{32}", token):
         raise ValueError("Invalid detached owner recovery token")
-    root = store.folder / ("native-owner-" + token)
-    if result.get("owner_folder") != root.name or not root.is_dir():
+    if locator is not None:
+        owner_ticket = locator.get('owner_ticket_id', '')
+        if not re.fullmatch('[a-f0-9]{64}', owner_ticket) or locator.get('token') != token:
+            raise ValueError('Invalid durable output owner locator')
+        root = store.folder.parent / owner_ticket / ('native-owner-' + token)
+        if root.resolve().parent.parent != store.folder.parent.resolve() or root.is_symlink() or root.parent.is_symlink():
+            raise ValueError('Durable output owner escaped ticket namespace')
+    else:
+        root = store.folder / ("native-owner-" + token)
+    if result.get("owner_folder", root.name) != root.name or not root.is_dir():
         raise ValueError("Recovery owner folder changed")
+    if not (root / 'done.json').is_file():
+        return False
     final = _json(root / "done.json")
+    if final.get('schema') not in (None, 'PGN_OWNER_OUTPUT_V1', 'PGN_OWNER_OUTPUT_V2'):
+        return False
     if final.get("error") is not None or final.get("started") is not True or final.get("exit") != 0:
         return False
     if not final.get("closed") or not final.get("orphan") or final.get("token") != token:
         raise ValueError("Detached owner has not safely closed this worker")
     if final["image_sha256"] != identity["worker_sha256"]:
         raise ValueError("Recovery worker image differs from the bound session")
-    if not _bindings(store, root, token, identity, final):
+    if locator is not None and final.get('recovery_ticket_id') != store.folder.name:
+        return False
+    transport = _transport_v2(store, root, token, final) if final.get('schema') == 'PGN_OWNER_OUTPUT_V2' else None
+    if final.get('schema') == 'PGN_OWNER_OUTPUT_V2' and transport is None:
+        return False
+    if not _bindings(store, root, token, identity, final, transport):
         return False
     bootstrap = _json(root / "bootstrap.json")
-    command = bootstrap["command"]
+    command = transport['command'] if transport is not None else bootstrap["command"]
 
     def value(flag):
         return command[command.index(flag) + 1]
@@ -167,15 +262,14 @@ def recover(store):
     else:
         positions = tests = 0
         complete = False
-        with (root / "stdout.log").open(encoding="utf-8") as stream:
-            for line in stream:
-                if len(line) > 65536:
-                    raise ValueError("Oversized recovery publication")
-                match = re.search(r"\[pgn-counters\].* positions=(\d+) gaps=\d+ tests=(\d+)", line)
-                if match:
-                    positions, tests = map(int, match.groups())
-                if "[phase0-gpu] --- end ---" in line:
-                    complete = True
+        for line in _output_lines(root, transport):
+            if len(line) > 65536:
+                raise ValueError("Oversized recovery publication")
+            match = re.search(r"\[pgn-counters\].* positions=(\d+) gaps=\d+ tests=(\d+)", line)
+            if match:
+                positions, tests = map(int, match.groups())
+            if "[phase0-gpu] --- end ---" in line:
+                complete = True
         if final.get("exit") != 0 or not complete or positions != length:
             # The existing trusted CP remains authoritative after a forced crash.
             return False
@@ -184,43 +278,44 @@ def recover(store):
     last_counter = None
     end_seen = False
     previous = (-1, -1)
-    with (root / "stdout.log").open(encoding="utf-8") as stream:
-        for line in stream:
-            if len(line) > 65536:
-                raise ValueError("Oversized recovery publication")
-            match = re.search(r"GAP merit=[^ ]+ gap=(\d+) lower=(\d+) upper=(\d+) verified=1", line)
-            if "GAP merit=" in line and not match:
-                raise ValueError("Malformed/unverified detached gap publication")
-            if match:
-                width, lower, upper = map(int, match.groups())
-                if upper - lower != width:
-                    raise ValueError("Recovery endpoint conflict")
-                if not first <= lower < first + length or width < identity["emit_min_gap"]:
-                    raise ValueError("Recovery publication outside bound ownership/emission floor")
-            match = re.search(r"\[pgn-counters\].* positions=(\d+) gaps=\d+ tests=(\d+)", line)
-            if match:
-                progress, number = map(int, match.groups())
-                if not previous[0] <= progress <= length or number < previous[1]:
-                    raise ValueError("Recovery counters retreated or escaped the chunk")
-                previous = (progress, number)
-                if progress <= positions:
-                    last_counter = (progress, number)
-            if "[phase0-gpu] --- end ---" in line:
-                end_seen = True
+    for line in _output_lines(root, transport):
+        if len(line) > 65536:
+            raise ValueError("Oversized recovery publication")
+        match = re.search(r"GAP merit=[^ ]+ gap=(\d+) lower=(\d+) upper=(\d+) verified=1", line)
+        if "GAP merit=" in line and not match:
+            raise ValueError("Malformed/unverified detached gap publication")
+        if match:
+            width, lower, upper = map(int, match.groups())
+            if upper - lower != width:
+                raise ValueError("Recovery endpoint conflict")
+            if not first <= lower < first + length or width < identity["emit_min_gap"]:
+                raise ValueError("Recovery publication outside bound ownership/emission floor")
+        match = re.search(r"\[pgn-counters\].* positions=(\d+) gaps=\d+ tests=(\d+)", line)
+        if match:
+            progress, number = map(int, match.groups())
+            if not previous[0] <= progress <= length or number < previous[1]:
+                raise ValueError("Recovery counters retreated or escaped the chunk")
+            previous = (progress, number)
+            if progress <= positions:
+                last_counter = (progress, number)
+        if "[phase0-gpu] --- end ---" in line:
+            end_seen = True
     if last_counter != (positions, tests):
         raise ValueError("Checkpoint has no matching durable output-prefix counter")
     if complete and not end_seen:
         raise ValueError("Complete detached output has no end marker")
-    if _sha(root / "stdout.log") != str(final["stdout_sha256"]).upper():
+    if transport is None:
+        if _sha(root / 'stdout.log') != str(final['stdout_sha256']).upper():
+            return False
+    elif _transport_v2(store, root, token, final) != transport:
         return False
     # The owner seals/never rewrites its log after done. No mutations occur before all checks above.
-    with (root / "stdout.log").open(encoding="utf-8") as stream:
-        for line in stream:
-            match = re.search(r"GAP merit=[^ ]+ gap=(\d+) lower=(\d+) upper=(\d+) verified=1", line)
-            if match:
-                width, lower, upper = map(int, match.groups())
-                if first <= lower < first + length:
-                    store.record_gap(lower, upper, "Native_verified_detached_recovery")
+    for line in _output_lines(root, transport):
+        match = re.search(r"GAP merit=[^ ]+ gap=(\d+) lower=(\d+) upper=(\d+) verified=1", line)
+        if match:
+            width, lower, upper = map(int, match.groups())
+            if first <= lower < first + length:
+                store.record_gap(lower, upper, "Native_verified_detached_recovery")
     # Publish trusted CP only AFTER all rows are durable, and before advancing the visible frontier.
     if not complete:
         store.capture_closed_checkpoint(state, positions, tests)
@@ -237,5 +332,6 @@ def recover(store):
         store.meta.get("paused_seconds", 0),
         chunk_complete=complete,
     )
-    receipt.rename(receipt.with_name("native-owner-recovered-" + token + ".json"))
+    if receipt.is_file():
+        receipt.rename(receipt.with_name("native-owner-recovered-" + token + ".json"))
     return True

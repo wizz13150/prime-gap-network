@@ -30,7 +30,7 @@ inline CoreBundle readCoreBundle(const QString& applicationRoot, const QString& 
         return reject("PGN Core bundle or selected network is invalid.");
     for(const auto* key:{"data_directory","approved_data_directory","wallet","create_wallet","rpc_password","rpc_user"})
         if(deployment.contains(key))return reject("A portable Core bundle must not contain wallet or user data settings.");
-    static const QRegularExpression digest("^[0-9a-fA-F]{64}$"),name("^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$");
+    static const QRegularExpression digest("^[0-9a-fA-F]{64}$"),name("^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$");
     if(!digest.match(deployment.value("genesis_hash").toString()).hasMatch()||
        !digest.match(deployment.value("executable_sha256").toString()).hasMatch())
         return reject("Core bundle fingerprints are missing or malformed.");

@@ -1,3 +1,4 @@
+#include "app/horizon_user_paths.h"
 #include "booking/booking_model.h"
 #include "booking/decimal_range.h"
 #include "booking/round_range_catalog.h"
@@ -13,9 +14,9 @@
 
 namespace pgn::booking {
 BookingModel::BookingModel(const QString& root,QObject* parent):QObject(parent),
-    source_(loadSourceRegistry(root+"/data/runtime")),store_(root+"/data/runtime/local-bookings.sqlite"),root_(root){
+    source_(loadSourceRegistry(pgn::app::mutableDataRoot(root)+"/runtime")),store_(pgn::app::mutableDataRoot(root)+"/runtime/local-bookings.sqlite"),root_(root){
     error_=source_.valid()?store_.error():source_.error;
-    QFile profile(root+"/data/runtime/community-profile.json");
+    QFile profile(pgn::app::mutableDataRoot(root)+"/runtime/community-profile.json");
     if(profile.open(QIODevice::ReadOnly)&&profile.size()<=4096){
         const auto name=QJsonDocument::fromJson(profile.readAll()).object().value("display_name").toString().trimmed();
         if(!name.isEmpty()&&name.size()<=80&&!name.contains('\n')&&!name.contains('\r'))researcherName_=name;
@@ -42,7 +43,7 @@ QString BookingModel::setAutomaticAfterManual(const QString& device,bool enabled
 }
 QString BookingModel::setResearcherName(const QString& name){
     if(!validResearcherName(name))return "Use 1–24 ASCII letters, digits, underscores or hyphens; start with a letter or digit.";
-    const auto path=root_+"/data/runtime/community-profile.json";
+    const auto path=pgn::app::mutableDataRoot(root_)+"/runtime/community-profile.json";
     QLockFile lock(path+".lock");lock.setStaleLockTime(0);
     if(!lock.tryLock(0))return "Local profile is busy or its directory is unavailable. Try again after the other writer finishes.";
     if(QFileInfo(path).isSymLink())return "Refusing to replace a linked local profile.";
@@ -112,7 +113,7 @@ void BookingModel::observeSourceCompletion(const QJsonObject& receipt,bool reloa
            receipt.value("source_positions").toString()!=subtractUnsigned(last,first))throw std::runtime_error("Source completion identity/scope invalid; not promoted");
         const auto error=store_.recordSourceCompletion(run,first,last,"GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac");
         if(!error.isEmpty())throw std::runtime_error(error.toStdString());
-        lastCompletionRun_=run;if(reloadSource){source_=loadSourceRegistry(root_+"/data/runtime");if(!source_.valid())error_=source_.error;}refresh();
+        lastCompletionRun_=run;if(reloadSource){source_=loadSourceRegistry(pgn::app::mutableDataRoot(root_)+"/runtime");if(!source_.valid())error_=source_.error;}refresh();
     }catch(const std::exception& e){error_=QString::fromUtf8(e.what());notify();}
 }
 void BookingModel::observeDeviceIdentity(const QString& device,const QString& label,const QDateTime& observedUtc){

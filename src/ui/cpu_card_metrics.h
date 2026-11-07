@@ -9,6 +9,9 @@
 #include <optional>
 #include <cmath>
 namespace pgn::ui {
+inline bool hasCpuThreadBudget(const QString& kind,const QJsonObject& raw){
+ return kind=="CPU"&&raw.value("pgn_cpu_inventory").isObject()&&raw.value("pgn_cpu_maximum_workers").toInt()>0;
+}
 struct CpuCardMetric {std::optional<double> value;double scale{};QString text,label,tooltip;QColor color;};
 inline QJsonArray cpuMetricSnapshot(const QVector<CpuCardMetric>& metrics){
  QJsonArray rows;for(const auto& metric:metrics)rows.append(QJsonObject{{"label",metric.label},{"text",metric.text},{"value",metric.value?QJsonValue(*metric.value):QJsonValue{}}});return rows;
@@ -19,18 +22,60 @@ inline std::optional<double> cpuMetricNumber(const QJsonObject& object,const cha
 inline std::optional<double> cpuMetricInteger(const QJsonObject& object,const char* key){
  const auto text=object.value(key).toString();bool okay=false;const auto value=text.toULongLong(&okay);if(!okay||QString::number(value)!=text)return {};return double(value);
 }
-inline QString cpuActivityCaption(const QJsonObject& status,bool connected){
+struct CpuMemoryPagesPresentation {bool active{};QString text,tooltip;QColor color;};
+inline CpuMemoryPagesPresentation cpuMemoryPagesPresentation(const QJsonObject& status,bool connected){
+ const auto pages=status.value("memory_pages").toObject();const auto bytes=cpuMetricInteger(pages,"large_page_bytes_in_use");
+ const int resident=status.value("resident_workers").toInt(-1),usingPages=pages.value("large_page_workers").toInt(-1);
+ const bool valid=connected&&pages.value("schema")=="PGN_CPU_MEMORY_PAGES_V1"&&resident>0&&usingPages>=0&&usingPages<=resident&&bytes.has_value();
+ const bool active=valid&&usingPages==resident&&*bytes>0;
+ const auto cause=pages.value("cause").toString();
+ QString explanation=active?QString("All %1 resident workers confirm large-page memory in use (%2 bytes).").arg(resident).arg(pages.value("large_page_bytes_in_use").toString()):
+  !connected?QString("CPU controller disconnected; current memory-page usage cannot be confirmed."):
+  valid?QString("%1 of %2 resident workers use large-page memory.").arg(usingPages).arg(resident):
+  QString("No worker large-page allocation is confirmed. The current CPU worker uses ordinary memory pages.");
+ if(!active&&connected){
+  if(cause=="no_task"||cause=="off_or_paused")explanation="No CPU worker is currently computing. Memory will be allocated when assigned work starts.";
+  else if(cause=="missing_lock_memory_privilege")explanation="The worker token lacks Lock pages in memory. After granting the account right, sign out and sign in before restarting the worker with the required privileges.";
+  else if(cause=="disabled")explanation="Large-page allocation is disabled in this CPU worker profile.";
+  else if(cause=="stale_measurement")explanation="The last memory-page observation is stale; active large-page usage is unconfirmed.";
+  else if(cause=="allocation_refused")explanation="The operating system refused large-page allocation; ordinary memory pages remain in use.";
+  else if(cause=="awaiting_bitmap_use")explanation="The CPU worker is starting; large pages become active only after verified use of its calculation buffer.";
+  else if(cause=="allocator_unsupported")explanation="This CPU worker does not support large-page allocation.";
+  else if(cause.isEmpty())explanation+=" Windows requires an integrated allocator and the Lock pages in memory right; administrator launch alone does not supply a missing right.";
+ }
+ return {active,active?QString("HUGE PAGES ON"):QString("HUGE PAGES OFF"),explanation,QColor(active?"#69efc5":"#ff718b")};
+}
+inline QString cpuActivityCaption(const QJsonObject& status,bool connected,const QString& assignmentStatus={}){
  if(!connected)return "DISCONNECTED · activity unconfirmed";
+ if(status.value("normal_cycle_mode")=="qualification"){
+  const auto state=status.value("state").toString();
+  if(status.value("qualification_reason_code")=="unsupported_domain")return "CPU INACTIVE · unsupported ticket domain";
+  if(state=="RUNNING")return "QUALIFICATION · RUNNING · no network credit";
+  if(state=="BUDGET_PAUSED"||state=="DRAINING_BUDGET")return "QUALIFICATION · CPU load protection";
+  if(status.value("result_ready")==true)return "QUALIFICATION · COMPUTED · no network credit";
+  if(state.startsWith("DRAINING"))return "QUALIFICATION · saving CPU frontier";
+  if(status.value("resource_selected")==true)return "QUALIFICATION · waiting normal cycle";
+  return "OFF · CPU qualification inactive";
+ }
+
  const auto state=status.value("state").toString();const QString role=status.value("validation_only")==true?"LOCAL CHECK":"AUDIT";
  if(state=="RUNNING")return role+" · RUNNING";
  if(state=="BUDGET_PAUSED")return role+" · PAUSED · CPU load protection";
  if(state=="DRAINING_BUDGET")return role+" · PAUSING · CPU load protection";
- if(state=="WAITING_AUDIT"||state=="IDLE")return status.value("enabled")==true?"READY · waiting for an assigned audit":"OFF · no calculation";
+ if(state=="WAITING_AUDIT"||state=="IDLE"){
+  if(status.value("enabled")!=true)return "OFF · no calculation";
+  return assignmentStatus.isEmpty()?QString("READY · waiting for an assigned audit"):"AUDIT · "+assignmentStatus;
+ }
  if(state=="DRAINING_CONTROL"||state=="RECONFIGURING")return "CHANGING THREAD BUDGET";
  if(state=="DRAINING_CLOSE"||state=="STOPPING")return "STOPPING · saving progress";
  if(status.value("result_ready")==true)return role+" · COMPUTATION COMPLETE";
  if(state=="PAUSED"||state=="PAUSED_RECOVERED"||state=="OFF"||state=="CLOSED")return role+" · PAUSED · progress saved";
  return role+" · "+(state.isEmpty()?QString("STARTING"):state);
+}
+inline QJsonObject cpuMiningRates(const QJsonObject& status,bool connected){
+ const auto data=status.value("mining_rates").toObject();
+ if(!connected||data.value("schema")!="PGN_CPU_MINING_RATES_V1"||data.value("source")!="durable_completed_counts"||!data.contains("request_sha256")||data.value("request_sha256")!=status.value("request_sha256")||data.value("positions")!=status.value("durable_completed_positions"))return {};
+ return data;
 }
 inline QVector<CpuCardMetric> cpuCardMetrics(const QJsonObject& status,bool connected,bool expanded,const QColor& accent){
  const auto telemetry=status.value("cpu_telemetry").toObject();const bool typed=telemetry.value("schema")=="PGN_CPU_TELEMETRY_V1";
@@ -40,26 +85,24 @@ inline QVector<CpuCardMetric> cpuCardMetrics(const QJsonObject& status,bool conn
  const auto memoryUsed=connected&&typed?cpuMetricInteger(telemetry,"host_memory_used_bytes"):std::nullopt;
  const auto engineMemory=connected&&typed?cpuMetricInteger(telemetry,"engine_working_set_bytes"):std::nullopt;
  auto rate=connected?cpuMetricNumber(status,"rate_positions_per_second"):std::nullopt;
- const auto state=status.value("state").toString();const auto resident=status.value("resident_workers").toInt(-1),selected=status.value("requested_threads").toInt();
- const bool stopped=connected&&resident==0&&QSet<QString>{"IDLE","OFF","PAUSED","PAUSED_RECOVERED","WAITING_AUDIT","BUDGET_PAUSED","CLOSED","AUDIT_COMPUTED_SOURCE_PROOF_PENDING","PROBE_COMPLETE"}.contains(state);
+ const auto state=status.value("state").toString();const int resident=status.value("resident_workers").toInt(-1);
+ const bool stopped=connected&&resident==0&&QSet<QString>{"IDLE","OFF","PAUSED","PAUSED_RECOVERED","WAITING_AUDIT","WAITING_NORMAL_CYCLE","BUDGET_PAUSED","CLOSED","AUDIT_COMPUTED_SOURCE_PROOF_PENDING","CPU_WORK_SOURCE_PROOF_PENDING","PROBE_COMPLETE"}.contains(state);
  if(stopped)rate=0.;
- const auto done=cpuMetricInteger(status,"durable_completed_positions"),total=cpuMetricInteger(status,"total_positions");
- const auto progress=done&&total&&*total>0&&*done<=*total?std::optional<double>(*done/ *total*100.):std::nullopt;
+ const auto mining=cpuMiningRates(status,connected);
+ auto tests=cpuMetricNumber(mining,"tests_per_second"),gaps=cpuMetricNumber(mining,"gaps_per_second"),yield=cpuMetricNumber(mining,"gaps_per_billion_positions");
+ if(stopped&&!mining.isEmpty()){tests=0.;gaps=0.;yield.reset();}
  const auto percent=[](std::optional<double> value){return value?QString::number(*value,'f',0)+"%":QString("—");};
- const auto workerValue=connected&&resident>=0&&selected>0?std::optional<double>(resident):std::nullopt;
- const auto workerText=workerValue?QString("%1/%2").arg(resident).arg(selected):QString("—");
  const auto memoryFraction=memoryUsed&&memoryTotal&&*memoryTotal>0?std::optional<double>(*memoryUsed/ *memoryTotal):std::nullopt;
  const QString rateText=rate?compactMetricCaption(rate):(connected&&state=="RUNNING"?QString("START"):QString("—"));
- const auto position=positionFormats(status.value("durable_completed_positions").toString());
- const CpuCardMetric activity{busy,100.,percent(busy),"WORKER BUSY","CPU time used by owned native workers, divided by the selected thread budget. Host load is separate.",accent};
- const CpuCardMetric workers{workerValue,double(std::max(1,selected)),workerText,"WORKERS","Resident native workers / selected thread budget; waiting and paused modes may have zero workers.",QColor("#62cfff")};
- const CpuCardMetric throughput{rate,0.,rateText,"pos/s","Mean over up to five seconds of closed position counts; confirmed idle/pause is zero. It is not a primality-test count.",QColor("#b58cff")};
- const CpuCardMetric completed{done,total.value_or(0),done?position.human:QString("—"),connected?"DONE":"SAVED",position.decimal+" · "+position.binary+" · exact "+position.exact,QColor("#69efc5")};
- const CpuCardMetric completion{progress,100.,progress?QString::number(*progress,'f',1)+"%":QString("NO JOB"),"AUDIT %","Durable completed positions / assigned positions. Completion is not network acceptance.",QColor("#ffd166")};
- const CpuCardMetric workingSet{engineMemory,memoryTotal.value_or(0),engineMemory?QString::number(*engineMemory/1048576.,'f',*engineMemory<104857600?1:0):QString("—"),"RAM MiB","Sum of controller and worker working sets; shared pages may be counted more than once.",QColor("#69efc5")};
- if(!expanded)return {activity,workers,throughput,completion};
+ const CpuCardMetric activity{busy,100.,percent(busy),"CPU BUSY","CPU time used by owned native workers / selected thread budget. Host load remains separate.",accent};
+ const CpuCardMetric throughput{rate,0.,rateText,"pos/s","Mean of closed native position counts; confirmed idle/pause is zero. Not a primality-test count.",QColor("#b58cff")};
+ const CpuCardMetric testRate{tests,0.,compactMetricCaption(tests),"tests/s","Mean native candidate tests over the same active-time counter window as gap statistics. Missing producer samples stay unavailable.",QColor("#46c8ee")};
+ const CpuCardMetric gapRate{gaps,0.,compactMetricCaption(gaps),"gaps/s","Mean retained gap counts above the assigned minimum, over up to 60 seconds of active computation. Display counters do not imply network acceptance.",QColor("#69efc5")};
+ const CpuCardMetric gapYield{yield,0.,yield?QString::number(*yield,'f',3):QString("—"),"gaps/Gpos","Retained gap delta per billion positions in the same active-time window. Zero positions is undefined. Compare equal bit/minimum/verification settings.",QColor("#b58cff")};
+ if(!expanded)return {activity,throughput,testRate,gapYield};
  return {activity,{load,100.,percent(load),"HOST LOAD","Total machine CPU utilization, including other applications.",accent},
   {memoryFraction,1.,memoryFraction?QString::number(*memoryFraction*100.,'f',0)+"%":QString("—"),"HOST RAM","Physical RAM used by all applications / total physical RAM.",QColor("#62cfff")},
-  workingSet,workers,throughput,completed,completion};
+  {engineMemory,memoryTotal.value_or(0),engineMemory?QString::number(*engineMemory/1048576.,'f',*engineMemory<104857600?1:0):QString("—"),"RAM MiB","Sum of controller and worker working sets; shared pages may be counted more than once.",QColor("#69efc5")},
+  throughput,testRate,gapRate,gapYield};
 }
 }

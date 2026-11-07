@@ -12,6 +12,13 @@ int main()
         ++checks; if (!ok) { ++failures; std::cerr << "FAIL " << label << '\n'; }
     };
     using pgn::ui::compactMetricCaption;
+    using pgn::ui::telemetryAgeCaption;
+    const std::optional<qint64> ahead{-247};
+    check(telemetryAgeCaption(ahead)==QStringLiteral("—"),"future UTC does not become negative or invented zero age");
+    check(ahead&&*ahead==-247,"raw clock difference is preserved");
+    check(telemetryAgeCaption(std::nullopt)==QStringLiteral("—"),"unknown age stays unavailable");
+    check(telemetryAgeCaption(0)==QStringLiteral("0ms"),"measured zero age stays zero");
+    check(telemetryAgeCaption(247,true)==QStringLiteral("≥247ms"),"certified lower-bound caption preserved");
     struct Example { double raw; const char* text; };
     for (const auto& example : std::array{
         Example{0, "0"}, Example{0.001, "<0.01"}, Example{0.125, "0.13"},

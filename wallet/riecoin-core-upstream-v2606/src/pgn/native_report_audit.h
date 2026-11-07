@@ -95,6 +95,7 @@ struct NativeAuditJob {
     enum Stage {Assigned,Committed,Passed,Failed} stage{Assigned};
     std::string commitment,reveal;
     std::optional<AuditAssignmentLease> time_lease;
+    int32_t passed_height{}; // First authenticated PASSED receipt; replay-derived, never caller supplied.
 };
 inline bool NativeAuditAssignmentExpired(const NativeAuditJob& job,int32_t height,int64_t median_time){
  return job.time_lease?job.time_lease->expired(height,median_time):height>=job.deadline;
@@ -216,10 +217,12 @@ inline void ApplyNativeAuditEvent(NativeAuditLedger& ledger,const NativeAuditEve
     const auto& indices=body["partitions"].get_array();const auto& counts=body["counts"].get_array();RequireAudit(indices.size()==5&&counts.size()==5,"Five audit results required");bool passed=true;
     for(size_t i=0;i<5;++i){RequireAudit(indices[i].getInt<int64_t>()==partitions[event.slot][i],"Wrong audit partition");passed&=AuditCount(counts[i])==(*report.expected)[partitions[event.slot][i]];}
     const auto nonce=body["nonce"].get_str();RequireAudit(nonce.size()==64&&IsHex(nonce)&&HexStr(ParseHex(nonce))==nonce,"Invalid audit nonce");job->stage=passed?NativeAuditJob::Passed:NativeAuditJob::Failed;job->reveal=text;
+    if(passed)job->passed_height=parent.nHeight+1;
 }
-inline std::optional<NativeAuditLedger> ReadNativeAuditLedger(const CCoinsView& view,const CBlockIndex& parent,
+template<class BeforeBlock>
+inline std::optional<NativeAuditLedger> ReadNativeAuditLedgerWithBlockHook(const CCoinsView& view,const CBlockIndex& parent,
     const NativeRequestHistoryArchive& history,const RangePolicyReadBudget& policy_budget,
-    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget){
+    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,BeforeBlock&& before_block){
     try{
         auto reports=ReadConfirmedNativeReports(view,parent,history,schedule_budget);if(!reports)return {};
         NativeAuditLedger ledger;
@@ -249,6 +252,9 @@ inline std::optional<NativeAuditLedger> ReadNativeAuditLedger(const CCoinsView& 
         for(int32_t height=1;height<=parent.nHeight;++height){
             const auto loaded=history.Load(view,parent,height,schedule_budget.archive);const auto* index=parent.GetAncestor(height);
             if(!loaded.block||!index||!index->pprev)return {};
+            // All request-duty decisions use the previous block's audit state.
+            // An audit event later in this same coinbase cannot supply credit.
+            if(!before_block(ledger,*index->pprev,*loaded.block))return {};
             for(const auto& output:loaded.block->Coinbase()->vout){
                 if(!IsNativeAuditScript(output.scriptPubKey))continue;
                 const auto event=DecodeNativeAuditEnvelope(output.scriptPubKey);if(!event||output.nValue!=0)return {};
@@ -256,6 +262,12 @@ inline std::optional<NativeAuditLedger> ReadNativeAuditLedger(const CCoinsView& 
             }
         }return ledger;
     }catch(const std::exception&){return {};}
+}
+inline std::optional<NativeAuditLedger> ReadNativeAuditLedger(const CCoinsView& view,const CBlockIndex& parent,
+    const NativeRequestHistoryArchive& history,const RangePolicyReadBudget& policy_budget,
+    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget){
+    return ReadNativeAuditLedgerWithBlockHook(view,parent,history,policy_budget,schedule_budget,signature_budget,
+        [](const NativeAuditLedger&,const CBlockIndex&,const VerifiedNativeRequestBlock&){return true;});
 }
 inline bool VerifyProposedNativeAuditEvents(const CCoinsView& view,const CBlockIndex& parent,
     const NativeRequestHistoryArchive& history,const CBlock& block,const RangePolicyReadBudget& policy_budget,

@@ -1,4 +1,12 @@
+#include "wallet/public_work_snapshot.h"
+#include "wallet/ticket_atlas_snapshot.h"
+#include "wallet/confirmed_snapshot_anchor.h"
+#include "wallet/explorer_projection.h"
+#include <algorithm>
 #include "wallet/core_runtime.h"
+#include "wallet/setup_deployment.h"
+#include "wallet/participant_snapshot.h"
+#include "wallet/network_metrics_snapshot.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
@@ -45,9 +53,16 @@ bool processIdentity(qint64 pid,QString& birth,QString& image){
 
 #endif
 }
-CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString directory):QObject(parent),root_(std::move(root)),runtimeDirectory_(directory.isEmpty()?root_+(testnet?"/data/testnet/ui-runtime":"/data/runtime"):std::move(directory)){
+CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString directory):QObject(parent),root_(std::move(root)),runtimeDirectory_(directory.isEmpty()?root_+(testnet?"/data/testnet/ui-runtime":"/data/runtime"):std::move(directory)),expectedChain_(testnet?QStringLiteral("test"):QStringLiteral("main")){
+ profile_.chain=expectedChain_;
  clock_.setInterval(1000);connect(&clock_,&QTimer::timeout,this,[this]{inspect();});
  network_.setProxy(QNetworkProxy::NoProxy);
+ walletManager_=new WalletManager([this](const QString& method,const QJsonArray& params,const QString& name,WalletReply consume){
+  if(!connected_||!processAlive()){consume({},"Verified Core connection required");return;}
+  const auto owner=epoch();rpc(method,params,[this,owner,consume=std::move(consume)](QJsonValue value,QString error){
+   if(!owner.matches(epoch())||!connected_||!processAlive()){consume({},"Core connection changed; wallet operation must be rechecked");return;}consume(value,error);
+  },!name.isNull(),120000,name);
+ },this);
  // Redirect to preserved files rather than allowing an unread process pipe
  // to block the wallet. They contain no candidate stream from the GPU.
  connect(&verifier_,&QFutureWatcher<QString>::finished,this,[this]{
@@ -69,11 +84,17 @@ CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString direc
   if(!launching_)return; // Invalid/ambiguous existing owner fails closed.
   if(pending){failStart("An unresolved detached Core may still exist; preserved launch intent blocks a duplicate client");return;}
   if(!allowNew_){failStart("No live owned Core to reattach; no new client launched");return;}
+   const auto setupError=activatePendingWalletSetup(runtimeDirectory_,root_,profile_);
+   if(!setupError.isEmpty()){failStart(setupError);return;}
   if(!QDir().mkpath(profile_.dataDirectory)){failStart("Private PGN wallet directory could not be created");return;}
   QProcess launcher;launcher.setProgram(profile_.executable);
   QStringList args{"-datadir="+profile_.dataDirectory,profile_.chain=="test"?QString("-testnet=1"):QString("-chain=main"),"-server=1",
    "-rpcbind=127.0.0.1","-rpcallowip=127.0.0.1","-rpcport="+QString::number(profile_.rpcPort),
-   "-port="+QString::number(profile_.peerPort),"-dnsseed=0","-fixedseeds=0","-discover=0"};
+   "-port="+QString::number(profile_.peerPort),"-dnsseed=0","-fixedseeds=0","-discover=0",
+   // The managed desktop client joins through outbound peers/the TLS relay.
+   // It does not need a public P2P listener or automatic router mappings.
+   // Standalone seed/server nodes are launched separately and are unchanged.
+   "-listen=0","-listenonion=0","-natpmp=0"};
   if(profile_.frontend=="qt")args.prepend("-min");
   for(const auto& peer:profile_.peers)args.append("-connect="+peer);
   launcher.setArguments(args);launcher.setWorkingDirectory(QFileInfo(profile_.executable).absolutePath());
@@ -183,7 +204,7 @@ bool CoreRuntime::processAlive(){
 #endif
  if(pid_){++identityGeneration_;pid_=0;processBirth_.clear();clock_.stop();connected_=false;checking_=false;stopping_=false;walletChecking_=walletReady_=false;
    peerBootstrap_.reset();
-  setLinkState(CoreLinkState::Stopped,"The owned Core process exited");
+  walletManager_->invalidate();setLinkState(CoreLinkState::Stopped,"The owned Core process exited");
   if(onObservation)onObservation(std::nullopt);
   if(ownershipLock_)ownershipLock_->unlock();
   if(onStopped)onStopped();report("CORE PROCESS EXITED · wallet detached from this view");}
@@ -209,8 +230,13 @@ void CoreRuntime::begin(bool allowNew){
  setLinkState(CoreLinkState::Starting,"Checking the owned Core deployment");
  QFile receipt(runtimeDirectory_+"/wallet-core.json");
  if(!receipt.open(QIODevice::ReadOnly)||receipt.size()>32768){failStart("No verified PGN Core build/deployment receipt; no wallet launched");return;}
- profile_=CoreProfile::fromJson(QJsonDocument::fromJson(receipt.readAll()).object());
- const QString invalid=profile_.validate(root_);if(!invalid.isEmpty()){failStart(invalid);return;}
+ const auto configuredProfile=CoreProfile::fromJson(QJsonDocument::fromJson(receipt.readAll()).object());
+ const QString invalid=configuredProfile.validate(root_);if(!invalid.isEmpty()){failStart(invalid);return;}
+ if(configuredProfile.chain!=expectedChain_){
+  failStart(QString("This wallet is set to %1, but the saved Core profile is for %2. Open wallet setup to use a matching profile.")
+      .arg(expectedChain_=="test"?QString("testnet"):QString("mainnet"),configuredProfile.chain=="test"?QString("testnet"):QString("mainnet")));return;
+ }
+ profile_=configuredProfile;
  if(!QDir().mkpath(runtimeDirectory_)){failStart("Wallet ownership directory unavailable");return;}
  ownershipLock_=std::make_unique<QLockFile>(runtimeDirectory_+"/wallet-owned.lock");
  if(!ownershipLock_->tryLock(0)){failStart("Another PGN GUI owns wallet lifecycle; no duplicate client launched");return;}
@@ -224,37 +250,64 @@ void CoreRuntime::begin(bool allowNew){
   return QString::fromLatin1(hash.result().toHex());
  }));
 }
-void CoreRuntime::rpc(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume,bool wallet){
+void CoreRuntime::rpc(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume,bool wallet,int timeoutMs,const QString& walletName){
  QFile cookie(profile_.networkDataDirectory()+"/.cookie");
  if(!cookie.open(QIODevice::ReadOnly)||cookie.size()>4096){consume({},"Core RPC cookie is not ready");return;}
- const QString endpoint=wallet&&!profile_.walletName.isEmpty()?QString("/wallet/")+profile_.walletName:QString("/");
- QNetworkRequest request(QUrl("http://127.0.0.1:"+QString::number(profile_.rpcPort)+endpoint));
+ const QString endpoint=wallet?walletRpcPath(walletName.isNull()?profile_.walletName:walletName):QString("/");
+ QNetworkRequest request(QUrl::fromEncoded(("http://127.0.0.1:"+QString::number(profile_.rpcPort)+endpoint).toUtf8()));
  request.setHeader(QNetworkRequest::ContentTypeHeader,"application/json");
  request.setRawHeader("Authorization","Basic "+cookie.readAll().trimmed().toBase64());
  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::ManualRedirectPolicy);
- request.setTransferTimeout(3000);
+ request.setTransferTimeout(std::clamp(timeoutMs,1000,120000));
  const QString requestId=QUuid::createUuid().toString(QUuid::WithoutBraces);
  const QJsonObject call{{"jsonrpc","2.0"},{"id",requestId},{"method",method},{"params",params}};
  auto* reply=network_.post(request,QJsonDocument(call).toJson(QJsonDocument::Compact));
  // The finished-only reader must never buffer an arbitrarily large local
  // response before enforcing the cap. An oversized server stalls at this
- // bounded buffer and is rejected by the existing3s transfer timeout.
+ // bounded buffer and is rejected by its per-call transfer timeout.
  reply->setReadBufferSize(262145);
- connect(reply,&QNetworkReply::finished,this,[reply,requestId,consume=std::move(consume)]{
-  const auto error=reply->error();const auto detail=reply->errorString().left(160);const auto bytes=reply->read(262145);reply->deleteLater();
+ connect(reply,&QNetworkReply::finished,this,[reply,requestId,method,consume=std::move(consume)]{
+  const auto error=reply->error();const auto http=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();const auto detail=reply->errorString().left(160);const auto bytes=reply->read(262145);reply->deleteLater();
   if(bytes.size()>262144){consume({},"Core RPC response exceeds 256 KiB bound");return;}
-  if(error!=QNetworkReply::NoError){consume({},QString("Core RPC read failed (%1): %2").arg(int(error)).arg(detail));return;}
-  const auto decoded=decodeCoreRpcResponse(bytes,requestId);
+  const auto decoded=decodeCoreRpcResponse(bytes,requestId,method);
+  if(error!=QNetworkReply::NoError&&!verifiedRpcHttpError(decoded,http)){consume({},QString("Core RPC read failed (%1): %2").arg(int(error)).arg(detail));return;}
   consume(decoded.value,decoded.error);
  });
 }
 void CoreRuntime::walletRequest(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume){
  static const QStringList allowed{"getaddressinfo","getwalletinfo","getbalances","listtransactions","listreceivedbyaddress","getnewaddress","validateaddress","sendtoaddress","walletpassphrase","walletlock"};
- if(!allowed.contains(method)||!connected_||!walletReady_||!processAlive()){consume({},"Verified wallet connection required");return;}
- const auto owner=epoch();rpc(method,params,[this,owner,consume=std::move(consume)](QJsonValue value,QString error){
-  if(!owner.matches(epoch())||!connected_||!processAlive()){consume({},"Wallet connection changed; result discarded");return;}
-  consume(value,error);
- },true);
+ if(!allowed.contains(method)||!displayWalletReady()||!processAlive()){consume({},"Verified loaded display wallet required");return;}
+ const auto owner=epoch();const auto display=walletManager_->displayGeneration();const auto name=walletManager_->displayWallet();
+ if(walletManager_->selecting()){consume({},"Wait for the wallet selection to finish");return;}
+ const bool mutating=QStringList{"getnewaddress","sendtoaddress","walletpassphrase","walletlock"}.contains(method);
+ if(mutating&&!walletManager_->holdDisplayOperation()){consume({},"Wait for the current wallet operation to finish");return;}
+ rpc(method,params,[this,owner,display,mutating,consume=std::move(consume)](QJsonValue value,QString error){
+    if(mutating)walletManager_->finishDisplayOperation(display);
+   if(!owner.matches(epoch())||!connected_||!processAlive()||display!=walletManager_->displayGeneration()){consume({},"Displayed wallet changed; result discarded");return;}
+   consume(value,error);
+  },true,3000,name.isNull()?QString(""):name);
+}
+void CoreRuntime::serviceWalletRequest(const QString& method,const QJsonArray& params,WalletReply consume){
+ if(method!="getaddressinfo"||!connected_||!walletReady_||!processAlive()){consume({},"Verified service wallet required");return;}
+ const auto owner=epoch();rpc(method,params,[this,owner,consume=std::move(consume)](QJsonValue value,QString error){if(!owner.matches(epoch())||!connected_||!processAlive()){consume({},"Service wallet connection changed");return;}consume(value,error);},true);
+}
+void CoreRuntime::importPrivateDescriptors(const QJsonArray& descriptors,bool scanHistory,std::function<void(QJsonValue,QString)> consume){
+ if(!displayWalletReady()||!processAlive()||descriptors.isEmpty()||descriptors.size()>1000){consume({},"Verified wallet and1..1000private descriptors required");return;}
+ const QRegularExpression pattern("^wpkh\\(prv[0-9a-f]{64}\\)#[a-z0-9]{8}$");QJsonArray requests;
+ for(const auto& value:descriptors){if(!value.isString()||!pattern.match(value.toString()).hasMatch()){consume({},"Unsupported native PGN private-key descriptor");return;}requests.append(QJsonObject{{"desc",value},{"timestamp",scanHistory?QJsonValue(0):QJsonValue("now")},{"active",false},{"label","Horizon vanity"}});}
+ const auto owner=epoch();const auto count=descriptors.size();const auto display=walletManager_->displayGeneration();const auto name=walletManager_->displayWallet();
+ if(!walletManager_->holdDisplayOperation()){consume({},"Wait for the current wallet operation to finish");return;}
+ QJsonArray params;params.append(requests);
+ rpc("importdescriptors",params,[this,owner,count,display,consume=std::move(consume)](QJsonValue value,QString error){
+  walletManager_->finishDisplayOperation(display);
+  if(!owner.matches(epoch())||!connected_||!processAlive()||display!=walletManager_->displayGeneration()){consume({},"Wallet connection changed; import outcome must be rechecked in that wallet");return;}
+  const QRegularExpression secret("prv[0-9a-fA-F]{64}");error.replace(secret,"[private key]");
+  if(!error.isEmpty()){consume({},"Import outcome could not be confirmed. Recheck the addresses before retrying. "+error);return;}
+  if(!value.isArray()||value.toArray().size()!=count){consume({},"Import reply incomplete; recheck the selected addresses");return;}
+  QJsonArray safe;
+  for(const auto& entry:value.toArray()){auto result=entry.toObject();auto failure=result.value("error").toObject();auto message=failure.value("message").toString();message.replace(secret,"[private key]");if(!failure.isEmpty()){failure.insert("message",message);result.insert("error",failure);}safe.append(result);}
+  consume(safe,{});
+ },true,120000,name.isNull()?QString(""):name);
 }
 void CoreRuntime::auditRequest(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume){
  static const QStringList allowed{"getblock","getpgnauditevent","getpgnauditstate","getpgnreports","getpgnscientificwork","getpgnbootstraptemplate","submitblock","getblockhash","getbestblockhash","getblockheader"};
@@ -302,31 +355,39 @@ void CoreRuntime::networkHeaders(const CoreEpoch& owner,QJsonObject state,const 
   rows.append(header);
   if(height>0&&left>1){const auto previous=header.value("previousblockhash").toString();if(previous.size()!=64){consume({},"Native parent missing");return;}
    networkHeaders(owner,state,previous,left-1,std::move(rows),std::move(consume));return;}
-  rpc("getblockchaininfo",{},[this,owner,state,rows,consume=std::move(consume)](QJsonValue latest,QString error){
-   if(!error.isEmpty()||!owner.matches(epoch())||!connected_||!processAlive()||latest.toObject().value("bestblockhash")!=state.value("bestblockhash")){
-    consume({},error.isEmpty()?QString("Native tip changed during block read; retrying"):error);return;}
-   auto result=state;result.insert("blocks",rows);result.insert("observed_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));consume(result,{});
-  });
+  verifyConfirmedSnapshotAnchor(state,[this,owner]{return owner.matches(epoch())&&connected_&&processAlive();},
+   [this](qint64 height,auto done){rpc("getblockhash",{height},std::move(done));},
+   [state,rows,consume=std::move(consume)](QString error){
+    if(!error.isEmpty()){consume({},error);return;}
+    auto result=state;result.insert("blocks",rows);result.insert("observed_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));consume(result,{});
+   });
+ });
+}
+void CoreRuntime::readWorkView(const QString& kind,int offset,int limit,const QString& request,std::function<void(QJsonObject,QString)> consume){
+ static const QRegularExpression canonical("^[0-9a-f]{64}$");
+ if(!connected_||!processAlive()||offset<0||limit<1||limit>100||(!request.isEmpty()&&(!canonical.match(request).hasMatch()||request==QString(64,'0')||offset!=0||limit!=1))){consume({},"Verified Core connection and bounded work lookup required");return;}
+ const auto owner=epoch();QJsonArray params{kind,offset,limit};if(!request.isEmpty())params.append(request);
+ rpc("getpgnworkview",params,[this,owner,kind,offset,limit,request,consume=std::move(consume)](QJsonValue value,QString error){
+  if(!error.isEmpty()||!owner.matches(epoch())||!connected_||!processAlive()){consume({},error.isEmpty()?QString("Core work view connection changed"):error);return;}
+  const auto view=value.toObject();const auto invalid=validatePublicWorkSnapshot(view,profile_.genesisHash,kind,offset,limit,request);if(!invalid.isEmpty()){consume({},invalid);return;}
+  verifyConfirmedSnapshotAnchor(view.value("state").toObject(),[this,owner]{return owner.matches(epoch())&&connected_&&processAlive();},[this](qint64 height,auto done){rpc("getblockhash",{height},std::move(done));},[view,consume=std::move(consume)](QString error){consume(error.isEmpty()?view:QJsonObject{},error);});
+ });
+}
+void CoreRuntime::readTicketAtlas(const QString& start,const QString& end,int bins,std::function<void(QJsonObject,QString)> consume){
+ if(!connected_||!processAlive()||bins<1||bins>512||start.isEmpty()!=end.isEmpty()){consume({},"Verified Core connection and bounded atlas required");return;}
+ const auto owner=epoch();QJsonArray params{start.isEmpty()?QJsonValue{}:QJsonValue{start},end.isEmpty()?QJsonValue{}:QJsonValue{end},bins};
+ rpc("getpgnticketatlas",params,[this,owner,start,end,bins,consume=std::move(consume)](QJsonValue value,QString error){
+  if(!error.isEmpty()||!owner.matches(epoch())||!connected_||!processAlive()){consume({},error.isEmpty()?QString("Core atlas connection changed"):error);return;}
+  const auto view=value.toObject();const auto invalid=validateTicketAtlas(view,profile_.genesisHash,start,end,bins);if(!invalid.isEmpty()){consume({},invalid);return;}
+  verifyConfirmedSnapshotAnchor(view,[this,owner]{return owner.matches(epoch())&&connected_&&processAlive();},[this](qint64 height,auto done){rpc("getblockhash",{height},std::move(done));},[view,consume=std::move(consume)](QString error){consume(error.isEmpty()?view:QJsonObject{},error);});
  });
 }
 void CoreRuntime::readTicketPage(int offset,std::function<void(QJsonObject,QString)> consume){
- if(offset<0||!connected_||!processAlive()){consume({},"Verified Core connection required");return;}const auto owner=epoch();
- rpc("getpgnstate",{offset,100},[this,owner,consume=std::move(consume)](QJsonValue value,QString error){
-  const auto state=value.toObject();if(!error.isEmpty()||!connected_||!processAlive()||!owner.matches(epoch())||state.value("genesis")!=profile_.genesisHash||state.value("leases").toArray().size()>100){consume({},error.isEmpty()?QString("Ticket page identity or size invalid"):error);return;}
-  rpc("getblockchaininfo",{},[this,owner,state,consume=std::move(consume)](QJsonValue tip,QString error){if(!error.isEmpty()||!owner.matches(epoch())||tip.toObject().value("bestblockhash")!=state.value("bestblockhash")){consume({},error.isEmpty()?QString("Ticket tip changed; refresh required"):error);return;}consume(state,{});});
- });
+ readWorkView("tickets",offset,100,{},[consume=std::move(consume)](QJsonObject view,QString error){if(!error.isEmpty()){consume({},error);return;}auto state=view.value("state").toObject();state.insert("reports",view.value("reports"));state.insert("audits",view.value("audits"));consume(state,{});});
 }
 void CoreRuntime::readTicketDetails(const QString& request,std::function<void(QJsonObject,QString)> consume){
- static const QRegularExpression pattern("^[0-9a-f]{64}$");if(!connected_||!processAlive()||!pattern.match(request).hasMatch()){consume({},"Canonical ticket request identity required");return;}const auto owner=epoch();
- rpc("getpgnstate",{0,1,request},[this,owner,request,consume=std::move(consume)](QJsonValue value,QString error){
-  auto state=value.toObject();if(!error.isEmpty()||!owner.matches(epoch())||state.value("genesis")!=profile_.genesisHash||state.value("leases").toArray().size()!=1){consume({},error.isEmpty()?QString("Ticket is not on the current branch"):error);return;}
-  rpc("getpgnreports",{0,1,request},[this,owner,state,request,consume=std::move(consume)](QJsonValue report,QString error)mutable{
-   if(!error.isEmpty()||!owner.matches(epoch())||!report.isArray()||report.toArray().size()>1){consume({},error.isEmpty()?QString("Report lookup identity invalid"):error);return;}state.insert("reports",report);
-   rpc("getpgnauditstate",{0,1,request},[this,owner,state,consume=std::move(consume)](QJsonValue audits,QString error)mutable{
-    if(!error.isEmpty()||!owner.matches(epoch())||!audits.isArray()||audits.toArray().size()>1){consume({},error.isEmpty()?QString("Audit lookup identity invalid"):error);return;}state.insert("audits",audits);
-    rpc("getblockchaininfo",{},[this,owner,state,consume=std::move(consume)](QJsonValue tip,QString error){if(!error.isEmpty()||!connected_||!processAlive()||!owner.matches(epoch())||tip.toObject().value("bestblockhash")!=state.value("bestblockhash")){consume({},error.isEmpty()?QString("Ticket changed branch during inspection"):error);return;}consume(state,{});});
-   });
-  });
+ readWorkView("tickets",0,1,request,[consume=std::move(consume)](QJsonObject view,QString error){
+  if(!error.isEmpty()){consume({},error);return;}auto state=view.value("state").toObject();if(state.value("leases").toArray().size()!=1){consume({},"Ticket is not on the inspected branch");return;}state.insert("reports",view.value("reports"));state.insert("audits",view.value("audits"));consume(state,{});
  });
 }
 void CoreRuntime::readBlockAtHeight(int height,std::function<void(QJsonObject,QString)> consume){
@@ -339,43 +400,53 @@ void CoreRuntime::readBlockPage(int height,std::function<void(QJsonObject,QStrin
  });
 }
 void CoreRuntime::readAuditDetails(const QString& request,std::function<void(QJsonObject,QString)> consume){
- static const QRegularExpression pattern("^[0-9a-f]{64}$");if(!connected_||!processAlive()||!pattern.match(request).hasMatch()){consume({},"Verified audit request required");return;}const auto owner=epoch();
- rpc("getblockchaininfo",{},[this,owner,request,consume=std::move(consume)](QJsonValue value,QString error){
-  if(!error.isEmpty()||!owner.matches(epoch())||!value.isObject()){consume({},error.isEmpty()?QString("Core audit epoch changed"):error);return;}const auto tip=value.toObject().value("bestblockhash").toString();
-  rpc("getpgnreports",{0,1,request},[this,owner,request,tip,consume=std::move(consume)](QJsonValue reports,QString error){
-   if(!error.isEmpty()||!owner.matches(epoch())||!reports.isArray()||reports.toArray().size()!=1){consume({},error.isEmpty()?QString("Confirmed audit report unavailable"):error);return;}
-   rpc("getpgnauditstate",{0,1,request},[this,owner,tip,reports,consume=std::move(consume)](QJsonValue audits,QString error){
-    if(!error.isEmpty()||!owner.matches(epoch())||!audits.isArray()||audits.toArray().size()!=1){consume({},error.isEmpty()?QString("Confirmed audit state unavailable"):error);return;}
-    rpc("getblockchaininfo",{},[this,owner,tip,reports,audits,consume=std::move(consume)](QJsonValue latest,QString error){
-     if(!error.isEmpty()||!owner.matches(epoch())||!connected_||!processAlive()||latest.toObject().value("bestblockhash")!=tip){consume({},error.isEmpty()?QString("Audit branch changed during inspection"):error);return;}
-     consume({{"genesis",profile_.genesisHash},{"bestblockhash",tip},{"reports",reports},{"audits",audits}},{});
-    });
-   });
-  });
+ readWorkView("audits",0,1,request,[consume=std::move(consume)](QJsonObject view,QString error){
+  if(!error.isEmpty()){consume({},error);return;}const auto state=view.value("state").toObject();if(view.value("reports").toArray().size()!=1){consume({},"Confirmed audit report unavailable at the inspected branch");return;}
+  consume({{"genesis",state.value("genesis")},{"bestblockhash",state.value("bestblockhash")},{"height",state.value("height")},{"reports",view.value("reports")},{"audits",view.value("audits")}},{ });
  });
 }
 void CoreRuntime::readAuditSnapshot(int offset,std::function<void(QJsonObject,QString)> consume){
- if(offset<0||!connected_||!processAlive()){consume({},"Verified Core connection required");return;}const auto owner=epoch();
- rpc("getpgnstate",{},[this,owner,offset,consume=std::move(consume)](QJsonValue value,QString error){
-  const auto state=value.toObject();if(!error.isEmpty()||!owner.matches(epoch())||state.value("genesis")!=profile_.genesisHash){consume({},error.isEmpty()?QString("Audit chain identity changed"):error);return;}
-  rpc("getpgnreports",{offset,100},[this,owner,state,offset,consume=std::move(consume)](QJsonValue reports,QString error){
-   if(!error.isEmpty()||!owner.matches(epoch())||!reports.isArray()||reports.toArray().size()>100){consume({},error.isEmpty()?QString("Report page exceeds bound"):error);return;}
-   rpc("getpgnauditstate",{offset,100},[this,owner,state,offset,reports,consume=std::move(consume)](QJsonValue audits,QString error){
-    if(!error.isEmpty()||!owner.matches(epoch())||!audits.isArray()||audits.toArray().size()>100){consume({},error.isEmpty()?QString("Audit page exceeds bound"):error);return;}
-    rpc("getblockchaininfo",{},[this,owner,state,offset,reports,audits,consume=std::move(consume)](QJsonValue latest,QString error){
-     if(!error.isEmpty()||!connected_||!processAlive()||!owner.matches(epoch())||latest.toObject().value("bestblockhash")!=state.value("bestblockhash")){consume({},error.isEmpty()?QString("Chain changed during audit read; refresh required"):error);return;}
-     consume({{"genesis",state.value("genesis")},{"tip",state.value("bestblockhash")},{"height",state.value("height")},{"offset",offset},{"reports",reports},{"audits",audits},{"observed_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}},{});
-    });
-   });
+ readWorkView("audits",offset,100,{},[offset,consume=std::move(consume)](QJsonObject view,QString error){
+  if(!error.isEmpty()){consume({},error);return;}const auto state=view.value("state").toObject();consume({{"genesis",state.value("genesis")},{"tip",state.value("bestblockhash")},{"height",state.value("height")},{"offset",offset},{"reports",view.value("reports")},{"audits",view.value("audits")},{"observed_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}},{});
+ });
+}
+void CoreRuntime::readNetworkMetrics(int spanSeconds,std::function<void(QJsonObject,QString)> consume){
+ if(spanSeconds<60||spanSeconds>604800||!connected_||!processAlive()){consume({},"Verified Core connection and bounded metrics history required");return;}
+ const auto owner=epoch();
+ rpc("getpgnnetworkmetrics",{256,spanSeconds,600},[this,owner,consume=std::move(consume)](QJsonValue value,QString error){
+  const auto state=value.toObject();
+  if(!error.isEmpty()||!connected_||!processAlive()||!owner.matches(epoch())){consume({},error.isEmpty()?QString("Network metrics Core epoch changed"):error);return;}
+  const auto invalid=validateNetworkMetrics(state,profile_.genesisHash);if(!invalid.isEmpty()){consume({},invalid);return;}
+  rpc("getblockhash",{state.value("height")},[this,owner,state,consume=std::move(consume)](QJsonValue hash,QString error){
+   if(!error.isEmpty()||!connected_||!processAlive()||!owner.matches(epoch())||hash!=state.value("bestblockhash")){consume({},error.isEmpty()?QString("Network metrics branch changed"):error);return;}
+   consume(state,{});
   });
  });
 }
-void CoreRuntime::readBlockDetails(const QString& hash,std::function<void(QJsonObject,QString)> consume){
- static const QRegularExpression pattern("^[0-9a-f]{64}$");if(!connected_||!processAlive()||!pattern.match(hash).hasMatch()){consume({},"Verified native block required");return;}
- const auto owner=epoch();rpc("getblock",{hash,2},[this,owner,hash,consume=std::move(consume)](QJsonValue value,QString error){
-  if(!error.isEmpty()||!owner.matches(epoch())||!connected_||!processAlive()||value.toObject().value("hash").toString()!=hash){consume({},error.isEmpty()?QString("Native block identity changed"):error);return;}
-  consume(value.toObject(),{});
+void CoreRuntime::readParticipantPage(int offset,std::function<void(QJsonObject,QString)> consume){
+ if(offset<0||!connected_||!processAlive()){consume({},"Verified Core connection required");return;}
+ const auto owner=epoch();
+ rpc("getpgnparticipants",{offset,100},[this,owner,consume=std::move(consume)](QJsonValue value,QString error){
+  const auto state=value.toObject();
+  if(!error.isEmpty()||!connected_||!processAlive()||!owner.matches(epoch())){
+   consume({},error.isEmpty()?QString("Participant Core epoch changed"):error);return;
+  }
+  const auto invalid=validateParticipantSnapshot(state,profile_.genesisHash);
+  if(!invalid.isEmpty()){consume({},invalid);return;}
+  consume(state,{});
  });
+}
+void CoreRuntime::readBlockDetails(const QString& hash,std::function<void(QJsonObject,QString)> consume){readBlockTransactions(hash,0,std::move(consume));}
+void CoreRuntime::readBlockTransactions(const QString& hash,int offset,std::function<void(QJsonObject,QString)> consume){
+ const auto owner=epoch();
+ readExplorerBlockPage(hash,offset,[this,owner]{return owner.matches(epoch())&&connected_&&processAlive();},
+  [this](const QString& method,const QJsonArray& params,TransactionReply done){rpc(method,params,std::move(done));},std::move(consume));
+}
+void CoreRuntime::readTransactionDetails(const QString& id,const QString& block,std::function<void(QJsonObject,QString)> consume){readTransactionPage(id,block,0,std::move(consume));}
+void CoreRuntime::readTransactionPage(const QString& id,const QString& block,int offset,std::function<void(QJsonObject,QString)> consume){
+ const auto owner=epoch();
+ readExplorerTransactionPage(id,block,offset,[this,owner]{return owner.matches(epoch())&&connected_&&processAlive();},
+  [this](const QString& method,const QJsonArray& params,TransactionReply done){rpc(method,params,std::move(done));},std::move(consume));
 }
 void CoreRuntime::readDifficultyHeader(const ChainObservation& anchor,const QString& hash,std::function<void(QJsonObject,QString,QDateTime)> consume){
  static const QRegularExpression pattern("^[a-fA-F0-9]{64}$");
@@ -430,7 +501,7 @@ void CoreRuntime::walletInitialized(const CoreEpoch& owner){
   if(!output.open(QIODevice::WriteOnly)||output.write(bytes)!=bytes.size()||!output.commit()){report("Wallet is retained; setup confirmation could not be committed");return;}
   profile_.createWallet=false;
  }
- if(!walletReady_){walletReady_=true;if(onReady)onReady(pid_);}
+ if(!walletReady_){walletReady_=true;if(!walletManager_->ready())walletManager_->activate(profile_.genesisHash,profile_.chain,profile_.dataDirectory,profile_.walletName,runtimeDirectory_+"/wallet-view.json");if(onReady)onReady(pid_);}
 }
 void CoreRuntime::inspect(){
  if(!processAlive()||checking_||stopping_)return;checking_=true;
@@ -446,6 +517,7 @@ void CoreRuntime::inspect(){
     if(!projected.observation){checking_=false;connected_=false;clock_.stop();setLinkState(CoreLinkState::Rejected,projected.error);if(onObservation)onObservation(std::nullopt);
     report(projected.error+" · refusing wallet integration/RPC mutations; client left intact");return;}
    if(!connected_)connected_=true;
+    if(!walletManager_->ready())walletManager_->activate(profile_.genesisHash,profile_.chain,profile_.dataDirectory,profile_.walletName,runtimeDirectory_+"/wallet-view.json");
     ensurePeerBootstrap();
    if(!walletReady_&&!walletChecking_)ensureWallet(ownerEpoch);
     rpc("getconnectioncount",{},[this,ownerEpoch,observation=*projected.observation](QJsonValue peers,QString)mutable{
@@ -455,21 +527,13 @@ void CoreRuntime::inspect(){
        if(!ownerEpoch.matches(epoch())||!processAlive())return;checking_=false;setLinkState(CoreLinkState::Ready);
        if(onObservation)onObservation(value);
        report("PGN CORE · height "+QString::number(value.height)+
-        (!value.synchronizing?" · SYNC STATUS UNAVAILABLE":*value.synchronizing?" · SYNCHRONIZING":" · CONNECTED"));
+        (!value.synchronizing?" · SYNC STATUS UNAVAILABLE":*value.synchronizing?" · SYNCHRONIZING":value.oldTipAt(QDateTime::currentDateTimeUtc())?" · CONNECTED · CHAIN IDLE":" · CONNECTED"));
       };
       if(!peerBootstrap_){publish(observation);return;}
       const auto endpoint=peerBootstrap_->localEndpoint();
       rpc("getpeerinfo",{},[observation,endpoint,publish](QJsonValue value,QString error)mutable{
        if(!error.isEmpty()||!value.isArray()||value.toArray().size()>512){observation.synchronizing.reset();publish(observation);return;}
-       bool found=false;
-       for(const auto& item:value.toArray()){
-        const auto peer=item.toObject();if(peer.value("addr").toString()!=endpoint||endpoint.isEmpty())continue;
-        const auto height=peer.value("pgn_announced_height"),sync=peer.value("pgn_syncing");
-        if(!height.isDouble()||height.toInteger(-1)<0||height.toDouble()!=double(height.toInteger())||!sync.isBool())continue;
-        found=true;observation.synchronizing=observation.synchronizing.value_or(true)||sync.toBool()||observation.height<height.toInteger();
-       }
-       if(!found)observation.synchronizing=true;
-       publish(observation);
+       publish(projectNativeSynchronization(observation,value.toArray(),endpoint));
       });
     });
   });
@@ -500,7 +564,13 @@ void CoreRuntime::ensurePeerBootstrap(){
  peerBootstrap_=std::make_unique<PeerBootstrap>(program,value,this);
  peerBootstrap_->onReady=[this](const QString& peer){
   if(!connected_||!processAlive())return;
-  const auto owner=epoch();rpc("addnode",{peer,"add"},[this,owner](QJsonValue,QString error){if(owner.matches(epoch())&&!error.isEmpty())report("Core bootstrap attachment: "+error);});
+  const auto owner=epoch();rpc("addnode",{peer,"add"},[this,owner,peer](QJsonValue,QString error){
+   if(!owner.matches(epoch()))return;
+   if(!error.isEmpty())report("Core bootstrap attachment: "+error);
+   // Persistent addnode retry may be sleeping for60s after an older attempt.
+   // Attempt this verified local relay now; retain the persistent retry too.
+   rpc("addnode",{peer,"onetry"},[](QJsonValue,QString){});
+  });
  };
  peerBootstrap_->onRemoved=[this](const QString& peer){if(connected_&&processAlive())rpc("addnode",{peer,"remove"},[](QJsonValue,QString){});};
  peerBootstrap_->onStatus=[this](const QString& text){report(text);};peerBootstrap_->launch();

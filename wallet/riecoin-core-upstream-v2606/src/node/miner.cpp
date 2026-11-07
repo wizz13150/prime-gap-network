@@ -27,6 +27,7 @@
 #include <primitives/transaction.h>
 #include <script/script.h>
 #include <sync.h>
+#include <serialize.h>
 #include <tinyformat.h>
 #include <txgraph.h>
 #include <txmempool.h>
@@ -47,6 +48,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <numeric>
 #include <span>
 #include <stdexcept>
@@ -221,6 +223,49 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
              Ticks<MillisecondsDouble>(time_2 - time_1),
              Ticks<MillisecondsDouble>(time_2 - time_start));
 
+    return std::move(pblocktemplate);
+}
+
+std::unique_ptr<CBlockTemplate> BlockAssembler::SelectTransactionsForBlock(CBlock block)
+{
+    LOCK(::cs_main);
+    const CBlockIndex* parent = m_chainstate.m_chain.Tip();
+    if (!parent || block.hashPrevBlock != parent->GetBlockHash() ||
+        parent->nHeight == std::numeric_limits<int>::max()) {
+        throw std::runtime_error("Block selection parent is unavailable or stale");
+    }
+    if (block.vtx.size() != 1 || !block.vtx.front() || !block.vtx.front()->IsCoinBase() ||
+        GetWitnessCommitmentIndex(block) == NO_WITNESS_COMMITMENT ||
+        block.vtx.front()->vin.front().scriptWitness.stack.size() != 1 ||
+        block.vtx.front()->vin.front().scriptWitness.stack.front().size() != 32) {
+        throw std::runtime_error("Block selection requires a complete Core-witness coinbase seed");
+    }
+
+    resetBlock();
+    const uint64_t seed_weight{static_cast<uint64_t>(GetBlockWeight(block))};
+    const uint64_t seed_sigops{static_cast<uint64_t>(GetLegacySigOpCount(*block.vtx.front())) * WITNESS_SCALE_FACTOR};
+    if (seed_weight > *m_options.block_max_weight || seed_sigops > MAX_BLOCK_SIGOPS_COST) {
+        throw std::runtime_error("Native coinbase exceeds local block assembly limits");
+    }
+    // Charge the real native header/proof/page/coinbase witness, rather than
+    // assuming the standard fixed reserve covers it. Account for the largest
+    // possible growth of the transaction-count CompactSize as packages enter.
+    const uint64_t count_growth{(GetSizeOfCompactSize(std::numeric_limits<uint64_t>::max()) - GetSizeOfCompactSize(1)) * WITNESS_SCALE_FACTOR};
+    nBlockWeight = std::max(nBlockWeight, seed_weight + count_growth);
+    nBlockSigOpsCost = std::max(nBlockSigOpsCost, seed_sigops);
+    nHeight = parent->nHeight + 1;
+    m_lock_time_cutoff = parent->GetMedianTimePast();
+    pblocktemplate = std::make_unique<CBlockTemplate>();
+    pblocktemplate->block = std::move(block);
+
+    // A valid seed can exhaust the reserve. Preserve its zero-transaction
+    // construction rather than selecting an over-capacity package.
+    if (m_mempool && nBlockWeight < *m_options.block_max_weight && nBlockSigOpsCost < MAX_BLOCK_SIGOPS_COST) {
+        LOCK(m_mempool->cs);
+        m_mempool->StartBlockBuilding();
+        addChunks();
+        m_mempool->StopBlockBuilding();
+    }
     return std::move(pblocktemplate);
 }
 
