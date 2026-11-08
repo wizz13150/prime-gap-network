@@ -1305,7 +1305,7 @@ int main(int argc,char** argv) {
   new pgn::ui::WindowScreenFit(window,[&window,miningPage]{return window.height()-miningPage->height();});
  if(argc>4&&QString::fromLocal8Bit(argv[4])=="--show-community")tabs->setCurrentWidget(community);
  const bool showWallet=argc>4&&QString::fromLocal8Bit(argv[4])=="--show-wallet";
- if(showWallet){major->setCurrentIndex(1);walletButton->setChecked(true);toolsButton->show();}
+ if(showWallet||inspectWallet->property("pgn_wallet_setup_required").toBool()){major->setCurrentIndex(1);walletButton->setChecked(true);toolsButton->show();}
  // Optional QA capture uses the actual visible window, never a mock model.
  if(argc>3&&!QString::fromLocal8Bit(argv[3]).startsWith("--")){const QString capture=QString::fromLocal8Bit(argv[3]);
   QTimer::singleShot(20000,&window,[&window,canvas,community,capture]{

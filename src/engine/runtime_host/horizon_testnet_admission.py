@@ -50,19 +50,25 @@ def join_status(rpc, genesis, signer):
             if member.get('signing_script') != signing_script or type(member.get('may_audit')) is not bool:
                 raise ValueError('Participant does not match requested signing identity')
             identity(member.get('operator_id'))
-        enabled = bool(member and member['may_audit'])
-        if enabled and count < 1:
+        mode = members.get('admission_mode', 'registered')
+        if mode not in ('registered', 'open'):
+            raise ValueError('Unsupported network admission policy')
+        public = mode == 'open'
+        enabled = public or bool(member and member['may_audit'])
+        if enabled and not public and count < 1:
             raise ValueError('Enabled participant is missing from operator count')
         # Only an enabled member proves its own group is in the global set.
-        independent = count - 1 if enabled else None
+        independent = max(0, count - int(bool(member and member['may_audit']))) if public else count - 1 if enabled else None
         blockers = []
-        if member is None: blockers.append('registration_required')
-        elif not enabled: blockers.append('audit_permission_required')
-        if independent is not None and independent < 2: blockers.append('more_independent_registered_operators_required')
+        if not public:
+            if member is None: blockers.append('registration_required')
+            elif not enabled: blockers.append('audit_permission_required')
+            if independent is not None and independent < 2: blockers.append('more_independent_registered_operators_required')
         return dict(schema='PGN_NORMAL_MINER_JOIN_STATUS_V1', genesis=genesis,
                     parent=tip, signing_address=signer, signing_script=signing_script,
                     operator_id=member['operator_id'] if member else None,
                     registered=member is not None, audit_permission=enabled,
+                    admission_mode=mode,
                     normal_cycle_permission=enabled,
                     independent_registered_operators=independent,
                     required_independent_operators=2,

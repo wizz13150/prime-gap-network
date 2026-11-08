@@ -1,5 +1,8 @@
 #undef NDEBUG
 #include <pgn/native_retarget_policy.h>
+#include <pgn/native_elapsed_retarget.h>
+#include <pow.h>
+#include <consensus/params.h>
 #include <cassert>
 #include <cstdio>
 #include <deque>
@@ -56,5 +59,101 @@ int main(){
     auto changed=policy;changed.spacing_seconds=1200;check(*head,changed,golds);
     auto& invalid=branch.append(head,false,200000,policy.initial_q16);invalid.nNonce=3;
     assert(!DeriveHistoricalMeritTarget(invalid,policy));
+    // Elapsed-time candidate: the legacy quote freezes during a Gold drought.
+    // The replacement retains the anchor exactly and follows verified MTP.
+    const auto anchor_target=DeriveHistoricalMeritTarget(*head,policy)->target_q16;
+    const auto initial=DeriveElapsedMeritTarget(*head,*head,policy,1800);assert(initial&&initial->target_q16==anchor_target);
+    const auto anchor_time=head->GetMedianTimePast();
+    for(const int64_t elapsed:std::array<int64_t,3>{600,1800,3600}){
+        auto* drought=head;
+        for(int offset=-5;offset<=5;++offset)drought=&branch.append(drought,false,anchor_time+elapsed+offset,policy.initial_q16);
+        assert(drought->GetMedianTimePast()==anchor_time+elapsed);
+        const auto old=DeriveHistoricalMeritTarget(*drought,policy);assert(old&&old->target_q16==anchor_target);
+        const auto changed=DeriveElapsedMeritTarget(*drought,*head,policy,1800);assert(changed&&changed->target_q16<anchor_target&&changed->blocks_since_anchor==0&&changed->elapsed_seconds==elapsed);
+        const auto exact_drop=(uint64_t(elapsed)*45426+1799)/1800;
+        assert(anchor_target-changed->target_q16==exact_drop);
+        std::printf("elapsed_seconds=%lld legacy_delta_q16=0 candidate_delta_q16=-%u\n",static_cast<long long>(elapsed),anchor_target-changed->target_q16);
+    }
+    assert(!DeriveElapsedMeritTarget(*beforeGold,*head,policy,1800)); // Future anchor.
+    assert(!DeriveElapsedMeritTarget(*fork,*head,policy,1800)); // Another branch.
+    assert(!DeriveElapsedMeritTarget(*head,*head,policy,599)); // Below target spacing.
+    // Equal accepted-work cadence cancels elapsed time exactly; bursts add
+    // bounded work credit rather than being mistaken for coordination records.
+    for(const uint32_t half_life:std::array<uint32_t,2>{1800,3600}){
+        auto* steady=head;
+        for(unsigned tick=1;tick<=12;++tick){
+            const auto time=anchor_time+tick*600;
+            steady=&branch.append(steady,true,time,policy.initial_q16);
+            for(int offset=-5;offset<=5;++offset)steady=&branch.append(steady,false,time+offset,policy.initial_q16);
+            const auto quote=DeriveElapsedMeritTarget(*steady,*head,policy,half_life);
+            assert(quote&&quote->target_q16==anchor_target&&quote->blocks_since_anchor==tick);
+        }
+        auto* burst=head;
+        for(unsigned i=0;i<3;++i)burst=&branch.append(burst,true,anchor_time+600+i,policy.initial_q16);
+        for(int offset=-5;offset<=5;++offset)burst=&branch.append(burst,false,anchor_time+600+offset,policy.initial_q16);
+        const auto quote=DeriveElapsedMeritTarget(*burst,*head,policy,half_life);
+        auto rebased=policy;rebased.initial_q16=anchor_target;rebased.half_life_seconds=half_life;
+        assert(quote&&quote->target_q16==*QuoteAnchoredMeritTarget(rebased,3,600));
+        std::printf("half_life_seconds=%u steady_12_gold_delta_q16=0 burst_3_gold_delta_q16=%u\n",half_life,quote->target_q16-anchor_target);
+    }
+    auto* outage=head;
+    for(int offset=-5;offset<=5;++offset)outage=&branch.append(outage,false,anchor_time+86400+offset,policy.initial_q16);
+    const auto floor=DeriveElapsedMeritTarget(*outage,*head,policy,1800);assert(floor&&floor->target_q16==policy.minimum_q16);
+    for(unsigned i=0;i<3;++i)outage=&branch.append(outage,true,anchor_time+86406+i,policy.minimum_q16);
+    const auto recovery=DeriveElapsedMeritTarget(*outage,*head,policy,1800);assert(recovery);
+    auto fixed=policy;fixed.initial_q16=anchor_target;fixed.half_life_seconds=1800;
+    const auto fixed_recovery=QuoteAnchoredMeritTarget(fixed,3,recovery->elapsed_seconds);
+    assert(fixed_recovery&&*fixed_recovery==policy.minimum_q16);
+    assert(recovery->target_q16>policy.minimum_q16&&recovery->target_q16<policy.minimum_q16+65536);
+    std::printf("24h_outage_floor_q16=%u recovery_after_3_gold_q16=%u rejected_fixed_anchor_q16=%u\n",floor->target_q16,recovery->target_q16,*fixed_recovery);
+    auto* evicted=outage;
+    for(unsigned i=0;i<4200;++i)evicted=&branch.append(evicted,false,anchor_time+86410+i,policy.initial_q16);
+    assert(DeriveElapsedMeritTarget(*evicted,*head,policy,1800));
+    assert(DeriveElapsedMeritTarget(*outage,*head,policy,1800)->target_q16==recovery->target_q16);
+    assert(DeriveElapsedMeritTarget(*head,*head,policy,3600)->target_q16==anchor_target);
+    const auto forked=DeriveElapsedMeritTarget(*fork,*beforeGold,policy,1800);assert(forked&&forked->blocks_since_anchor==1);
+    const ElapsedRetargetSchedule schedule{genesis->GetBlockHash(),head->nHeight+1,1800,21U*65536U};
+    assert(DeriveScheduledMeritTarget(*head,policy,schedule)->target_q16==anchor_target);
+    assert(DeriveScheduledMeritTarget(*outage,policy,schedule)->target_q16>21U*65536U);
+    const auto floor21=DeriveScheduledMeritTarget(*evicted,policy,schedule);assert(floor21&&floor21->target_q16==21U*65536U);
+    assert(DeriveScheduledMeritTarget(*beforeGold,policy,schedule)->target_q16==DeriveHistoricalMeritTarget(*beforeGold,policy)->target_q16);
+    auto foreign=schedule;foreign.chain=branch.hashes.back();
+    assert(DeriveScheduledMeritTarget(*evicted,policy,foreign)->target_q16==DeriveHistoricalMeritTarget(*evicted,policy)->target_q16);
+    assert(DeriveNextMeritTarget(*evicted,policy)->target_q16==DeriveHistoricalMeritTarget(*evicted,policy)->target_q16);
+    auto malformed=schedule;malformed.height=0;assert(!DeriveScheduledMeritTarget(*head,policy,malformed));
+    malformed=schedule;malformed.retained_floor_q16=64U*65536U;assert(!DeriveScheduledMeritTarget(*head,policy,malformed));
+    // Many cheap records at the same median time do not manufacture work.
+    auto* still=head;
+    for(int offset=-5;offset<=5;++offset)still=&branch.append(still,false,anchor_time+600+offset,policy.initial_q16);
+    const auto unchanged=DeriveElapsedMeritTarget(*still,*head,policy,1800)->target_q16;
+    for(unsigned i=0;i<100;++i)still=&branch.append(still,false,anchor_time+600,policy.initial_q16);
+    assert(DeriveElapsedMeritTarget(*still,*head,policy,1800)->target_q16==unchanged);
+    auto* ceiling=head;
+    for(unsigned i=0;i<100;++i)ceiling=&branch.append(ceiling,true,anchor_time+601,policy.maximum_q16);
+    assert(DeriveElapsedMeritTarget(*ceiling,*head,policy,1800)->target_q16==policy.maximum_q16);
+    for(int offset=-5;offset<=5;++offset)ceiling=&branch.append(ceiling,false,anchor_time+1200+offset,policy.initial_q16);
+    assert(DeriveElapsedMeritTarget(*ceiling,*head,policy,1800)->target_q16<policy.maximum_q16);
+    std::puts("PASS elapsed transition: old history unchanged, wrong chain excluded, exact transition, retained floor21, no coordination count credit, upper/lower recovery");
+    // Link the real production GetNextWorkRequired entry, with the configured
+    // testnet genesis and actual activation height. The old pow.o fails this.
+    const MeritControllerDefinition deployed{29U*65536U,16U*65536U,64U*65536U,600,172800};
+    Branch pinned;pinned.next=100000;auto* live=&pinned.append(nullptr,false,100000,deployed.initial_q16);
+    pinned.hashes.front()=*uint256::FromHex("0ccd1f2349ed75f9cf4d0279871a204e107683e5baa1dd6641c4e6f08a25a17d");
+    Consensus::Params params{};params.pgn_native_proof=Consensus::NativeProofParameters{deployed.initial_q16,deployed.minimum_q16,deployed.maximum_q16,600,172800,0x207fffff,{}};
+    for(int32_t height=1;height<TestnetElapsedRetargetHeight;++height){
+        const auto expected=GetNextWorkRequired(live,params);
+        live=&pinned.append(live,height==100,100000+height,expected);
+    }
+    const auto legacy_at_activation=DeriveHistoricalMeritTarget(*live,deployed)->target_q16;
+    assert(GetNextWorkRequired(live,params)==legacy_at_activation);
+    const auto* transition=live;const auto start_time=live->GetMedianTimePast();
+    for(int offset=-5;offset<=5;++offset)live=&pinned.append(live,false,start_time+600+offset,deployed.initial_q16);
+    const auto next=GetNextWorkRequired(live,params);
+    assert(next==DeriveNextMeritTarget(*live,deployed)->target_q16&&next<legacy_at_activation);
+    assert(DeriveHistoricalMeritTarget(*live,deployed)->target_q16==legacy_at_activation);
+    live=&pinned.append(live,true,start_time+606,next);
+    assert(live->nBits==GetNextWorkRequired(live->pprev,params));
+    assert(GetNextWorkRequired(transition,params)==legacy_at_activation);
+    std::printf("PASS production pow entry: height%d preserves %u; post-transition drought target %u; new Gold header matches; old ancestry unchanged\n",TestnetElapsedRetargetHeight,legacy_at_activation,next);
     std::puts("PASS retarget history: scientific-only count, interleaved coordination, exact median, fork, old ancestry, cache eviction, policy change, invalid header");
 }

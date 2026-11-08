@@ -23,6 +23,24 @@ class Rpc:
  def cancel_all(self):self.cancelled=True
 class AdmissionTests(unittest.TestCase):
  def setUp(self):self.rpc=Rpc()
+ def test_open_testnet_allows_new_identity_without_registration_or_diagnostics(self):
+  original=self.rpc.call
+  def call(method,args=None,wallet=False):
+   value=original(method,args,wallet)
+   if method=='getpgnparticipants':value['admission_mode']='open'
+   return value
+  self.rpc.call=call;self.rpc.count=0
+  s=join_status(self.rpc,G,'miner')
+  self.assertFalse(s['registered']);self.assertTrue(s['normal_cycle_permission']);self.assertTrue(s['audit_permission']);self.assertEqual(s['blockers'],[])
+  self.assertFalse(s['own_report_membership_quorum']);self.assertEqual(self.rpc.submits,0)
+ def test_unknown_admission_mode_is_not_silently_interpreted_as_open(self):
+  original=self.rpc.call
+  def call(method,args=None,wallet=False):
+   value=original(method,args,wallet)
+   if method=='getpgnparticipants':value['admission_mode']='unknown'
+   return value
+  self.rpc.call=call
+  with self.assertRaisesRegex(ValueError,'admission policy'):join_status(self.rpc,G,'miner')
  def test_registered_permission_and_two_other_groups(self):
   self.rpc.registered=self.rpc.enabled=True;s=join_status(self.rpc,G,'miner');self.assertEqual(s['independent_registered_operators'],2);self.assertTrue(s['own_report_membership_quorum'])
  def test_alias_addresses_cannot_be_counted_as_independent_operators(self):

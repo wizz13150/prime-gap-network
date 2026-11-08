@@ -3,6 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <pgn/native_elapsed_retarget.h>
 #include <node/blockstorage.h>
 #include <pgn/native_bootstrap_hash.h>
 #include <pgn/chain_work_policy.h>
@@ -510,7 +511,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                 if(kind==pgn::core::AdaptiveHeaderKind::Invalid)return false;
                 if(kind==pgn::core::AdaptiveHeaderKind::Scientific){
                     if(!pindex->pprev)return false;
-                    const auto q=pgn::core::DeriveHistoricalMeritTarget(*pindex->pprev,*own_retarget);
+                    const auto q=pgn::core::DeriveNextMeritTarget(*pindex->pprev,*own_retarget);
                     if(!q||pindex->nBits!=q->target_q16)return false;
                 }else if(pindex->nBits!=*pinned_bootstrap_bits||
                     (!GetParams().IsTestChain()&&pindex->pprev&&pgn::core::ClassifyAdaptiveHeader(*pindex->pprev,*own_retarget)==pgn::core::AdaptiveHeaderKind::Scientific))return false;

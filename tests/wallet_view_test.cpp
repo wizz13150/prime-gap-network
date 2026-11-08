@@ -30,9 +30,9 @@ int main(int argc,char** argv){
  for(auto* input:account->findChildren<QLineEdit*>())if(input->placeholderText().contains("Select an address")&&!input->isReadOnly())return 7;
  outer->setCurrentIndex(0);app.processEvents();
  auto* walletPages=view->findChild<QStackedWidget*>("pgn-wallet-pages");auto* manage=view->findChild<QPushButton*>("pgn-wallet-manage");auto* back=view->findChild<QPushButton*>("pgn-wallet-overview");auto* management=view->findChild<QWidget*>("pgn-wallet-management");
- if(!walletPages||!manage||!back||!management||walletPages->currentIndex()!=0||management->isVisible()||!manage->isVisible())return 8;
- manage->click();app.processEvents();if(walletPages->currentIndex()!=1||!management->isVisible()||account->isVisible())return 9;
+ if(!walletPages||!manage||!back||!management||walletPages->currentIndex()!=1||!management->isVisible()||manage->isVisible())return 8;
  back->click();app.processEvents();if(walletPages->currentIndex()!=0||management->isVisible()||!account->isVisible())return 10;
+ manage->click();app.processEvents();if(walletPages->currentIndex()!=1||!management->isVisible()||account->isVisible())return 9;
  if(argc>1)view->grab().save(QString::fromLocal8Bit(argv[1]));
  std::cout<<"WALLET_NATIVE_HORIZON_PASS: actual five-workspace/four-account widget tree, shared navigation, absent Core holds operations and unknown balances, no process/window/key/node created\n";return 0;
 }

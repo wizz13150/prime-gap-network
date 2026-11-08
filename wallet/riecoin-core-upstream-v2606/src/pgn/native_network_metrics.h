@@ -1,5 +1,6 @@
 // Copyright (c) 2026 The PGN developers. MIT.
 #pragma once
+#include <pgn/native_elapsed_retarget.h>
 #include <pgn/native_report_audit.h>
 #include <pgn/native_retarget_policy.h>
 #include <pgn/bit_range_coverage.h>
@@ -129,7 +130,7 @@ inline UniValue NativeNetworkMetrics(const NativeAuditLedger& ledger,const CBloc
         reported+=reported_delta[i];audited+=audited_delta[i];
         const auto* index=tip.GetAncestor(last[i]);
         if(!index)throw std::runtime_error("Metrics sample ancestry unavailable");
-        const auto quote=DeriveHistoricalMeritTarget(*index,policy);
+        const auto quote=DeriveNextMeritTarget(*index,policy);
         if(!quote)throw std::runtime_error("Metrics target unavailable");
         UniValue point{UniValue::VOBJ};point.pushKV("time",timestamps[i]);point.pushKV("height",index->nHeight);
         point.pushKV("hash",index->GetBlockHash().GetHex());point.pushKV("merit_target_q16",uint64_t(quote->target_q16));

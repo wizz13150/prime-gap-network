@@ -1,3 +1,4 @@
+#include <pgn/native_elapsed_retarget.h>
 #include <pgn/chain_science_policy.h>
 #include <pgn/profile_policy_codec_internal.h>
 #include <pgn/canonical_encoding.h>
@@ -27,7 +28,7 @@ ChainSciencePolicyCheck ReadChainSciencePolicy(const CCoinsView& view,const CBlo
         const Integer scaled=original.target_numerator*65536;
         if(scaled%original.target_denominator!=0||scaled/original.target_denominator!=target->initial_q16)
             return {ChainRangePolicyVerdict::InvalidConfiguration,{}};
-        const auto quote=DeriveHistoricalMeritTarget(parent,*target);
+        const auto quote=DeriveNextMeritTarget(parent,*target);
         if(!quote)return {ChainRangePolicyVerdict::InvalidParent,{}};
         const auto divisor=std::gcd(quote->target_q16,65536U);
         definition->evidence.target_numerator=quote->target_q16/divisor;

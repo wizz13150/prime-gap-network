@@ -62,18 +62,52 @@ void Enroll(NativeAuditLedger& ledger,const Actor& authority,const Actor& actor,
     event.signature=authority.Sign(*ScriptWorkChallenge({chain,NativeAuditWorkIdentity(chain,{},event),event.parent},event.actor,{4096,4096}));
     ApplyNativeAuditEvent(ledger,event,parent,chain,{4096,4096});
 }
-void PassedReceipt(NativeAuditLedger& ledger,const Actor& actor,const uint256& request,uint8_t slot,const CBlockIndex& parent,const uint256& chain){
-    auto& report=ledger.at(request);auto& job=*report.jobs[slot];
+std::string AuditAnswer(const NativeReportAudit& report,uint8_t slot,const CBlockIndex& parent){
     const auto partitions=NativeAuditPartitions(report.report.commitment.root,parent.GetAncestor(report.report.height+1)->GetBlockHash());
     std::string body="{\"schema\":\"PGN_AUDIT_ANSWER_V1\",\"ticket\":\""+HexStr(report.range.ticket_id)+"\",\"attempt\":0,\"partitions\":[";
     for(unsigned i=0;i<5;++i){if(i)body+=",";body+=std::to_string(partitions[slot][i]);}
     body+="],\"counts\":[\"0\",\"0\",\"0\",\"0\",\"0\"],\"nonce\":\""+std::string(64,'a')+"\"}";
+    return body;
+}
+void PassedReceipt(NativeAuditLedger& ledger,const Actor& actor,const uint256& request,uint8_t slot,const CBlockIndex& parent,const uint256& chain){
+    auto& report=ledger.at(request);auto& job=*report.jobs[slot];
+    const auto body=AuditAnswer(report,slot,parent);
     NativeAuditEvent event{request,parent.GetBlockHash(),NativeAuditAction::Reveal,slot,0,actor.script,Bytes{body.begin(),body.end()}};
     job.commitment=HexStr(AuditSha(event.body)); // controlled precommitted QA fixture
     event.signature=actor.Sign(*ScriptWorkChallenge({chain,NativeAuditWorkIdentity(chain,report.report.commitment.root,event),event.parent},event.actor,{4096,4096}));
     auto forged=event;forged.body.back()^=1;bool rejected{};try{ApplyNativeAuditEvent(ledger,forged,parent,chain,{4096,4096});}catch(...){rejected=true;}assert(rejected);
     ApplyNativeAuditEvent(ledger,event,parent,chain,{4096,4096});assert(job.stage==NativeAuditJob::Passed&&job.passed_height==parent.nHeight+1);
     ApplyNativeAuditEvent(ledger,event,parent,chain,{4096,4096});assert(job.passed_height==parent.nHeight+1);
+}
+// Real BIP322 keys and the production state transition, with no enrollment.
+void PublicAdmissionExercise(){
+    Actor owner,first,second;Indexes indexes;const auto chain=Id(1),request=Id(701);
+    NativeAuditLedger ledger;ledger.public_admission=true;NativeReportAudit report;
+    report.owner=owner.script;report.report.height=1;report.report.commitment.root=Id(601);report.expected=std::array<uint64_t,100>{};
+    ledger.emplace(request,report);const auto& parent=indexes.blocks[8];
+    const auto eventFor=[&](const Actor& actor,NativeAuditAction action,uint8_t slot,Bytes body){
+        NativeAuditEvent event{request,parent.GetBlockHash(),action,slot,0,actor.script,std::move(body)};
+        event.signature=actor.Sign(*ScriptWorkChallenge({chain,NativeAuditWorkIdentity(chain,report.report.commitment.root,event),event.parent},event.actor,{4096,4096}));return event;
+    };
+    const auto rejected=[&](const NativeAuditEvent& event){bool refused=false;try{ApplyNativeAuditEvent(ledger,event,parent,chain,{4096,4096});}catch(...){refused=true;}assert(refused);};
+    auto assign=eventFor(first,NativeAuditAction::Assign,0,NativeTimedAuditAssignmentBody());
+    auto bad=assign;bad.signature.back()^=1;rejected(bad);assert(!ledger.at(request).jobs[0]);
+    rejected(eventFor(owner,NativeAuditAction::Assign,0,NativeTimedAuditAssignmentBody()));
+    ApplyNativeAuditEvent(ledger,assign,parent,chain,{4096,4096});
+    rejected(eventFor(first,NativeAuditAction::Assign,1,NativeTimedAuditAssignmentBody()));
+    ApplyNativeAuditEvent(ledger,eventFor(second,NativeAuditAction::Assign,1,NativeTimedAuditAssignmentBody()),parent,chain,{4096,4096});
+    assert(ledger.participants.empty()&&ledger.authority.empty()&&NativeAuditOperatorsIndependent(ledger,ledger.at(request)));
+    for(uint8_t slot=0;slot<2;++slot){const auto body=AuditAnswer(ledger.at(request),slot,parent);const auto digest=HexStr(AuditSha(std::span{reinterpret_cast<const unsigned char*>(body.data()),body.size()}));
+        const auto& actor=slot?second:first;ApplyNativeAuditEvent(ledger,eventFor(actor,NativeAuditAction::Commit,slot,ParseHex(digest)),parent,chain,{4096,4096});}
+    for(uint8_t slot=0;slot<2;++slot){const auto body=AuditAnswer(ledger.at(request),slot,parent);const auto& actor=slot?second:first;
+        auto reveal=eventFor(actor,NativeAuditAction::Reveal,slot,Bytes{body.begin(),body.end()});bad=reveal;bad.body.back()^=1;rejected(bad);
+        ApplyNativeAuditEvent(ledger,reveal,parent,chain,{4096,4096});ApplyNativeAuditEvent(ledger,reveal,parent,chain,{4096,4096});}
+    const auto& checked=ledger.at(request);
+    assert(checked.jobs[0]->stage==NativeAuditJob::Passed&&checked.jobs[1]->stage==NativeAuditJob::Passed&&ledger.participants.empty());
+    // Signed audit answers do not substitute for the missing owner disclosure.
+    assert(!checked.Audited());
+    ledger.at(request).details_root=Digest{}; // controlled owner-disclosure fixture
+    assert(ledger.at(request).Audited());
 }
 IssuanceSnapshot Initial(const GoldEpochDefinition& d){
     const auto pot=*QuoteCumulativeAuditAccrual(d,10);
@@ -93,6 +127,7 @@ void Publish(CCoinsViewDB& db,const IssuanceSnapshot& before,const IssuanceSnaps
 }
 int main(int argc,char** argv){
     assert(argc==2);ECC_Context ecc;SelectParams(ChainType::TESTNET);LOCK(cs_main);
+    PublicAdmissionExercise();
     constexpr CAmount coin=PGN_ATOMIC_UNITS_PER_COIN;
     const GoldEpochDefinition definition{200000,10,171*coin,32*coin,24*coin,8*coin,125*coin,1000*coin,40*65536};
     assert(QuoteCumulativeAuditAccrual(definition,10)==125*coin);
@@ -106,7 +141,20 @@ int main(int argc,char** argv){
         PassedReceipt(ledger,second,Id(700+i),1,indexes.blocks[i?11:8],Id(1));
     }
     auto before=Initial(definition);auto after=before;after.tip=Id(900);
+    unsigned reads{};
+    const auto missing_ledger=[&]()->const NativeAuditLedger*{++reads;return nullptr;};
+    auto idle=before;
+    const auto empty=ApplyAuditSettlementPageLazy(missing_ledger,definition,2,0,0,{},idle);
+    assert(empty&&empty->count==0&&empty->paid==0&&empty->outputs.empty()&&!empty->receipt&&idle==before&&reads==0);
+    auto corrupt_idle=before;--corrupt_idle.pools->audit;
+    assert(!ApplyAuditSettlementPageLazy(missing_ledger,definition,2,0,0,{},corrupt_idle)&&reads==0);
+    auto due_missing=before;
+    assert(!ApplyAuditSettlementPageLazy(missing_ledger,definition,2,10,10,Id(110),due_missing)&&reads==1&&due_missing==before);
+    auto lazy_after=after;
+    const auto lazy=ApplyAuditSettlementPageLazy([&]{++reads;return &ledger;},definition,2,10,10,Id(110),lazy_after);
+    assert(lazy&&reads==2);
     const auto page=ApplyAuditSettlementPage(ledger,definition,2,10,10,Id(110),after);assert(page&&page->count==2&&after.audit_settlement->active->tasks==3);
+    assert(lazy_after==after&&lazy->outputs==page->outputs&&lazy->paid==page->paid&&lazy->receipt==page->receipt);
     assert(page->paid==833333333334LL&&after.pools->audit==416666666666LL);
     const auto tx=MakeTransactionRef(Coinbase(*page,11));assert(VerifyAuditSettlementOutputs(*page,*tx,{},0));
     auto bad=Coinbase(*page,11);bad.vout[0].scriptPubKey=authority.script;assert(!VerifyAuditSettlementOutputs(*page,CTransaction{bad},{},0));

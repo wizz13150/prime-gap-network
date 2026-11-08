@@ -3,6 +3,7 @@
 #pragma once
 #include <pgn/native_report_commitment.h>
 #include <pgn/audit_lease_clock.h>
+#include <pgn/testnet_service_activation.h>
 #include <crypto/sha256.h>
 #include <univalue.h>
 #include <util/strencodings.h>
@@ -113,6 +114,7 @@ struct NativeAuditMembership {uint256 operator_id;bool may_audit{};};
 struct NativeAuditLedger:std::map<uint256,NativeReportAudit> {
     CScript authority;uint256 authority_request;int32_t authority_height{};
     std::map<Bytes,NativeAuditMembership> participants;
+    bool public_admission{};
 };
 inline uint256 NativeAuditOperator(const NativeAuditLedger& ledger,const CScript& script){
     const auto found=ledger.participants.find(Bytes{script.begin(),script.end()});
@@ -120,6 +122,10 @@ inline uint256 NativeAuditOperator(const NativeAuditLedger& ledger,const CScript
     return *uint256::FromHex(HexStr(AuditSha({script.data(),script.size()})));
 }
 inline bool NativeAuditEligible(const NativeAuditLedger& ledger,const CScript& actor){
+    // Eligibility is permissionless on the configured public testnet. This
+    // does not replace the signature verifier in ApplyNativeAuditEvent or
+    // the automatic, distinct-operator assignment/commit/reveal checks.
+    if(ledger.public_admission)return !actor.empty();
     const auto found=ledger.participants.find(Bytes{actor.begin(),actor.end()});return found!=ledger.participants.end()&&found->second.may_audit;
 }
 inline bool NativeAuditOperatorsIndependent(const NativeAuditLedger& ledger,const NativeReportAudit& report){
@@ -225,7 +231,8 @@ inline std::optional<NativeAuditLedger> ReadNativeAuditLedgerWithBlockHook(const
     const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,BeforeBlock&& before_block){
     try{
         auto reports=ReadConfirmedNativeReports(view,parent,history,schedule_budget);if(!reports)return {};
-        NativeAuditLedger ledger;
+        NativeAuditLedger ledger;const auto fact_head=view.GetPgnFactHead();
+        ledger.public_admission=fact_head&&PgnTestnetServiceActivation(fact_head->chain).has_value();
         for(int32_t height=0;height<=parent.nHeight&&ledger.authority.empty();++height){
             const auto loaded=history.Load(view,parent,height,schedule_budget.archive);if(!loaded.block)return {};
             const auto scan=ScanConfirmedTicketRequests(view,parent,*loaded.block,schedule_budget.scan);if(!scan.batch)return {};

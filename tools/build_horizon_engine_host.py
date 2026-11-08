@@ -18,7 +18,7 @@ command += ['--paths',str(root/'tools')]
 command.append(str(source/'horizon_engine_host.py'));subprocess.run(command,check=True)
 if any(hashlib.sha256((root/name).read_bytes()).hexdigest()!=expected for name,expected in inputs.items()):
     raise RuntimeError('Engine-host source changed while freezing; output is not qualified')
-executable=out/'dist/horizon-engine-host/horizon-engine-host.exe'
+executable=out/'dist/horizon-engine-host'/('horizon-engine-host.exe' if sys.platform=='win32' else 'horizon-engine-host')
 manifest=dict(schema='PGN_HORIZON_ENGINE_HOST_SOURCE_V1',sources=inputs,
               executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
               python_version=sys.version,scope='Build provenance only; no runtime, network or scientific acceptance')

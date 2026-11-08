@@ -1,5 +1,6 @@
 #pragma once
 #include <QCryptographicHash>
+#include "update/code_file_digest.h"
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -43,8 +44,8 @@ inline QJsonObject inspectComponent(const QString& root,const QJsonObject& decla
         declaredFiles.insert(actualPath);
         total+=info.size();if(total>1024LL*1024*1024)return result;
         QFile file(actualPath);if(!file.open(QIODevice::ReadOnly))return result;
-        QCryptographicHash hash(QCryptographicHash::Sha256);if(!hash.addData(&file))return result;
-        if(QString::fromLatin1(hash.result().toHex())!=expected){result.insert("reason","Installed files differ from the declared build");return result;}
+        const auto hash=codeFileSha256(file);if(!hash)return result;
+        if(QString::fromLatin1(hash->toHex())!=expected){result.insert("reason","Installed files differ from the declared build");return result;}
     }
     if(!expectedPrimary.isEmpty()){
         const auto primary=QFileInfo(expectedPrimary).canonicalFilePath();

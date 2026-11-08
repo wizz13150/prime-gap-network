@@ -27,9 +27,9 @@ Select either image to view it at full resolution. These are captures of the cur
 
 ### Whole-audit progress and integrated audit preview
 
-Interface **2026.11.8.97** / GPU runtime **2026.11.8.33** preserve results across the internal partitions of the same audit. Results reset when the audit changes or research begins. The first two actually observed audits fill the first two progress sections; additional audits use orange sections retained throughout research. Current-step and cycle ETA are estimates; unavailable future quantities keep the cycle ETA unknown rather than inventing a time.
+Interface **2026.11.8.99** / GPU runtime **2026.11.8.34** / Core **2026.11.8.5** preserve results across the internal partitions of the same audit. Results reset when the audit changes or research begins. The first two actually observed audits fill the first two progress sections; additional audits use orange sections retained throughout research. Current-step and cycle ETA are estimates; unavailable future quantities keep the cycle ETA unknown rather than inventing a time.
 
-The Network Work scene is preloaded during application startup. Names are centered, the resize minimum preserves their visibility, Reset view restores the initial pane size, and transient messages do not shift the layout. The application window can move beyond screen edges without forced recentering. Statistics use stable typography. Scene framing follows the pane height. Character motion and Atlas fluidity remain work in progress.
+The Network Work scene is preloaded during application startup. Names are centered, the resize minimum preserves their visibility, Reset view restores the initial pane size, and transient messages do not shift the layout. The application window can move beyond screen edges without forced recentering. Statistics use stable typography. Scene framing follows the pane height. The pane resize no longer causes lateral jumps. Further character gesture work is paused.
 
 Startup diagnostics retain a bounded structured failure through process exit and into an export started afterwards: startup stage, failing resource basename, OS error and relevant call sites. This path has been tested using the actual frozen host through native process capture and ZIP export. It does not establish the cause of Robert's machine-specific startup failure. Diagnostics are optional and are never a prerequisite for mining.
 
@@ -39,10 +39,12 @@ Startup diagnostics retain a bounded structured failure through process exit and
 This is the current portable Windows preview for supervised tests on the PGN testnet. Use this epoch's package when joining; older alpha packages belong to an older test network.
 
 1. Extract the complete folder and launch **PGN-Horizon.exe**. PGN Core and the engine runtimes are included.
-2. On the first launch, the wallet setup assistant opens automatically. Create a testnet wallet or select an existing Core data folder. Review the folder and confirm; cancellation does not create a wallet. Existing configured wallets reopen normally.
+2. If no wallet is configured, Horizon opens Wallet → Wallet management automatically. Create a testnet wallet or open an existing Core data folder there. Existing configured wallets reopen normally; nothing is created without your action.
 3. Let the integrated encrypted connection synchronize. No VPN or public wallet RPC port is required.
-4. In Profile, copy your **public mining identity** and send it to the testnet coordinator for approval. A connected peer is not automatically an admitted miner/auditor. Never send wallet files, keys or RPC credentials.
+4. Choose your public name in Profile, then turn a GPU on. No coordinator approval, enrollment or diagnostic recording is required. Core verifies the signatures and work automatically. Never send wallet files, keys or RPC credentials.
 5. Turn your GPU on. CPU mining can remain OFF. Network service may assign audits before a new search ticket; that work uses the GPU and is part of the same normal cycle. Starting Diagnostics recording is never required to turn mining on. Reports, audits and searches share the normal worker.
+
+Core **2026.11.8.5** is the common testnet protocol upgrade. At ledger height **3456**, the difficulty begins following elapsed median chain time with a 30-minute response scale and a merit floor of 21. Earlier history, the genesis and wallets are retained. All participating nodes need this Core version before the transition. Coordination records remain part of this test laboratory; final Gold-only architecture is still separate work.
 
 ### What this preview provides
 
@@ -107,7 +109,7 @@ The [development copy of the historical community range register](data/community
 
 ## Get involved
 
-Researchers, developers and volunteer testers are welcome. Introduce yourself in the [PGN Discord community](https://discord.gg/qZ2DerDMXQ). For a private trial, share only your public audit address and diagnostic information requested by the coordinator. Never send a private key or wallet file.
+Researchers, developers and volunteer testers are welcome. Introduce yourself in the [PGN Discord community](https://discord.gg/qZ2DerDMXQ). For troubleshooting, share only the public information and diagnostic export relevant to your issue. Never send a private key or wallet file.
 
 ## Acknowledgements
 

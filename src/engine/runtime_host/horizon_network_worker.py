@@ -575,7 +575,7 @@ class NetworkWorker:
                 self.quitting.wait(.2)
                 continue
             status = join_status(self.rpc, self.args.genesis, self.address())
-            if status['registered'] and status['normal_cycle_permission']:
+            if status['normal_cycle_permission']:
                 return True
             message = 'Miner registration or audit permission is required; no new CPU work has been requested'
             self.message(message, 'Registration required')

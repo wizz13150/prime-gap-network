@@ -15,7 +15,7 @@ inline WalletSetupDeployment selectedWalletDeployment(const QJsonObject& verifie
     profile.insert("data_directory",directory);profile.insert("approved_data_directory",directory);profile.insert("data_directory_origin","user_setup");profile.insert("create_wallet",!choice.existing);
     const auto error=CoreProfile::fromJson(profile).validate(applicationRoot);return error.isEmpty()?WalletSetupDeployment{profile,{}}:WalletSetupDeployment{{},error};
 }
-// The wizard calls this only from Finish. It publishes configuration only:
+// Called only after an explicit creation/open selection. Publishes configuration only:
 // the selected Core data directory and wallet are created by the subsequent
 // verified Core lifecycle, never while a user is browsing or cancelling.
 inline QString publishWalletSetup(const QString& runtimeDirectory,const WalletSetupDeployment& selection){

@@ -4,6 +4,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <pgn/native_elapsed_retarget.h>
 #include <pow.h>
 #include <pgn/native_parameter_work.h>
 #include <stdexcept>
@@ -19,7 +20,7 @@ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const Consensus:
 {
     assert(pindexLast != nullptr);
     if(params.pgn_native_proof){
-        const auto target=pgn::core::DeriveHistoricalMeritTarget(*pindexLast,pgn::core::NativeParameterController(*params.pgn_native_proof));
+        const auto target=pgn::core::DeriveNextMeritTarget(*pindexLast,pgn::core::NativeParameterController(*params.pgn_native_proof));
         if(!target)throw std::runtime_error("Native scientific target unavailable at this ancestry");
         return target->target_q16; // Bootstrap templates use their own committed hash target.
     }

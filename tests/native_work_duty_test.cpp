@@ -64,5 +64,21 @@ int main(){
     first.owner=owner;first.jobs[1]=NativeAuditJob{alias,0,2,100};
     check(inspect({a,b}).verdict==NativeDutyVerdict::InvalidClaim); // Two aliases cannot form independent slots.
     check(InspectNativeWorkDuty(ledger,parent,miner,std::array{a,b,a},spent,0).verdict==NativeDutyVerdict::InvalidContext);
+    // Public admission removes coordinator permission, not work obligations or
+    // attribution of known aliases. Start with a genuinely unregistered key.
+    NativeAuditLedger open;const CScript newcomer{OP_5};
+    check(!NativeAuditEligible(open,newcomer));open.public_admission=true;
+    check(NativeAuditEligible(open,newcomer)&&!NativeAuditEligible(open,CScript{}));
+    check(InspectAutomaticNativeWorkDuty(open,parent,newcomer,{},0).checked.verdict==NativeDutyVerdict::Ready);
+    open.emplace(id(40),report);auto selected=SelectNativeAudit(open,newcomer,parent.nHeight,parent.GetMedianTimePast());
+    check(selected&&selected->first==id(40)&&selected->second==0);
+    check(InspectAutomaticNativeWorkDuty(open,parent,newcomer,{},0).checked.verdict==NativeDutyVerdict::AuditRequired);
+    open.at(id(40)).owner=newcomer;check(!SelectNativeAudit(open,newcomer,parent.nHeight,parent.GetMedianTimePast()));
+    open.at(id(40)).owner=owner;
+    open.participants.emplace(Bytes{miner.begin(),miner.end()},NativeAuditMembership{id(1),false});
+    open.participants.emplace(Bytes{alias.begin(),alias.end()},NativeAuditMembership{id(1),false});
+    open.at(id(40)).jobs[0]=NativeAuditJob{miner,0,2,100};
+    check(NativeAuditEligible(open,alias)&&!SelectNativeAudit(open,alias,parent.nHeight,parent.GetMedianTimePast()));
+    check(SelectNativeAudit(open,newcomer,parent.nHeight,parent.GetMedianTimePast())->second==1);
     std::cout<<"{\"PASS\":true,\"checks\":"<<checks<<",\"native_ledger\":true,\"network_activated\":false}\n";
 }

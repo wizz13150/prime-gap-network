@@ -1,7 +1,6 @@
 #include "wallet/exact_rpc_money.h"
 #include "ui/wallet_core_view.h"
 #include "ui/wallet_peers_view.h"
-#include "ui/wallet_setup_wizard.h"
 #include "ui/wallet_management_panel.h"
 #include "ui/wallet_history_view.h"
 #include "ui/component_versions_dialog.h"
@@ -129,7 +128,7 @@ public:
   auto* header=new QWidget(this);auto* headerBox=new QVBoxLayout(header);headerBox->setContentsMargins(20,18,20,8);layout->addWidget(header);
   auto* heading=new QLabel("PGN WALLET",this);
   heading->setStyleSheet("font:700 22px monospace;color:#e9fffb");auto* headingRow=new QHBoxLayout;headingRow->addWidget(heading);headingRow->addStretch();auto* manageWallets=new QPushButton("Manage wallets…");manageWallets->setObjectName("pgn-wallet-manage");headingRow->addWidget(manageWallets);headerBox->addLayout(headingRow);
-  status_=new QLabel("Use Manage wallets to set up PGN Core or open your existing wallet.",this);
+  status_=new QLabel("Create a wallet or open an existing Core data folder below.",this);
   status_->setStyleSheet("color:#ffad4a;font:10px monospace");status_->setWordWrap(true);headerBox->addWidget(status_);
   auto* workspace=new QTabWidget;workspace->setObjectName("pgn-wallet-subtabs");auto* walletPage=new QWidget;auto* walletPageBox=new QVBoxLayout(walletPage);walletPageBox->setContentsMargins(0,0,0,0);auto* walletScroll=new QScrollArea;walletScroll->setObjectName("pgn-wallet-content-scroll");walletScroll->setWidgetResizable(true);walletScroll->setFrameShape(QFrame::NoFrame);auto* walletContent=new QWidget;viewport_=new QVBoxLayout(walletContent);viewport_->setContentsMargins(0,0,0,0);walletScroll->setWidget(walletContent);auto* walletPages=new QStackedWidget(walletPage);walletPages->setObjectName("pgn-wallet-pages");walletPageBox->addWidget(walletPages);walletPages->addWidget(walletScroll);auto* managementScroll=new QScrollArea;managementScroll->setObjectName("pgn-wallet-management-scroll");managementScroll->setWidgetResizable(true);managementScroll->setFrameShape(QFrame::NoFrame);managementScroll->setAlignment(Qt::AlignTop|Qt::AlignHCenter);auto* managementContent=new QWidget;managementContent->setMaximumWidth(1100);auto* managementBox=new QVBoxLayout(managementContent);managementBox->setContentsMargins(0,8,0,16);auto* backToOverview=new QPushButton("← Back to overview");backToOverview->setObjectName("pgn-wallet-overview");managementBox->addWidget(backToOverview,0,Qt::AlignLeft);managementScroll->setWidget(managementContent);walletPages->addWidget(managementScroll);walletPages->setCurrentIndex(0);connect(manageWallets,&QPushButton::clicked,this,[walletPages]{walletPages->setCurrentIndex(1);});connect(backToOverview,&QPushButton::clicked,this,[walletPages]{walletPages->setCurrentIndex(0);});workspace->addTab(walletPage,"Wallet");
   runtime_=new pgn::wallet::CoreRuntime(root,this,testnet,pgn::wallet::coreRuntimeDirectory(root,testnet));metrics_=new NetworkMetricsHub([this](int span,auto consume){runtime_->readNetworkMetrics(span,std::move(consume));},this);networkExplorer_=new BlockExplorerView(runtime_);
@@ -152,26 +151,22 @@ public:
     if(QFileInfo::exists(path)&&!QFile::remove(path)){status_->setText("Pending folder change could not be cancelled. Core and wallet data remain in their current folder.");return;}
     presentSetup();status_->setText("Pending folder change cancelled. The current Core folder is unchanged.");
    };
-   management_->onConfigure=[this,root,testnet,presentSetup]{
+   management_->onApplySetup=[this,root,testnet,presentSetup](const pgn::wallet::WalletSetupSelection& choice){
     if(setupOpen_)return;setupOpen_=true;status_->setText("Checking PGN Core files…");
     auto* verification=new QFutureWatcher<pgn::wallet::CoreBundle>(this);
-    connect(verification,&QFutureWatcher<pgn::wallet::CoreBundle>::finished,this,[this,root,testnet,presentSetup,verification]{
+    connect(verification,&QFutureWatcher<pgn::wallet::CoreBundle>::finished,this,[this,root,testnet,presentSetup,verification,choice]{
      const auto bundle=verification->result();verification->deleteLater();
-     if(!bundle.error.isEmpty()){setupOpen_=false;status_->setText(bundle.error);return;}
+     if(!bundle.error.isEmpty()){setupOpen_=false;management_->finishSetup(bundle.error);status_->setText(bundle.error);return;}
      QFile current(runtime_->runtimeDirectory()+"/wallet-core.json");QByteArray base;
      if(current.exists()){
-      if(!current.open(QIODevice::ReadOnly)||current.size()>32768){setupOpen_=false;status_->setText("Current Core settings could not be read.");return;}base=current.readAll();
+      if(!current.open(QIODevice::ReadOnly)||current.size()>32768){setupOpen_=false;management_->finishSetup("Current Core settings could not be read.");return;}base=current.readAll();
      }
-     auto* wizard=new WalletSetupWizard(root,testnet?QString("PGN testnet"):QString("PGN"),[this,root,deployment=bundle.deployment,base,presentSetup](const auto& choice){
-      const auto selection=pgn::wallet::selectedWalletDeployment(deployment,choice,root);if(!selection.error.isEmpty())return selection.error;
-      const auto error=base.isEmpty()?pgn::wallet::publishWalletSetup(runtime_->runtimeDirectory(),selection):pgn::wallet::stageWalletSetupChange(runtime_->runtimeDirectory(),selection,base);
-      if(!error.isEmpty())return error;presentSetup();
-      if(base.isEmpty())runtime_->launch();
-      else status_->setText("Folder change saved. Pause mining and audits, then shut down PGN Core normally. The selection applies only after the owned Core has stopped and Horizon starts again.");
-      return QString{};
-     },this);
-     if(!base.isEmpty()){const auto config=QJsonDocument::fromJson(base).object();wizard->setDeferredChange(true);wizard->setSelection({config.value("data_directory").toString(),config.value("wallet").toString(),true});}
-     connect(wizard,&QDialog::finished,this,[this]{setupOpen_=false;});wizard->setAttribute(Qt::WA_DeleteOnClose);wizard->open();
+     const auto selection=pgn::wallet::selectedWalletDeployment(bundle.deployment,choice,root);
+     const auto error=!selection.error.isEmpty()?selection.error:base.isEmpty()?pgn::wallet::publishWalletSetup(runtime_->runtimeDirectory(),selection):pgn::wallet::stageWalletSetupChange(runtime_->runtimeDirectory(),selection,base);
+     setupOpen_=false;management_->finishSetup(error);if(!error.isEmpty()){status_->setText(error);return;}presentSetup();
+     setProperty("pgn_wallet_setup_required",false);
+     if(base.isEmpty())runtime_->launch();
+     else status_->setText("Folder change saved. Pause mining and audits, then shut down PGN Core normally. The selection applies only after the owned Core has stopped and Horizon starts again.");
     });
     verification->setFuture(QtConcurrent::run([root,testnet]{return pgn::wallet::readCoreBundle(root,testnet?QString("test"):QString("main"));}));
    };
@@ -214,14 +209,14 @@ public:
    if(anchor&&anchor->tipHash!=networkDone_&&!networkBusy_)refreshNetwork();
    if(anchor&&anchor->tipHash!=metricsTip_){metricsTip_=anchor->tipHash;metrics_->refresh();}
   };
-  runtime_->onStatus=[this](const QString& text){status_->setText(!QFileInfo::exists(runtime_->runtimeDirectory()+"/wallet-core.json")?QString("Use Manage wallets to set up PGN Core or open your existing wallet."):text);status_->setStyleSheet(runtime_->connected()?"color:#69efc5;font:11px monospace":"color:#ffbd69;font:11px monospace");};
+  runtime_->onStatus=[this](const QString& text){status_->setText(!QFileInfo::exists(runtime_->runtimeDirectory()+"/wallet-core.json")?QString("Create a wallet or open an existing Core data folder below."):text);status_->setStyleSheet(runtime_->connected()?"color:#69efc5;font:11px monospace":"color:#ffbd69;font:11px monospace");};
    runtime_->onReady=[this,presentSetup](qint64){presentSetup();attachClock_.start();attach();accountPanel_->setEnabled(!runtime_->walletManager()->busy());accountPanel_->refreshWallet();metrics_->refresh();};
   runtime_->onStopped=[this]{attachClock_.stop();accountPanel_->setEnabled(false);setProperty("pgn_wallet_embedded",false);setProperty("pgn_wallet_frontend_loaded",false);};
   attachClock_.setInterval(500);connect(&attachClock_,&QTimer::timeout,this,[this]{attach();});
-  QTimer::singleShot(0,runtime_,[this]{
-   if(!QFileInfo::exists(runtime_->runtimeDirectory()+"/wallet-core.json"))management_->onConfigure();
-   else runtime_->launch();
-  });
+  const bool needsSetup=!QFileInfo::exists(runtime_->runtimeDirectory()+"/wallet-core.json");
+  setProperty("pgn_wallet_setup_required",needsSetup);
+  if(needsSetup){workspace->setCurrentIndex(0);walletPages->setCurrentIndex(1);}
+  else QTimer::singleShot(0,runtime_,[this]{runtime_->launch();});
  }
  ~WalletCoreView() override = default;
 private:

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 The PGN developers. MIT.
 // Native current-state work interface. No search, wallet keys or caller seals.
+#include <pgn/native_elapsed_retarget.h>
 #include <pgn/native_node_options.h>
 #include <pgn/rpc_audit_cache.h>
 #include <pgn/rpc_audit_incremental.h>
@@ -94,6 +95,10 @@ RPCMethod getpgnstate(){
   {RPCResult::Type::STR,"cap_atomic","Exact lifetime cap"},{RPCResult::Type::STR,"minted_atomic","Exact cumulative issued amount"},
   {RPCResult::Type::STR,"promised_atomic","Exact unissued obligations"},{RPCResult::Type::STR,"near_miss_pool_atomic","Exact near miss pool"},
   {RPCResult::Type::STR,"audit_pool_atomic","Exact audit pool"},{RPCResult::Type::NUM,"merit_target_q16","Next scientific threshold /65536"},
+   {RPCResult::Type::STR,"merit_retarget_mode",true,"Active next-block controller; never a local difficulty override"},
+   {RPCResult::Type::NUM,"merit_retarget_activation_height",true,"Existing testnet consensus transition height"},
+   {RPCResult::Type::NUM,"merit_retarget_half_life_seconds",true,"Elapsed controller response scale"},
+   {RPCResult::Type::NUM,"merit_retarget_minimum_q16",true,"Retained-result compatible threshold floor /65536"},
    {RPCResult::Type::NUM,"issuance_snapshot_version","Retained native snapshot format; absence is preserved"},
    {RPCResult::Type::STR,"audit_paid_atomic",true,"Exact cumulative audit reserve paid; present only in v5"},
    {RPCResult::Type::STR_HEX,"audit_activation_contract",true,"Published compiled existing-chain activation contract digest"},
@@ -131,7 +136,7 @@ RPCMethod getpgnstate(){
    }
   const auto phase=InspectNativeBootstrapPhase(active.CoinsTip(),tip,manager.m_options.pgn_candidate_bootstrap_budget->maximum_phase_blocks);
   if(phase!=NativeBootstrapPhaseVerdict::Bootstrap&&phase!=NativeBootstrapPhaseVerdict::Scientific)throw JSONRPCError(RPC_MISC_ERROR,"Native phase history held");
-  const auto q=DeriveHistoricalMeritTarget(tip,NativeParameterController(*manager.GetConsensus().pgn_native_proof));
+  const auto q=DeriveNextMeritTarget(tip,NativeParameterController(*manager.GetConsensus().pgn_native_proof));
   if(!q)throw JSONRPCError(RPC_MISC_ERROR,"Native target unavailable");
   UniValue result{UniValue::VOBJ};result.pushKV("genesis",manager.GetConsensus().hashGenesisBlock.GetHex());result.pushKV("height",tip.nHeight);
   result.pushKV("bestblockhash",tip.GetBlockHash().GetHex());result.pushKV("median_time_past",tip.GetMedianTimePast());result.pushKV("phase",phase==NativeBootstrapPhaseVerdict::Bootstrap?"bootstrap":"scientific");
@@ -144,6 +149,12 @@ RPCMethod getpgnstate(){
    }
   if(money->epochs){result.pushKV("gold_blocks",money->epochs->golds);result.pushKV("last_gold_ledger_height",money->epochs->last_gold_height);}else if(phase==NativeBootstrapPhaseVerdict::Bootstrap){result.pushKV("gold_blocks",0);result.pushKV("last_gold_ledger_height",0);}else throw JSONRPCError(RPC_MISC_ERROR,"Authenticated Gold epoch counters unavailable");
   result.pushKV("merit_target_q16",uint64_t(q->target_q16));result.pushKV("segments",uint64_t(science.policy->Definition().segments));
+  if(const auto retarget=ConfiguredElapsedRetarget(manager.GetConsensus().hashGenesisBlock)){
+    result.pushKV("merit_retarget_mode",int64_t(tip.nHeight)+1>=retarget->height?"elapsed_mtp_bounded":"gold_median_legacy");
+    result.pushKV("merit_retarget_activation_height",retarget->height);
+    result.pushKV("merit_retarget_half_life_seconds",uint64_t(retarget->half_life_seconds));
+    result.pushKV("merit_retarget_minimum_q16",uint64_t(retarget->retained_floor_q16));
+  }
   result.pushKV("range_origin",range.policy->Definition().origin.convert_to<std::string>());result.pushKV("ticket_width",range.policy->Definition().width.convert_to<std::string>());result.pushKV("range_limit",range.policy->Definition().limit.value_or(range.policy->Definition().origin+range.policy->Definition().width*range.policy->Definition().slots).convert_to<std::string>());result.pushKV("selection_window",range.policy->Definition().selection_window);
    result.pushKV("active_lease_count",uint64_t(total_active));result.pushKV("lease_offset",offset);int64_t index=0,taken=0;UniValue leases{UniValue::VARR};for(const auto& lease:leases_to_show){if(selected&&lease.owner.Id()!=*selected)continue;if(index++<offset)continue;if(taken++>=limit)break;
    UniValue item{UniValue::VOBJ};item.pushKV("request",lease.owner.Id().GetHex());item.pushKV("start",lease.assignment.start.convert_to<std::string>());
@@ -349,7 +360,7 @@ RPCMethod getpgnscientifictemplate(){
   const auto text=request.params[0].get_str();if(text.empty()||text.size()>2*budget.maximum_script_bytes||!IsHex(text))throw JSONRPCError(RPC_INVALID_PARAMETER,"Bounded canonical proof hex required");
   const auto bytes=ParseHex(text);if(HexStr(bytes)!=text)throw JSONRPCError(RPC_INVALID_PARAMETER,"Canonical proof hex required");
   const auto history=ReadOwnHistory(manager);const auto money=ReadChainMonetaryPolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy);
-  const auto target=DeriveHistoricalMeritTarget(tip,NativeParameterController(*manager.GetConsensus().pgn_native_proof));
+  const auto target=DeriveNextMeritTarget(tip,NativeParameterController(*manager.GetConsensus().pgn_native_proof));
   if(!money.policy||!target)throw JSONRPCError(RPC_MISC_ERROR,"Actual monetary policy or target held");
   CMutableTransaction cb;cb.vin.resize(1);cb.vin[0].prevout.SetNull();cb.vin[0].scriptSig=CScript{}<<(tip.nHeight+1)<<OP_0;cb.vout.emplace_back(0,CScript{bytes.begin(),bytes.end()});
   CBlock block;block.nVersion=4;block.hashPrevBlock=tip.GetBlockHash();block.nTime=std::max<int64_t>(GetTime(),tip.GetMedianTimePast()+1);block.nBits=target->target_q16;block.nNonce=0;
@@ -494,9 +505,7 @@ RPCMethod getpgnauditevent(){
   out.pushKV("genesis",manager.GetConsensus().hashGenesisBlock.GetHex());out.pushKV("parent",tip.GetBlockHash().GetHex());
   if(event.action==NativeAuditAction::Assign){
    for(size_t i=2;i<6;++i)if(!request.params[i].isNull())throw JSONRPCError(RPC_INVALID_PARAMETER,"Audit assignment cannot select its report, partition or attempt");
-   const auto member=ledger->participants.find(Bytes{event.actor.begin(),event.actor.end()});
-   if(member==ledger->participants.end()){out.pushKV("available",false);out.pushKV("unavailable_reason","auditor_not_registered");out.pushKV("reason","Audit registration required");return out;}
-   if(!member->second.may_audit){out.pushKV("available",false);out.pushKV("unavailable_reason","audit_permission_disabled");out.pushKV("reason","Audit permission is not enabled");return out;}
+   if(!NativeAuditEligible(*ledger,event.actor)){out.pushKV("available",false);out.pushKV("unavailable_reason","audit_permission_disabled");out.pushKV("reason","Audit permission is not enabled on this network");return out;}
    const auto selected=SelectNativeAudit(*ledger,event.actor,tip.nHeight,tip.GetMedianTimePast());
    if(!selected){out.pushKV("available",false);out.pushKV("unavailable_reason","no_eligible_independent_work");out.pushKV("reason","Waiting for eligible work from another operator");return out;}
    event.request=selected->first;event.slot=selected->second;const auto& previous=ledger->at(event.request).jobs[event.slot];event.attempt=previous?previous->attempt+1:0;
@@ -556,6 +565,7 @@ RPCMethod getpgnparticipants(){
   UniValue out{UniValue::VOBJ};out.pushKV("genesis",manager.GetConsensus().hashGenesisBlock.GetHex());
   out.pushKV("bestblockhash",tip.GetBlockHash().GetHex());out.pushKV("height",tip.nHeight);
   out.pushKV("total",uint64_t(ledger->participants.size()));
+  out.pushKV("admission_mode",ledger->public_admission?"open":"registered");
   if(!ledger->authority.empty()){
    out.pushKV("authority_script",HexStr(ledger->authority));out.pushKV("authority_request",ledger->authority_request.GetHex());
   }
@@ -563,7 +573,7 @@ RPCMethod getpgnparticipants(){
   auto add=[&](const Bytes& script,const NativeAuditMembership& member){
    if(selected&&script!=*selected)return;if(skipped++<offset||rows.size()>=uint64_t(limit))return;
    UniValue row{UniValue::VOBJ};row.pushKV("signing_script",HexStr(script));row.pushKV("operator_id",member.operator_id.GetHex());
-   row.pushKV("may_audit",member.may_audit);rows.push_back(row);
+   row.pushKV("may_audit",ledger->public_admission||member.may_audit);rows.push_back(row);
   };
   if(selected){const auto found=ledger->participants.find(*selected);if(found!=ledger->participants.end())add(found->first,found->second);}
   else for(const auto& [script,member]:ledger->participants){if(rows.size()>=uint64_t(limit))break;add(script,member);}

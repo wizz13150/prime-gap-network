@@ -1,5 +1,8 @@
 #include "ui/wallet_core_view.h"
-#include "ui/wallet_setup_wizard.h"
+#include <QStackedWidget>
+#include <QLineEdit>
+#include <QLabel>
+#include <QWizard>
 #include "wallet/runtime_paths.h"
 #include "ui/render/horizon_workspace_style.h"
 #include <QApplication>
@@ -20,13 +23,16 @@ int main(int argc,char** argv){
  const QJsonObject deployment{{"product","PGN Core"},{"chain","test"},{"frontend","daemon"},{"executable","pgn-core.exe"},{"executable_sha256",QString::fromLatin1(QCryptographicHash::hash(fixture,QCryptographicHash::Sha256).toHex())},{"genesis_hash",QString(64,'b')},{"rpc_port",30101},{"peer_port",30102}};
  QFile manifest(root+"/Core/core-template.json");if(!manifest.open(QIODevice::WriteOnly))return 4;manifest.write(QJsonDocument(QJsonObject{{"schema","PGN_CORE_BUNDLE_V1"},{"deployment",deployment},{"files",QJsonArray{QJsonObject{{"path","pgn-core.exe"},{"bytes",fixture.size()},{"sha256",deployment.value("executable_sha256")}}}}}).toJson());manifest.close();
  const auto configuration=pgn::wallet::coreRuntimeDirectory(root,true);if(QFileInfo::exists(configuration))return 5;
- auto* view=pgn::ui::createWalletCoreView(root,{},true);view->setStyleSheet("QWidget{background:#010b10;color:#c9eee7;}"+HorizonWorkspaceControlStyle());view->resize(800,650);view->show();app.processEvents();auto* manage=view->findChild<QPushButton*>("pgn-wallet-manage");if(!manage||!manage->isVisible()){delete view;return 13;}manage->click();app.processEvents();auto* setup=view->findChild<QPushButton*>("pgn-wallet-setup");
- if(!setup||!setup->isVisible()||QFileInfo::exists(data)||QFileInfo::exists(root+"/data")||QFileInfo::exists(configuration)){delete view;return 6;}
- if(argc>1){QDir().mkpath(QString::fromLocal8Bit(argv[1]));QPixmap image(view->size());view->render(&image);if(!image.save(QDir(QString::fromLocal8Bit(argv[1])).filePath("wallet-before-setup.png")))return 9;}
- app.processEvents();pgn::ui::WalletSetupWizard* wizard=nullptr;QElapsedTimer wait;wait.start();while(!wizard&&wait.elapsed()<2000){for(auto* dialog:view->findChildren<QWizard*>())if(auto* candidate=dynamic_cast<pgn::ui::WalletSetupWizard*>(dialog))wizard=candidate;if(!wizard){app.processEvents();QThread::msleep(5);}}
- if(!wizard){delete view;return 7;}wizard->setSelection({data,"PGN",false});
- if(argc>1){app.processEvents();QPixmap image(wizard->size());wizard->render(&image);if(!image.save(QDir(QString::fromLocal8Bit(argv[1])).filePath("wallet-setup-welcome.png")))return 10;wizard->next();app.processEvents();image=QPixmap(wizard->size());wizard->render(&image);if(!image.save(QDir(QString::fromLocal8Bit(argv[1])).filePath("wallet-setup-location.png")))return 11;wizard->next();app.processEvents();image=QPixmap(wizard->size());wizard->render(&image);if(!image.save(QDir(QString::fromLocal8Bit(argv[1])).filePath("wallet-setup-review.png")))return 12;}
- wizard->reject();app.processEvents();
+ auto* view=pgn::ui::createWalletCoreView(root,{},true);view->setStyleSheet("QWidget{background:#010b10;color:#c9eee7;}"+HorizonWorkspaceControlStyle());view->resize(850,650);view->show();app.processEvents();
+ auto* pages=view->findChild<QStackedWidget*>("pgn-wallet-pages");auto* create=view->findChild<QPushButton*>("pgn-wallet-create-initial");auto* open=view->findChild<QPushButton*>("pgn-wallet-open-core");
+ if(!view->property("pgn_wallet_setup_required").toBool()||!pages||pages->currentIndex()!=1||!create||!open||!create->isVisible()||!create->isEnabled()||!open->isVisible()||!open->isEnabled()||!view->findChildren<QWizard*>().isEmpty())return 6;
+ if(QFileInfo::exists(data)||QFileInfo::exists(root+"/data")||QFileInfo::exists(configuration))return 7;
+ if(argc>1){QDir().mkpath(QString::fromLocal8Bit(argv[1]));QPixmap image(view->size());view->render(&image);if(!image.save(QDir(QString::fromLocal8Bit(argv[1])).filePath("wallet-first-run-management.png")))return 9;}
+ // An invalid request returns to the same usable management page; verification
+ // must not launch the inert Core or create data/configuration as a side effect.
+ view->findChild<QLineEdit*>("pgn-wallet-data-directory")->setText(data);view->findChild<QLineEdit*>("pgn-wallet-name")->setText("invalid/name");create->click();
+ QElapsedTimer wait;wait.start();while(!create->isEnabled()&&wait.elapsed()<4000){app.processEvents();QThread::msleep(5);}
+ auto* message=view->findChild<QLabel*>("pgn-wallet-management-status");if(!create->isEnabled()||!message||!message->text().contains("letters")||!view->findChildren<QWizard*>().isEmpty())return 10;
  const bool untouched=!QFileInfo::exists(data)&&!QFileInfo::exists(root+"/data")&&!QFileInfo::exists(configuration);delete view;
- if(!untouched)return 8;std::cout<<"PASS fresh wallet page: automatic first-run wizard without setup-button click, cancel creates no wallet/config/history data or miner-folder wallet files; inert Core never launched\n";
+ if(!untouched)return 8;std::cout<<"PASS fresh startup opens actual Manage wallets with enabled create/open, no wizard; closing and invalid setup create no wallet/config/data; inert Core never launched\n";
 }
