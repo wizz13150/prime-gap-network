@@ -122,7 +122,7 @@ class WalletCoreView final : public QWidget {
 public:
  pgn::wallet::CoreRuntime* networkRuntime()const{return runtime_;}
  void observeNetworkMetrics(QWidget* owner,std::function<void(const QJsonObject&,const QString&)> receive){metrics_->subscribe(owner,std::move(receive));}
- void inspectBlock(const QString& hash){networkExplorer_->inspectHash(hash); }
+ void inspectBlock(const QString& hash){if(networkPages_)networkPages_->setCurrentWidget(networkExplorer_);networkExplorer_->inspectHash(hash); }
  explicit WalletCoreView(const QString& root,WalletObservationSink observe,bool testnet){
   setObjectName("pgn-wallet-core-view");setProperty("pgn_wallet_frontend_loaded",false);
   auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,0);layout->setSpacing(0);
@@ -132,8 +132,8 @@ public:
   status_=new QLabel("Use Manage wallets to set up PGN Core or open your existing wallet.",this);
   status_->setStyleSheet("color:#ffad4a;font:10px monospace");status_->setWordWrap(true);headerBox->addWidget(status_);
   auto* workspace=new QTabWidget;workspace->setObjectName("pgn-wallet-subtabs");auto* walletPage=new QWidget;auto* walletPageBox=new QVBoxLayout(walletPage);walletPageBox->setContentsMargins(0,0,0,0);auto* walletScroll=new QScrollArea;walletScroll->setObjectName("pgn-wallet-content-scroll");walletScroll->setWidgetResizable(true);walletScroll->setFrameShape(QFrame::NoFrame);auto* walletContent=new QWidget;viewport_=new QVBoxLayout(walletContent);viewport_->setContentsMargins(0,0,0,0);walletScroll->setWidget(walletContent);auto* walletPages=new QStackedWidget(walletPage);walletPages->setObjectName("pgn-wallet-pages");walletPageBox->addWidget(walletPages);walletPages->addWidget(walletScroll);auto* managementScroll=new QScrollArea;managementScroll->setObjectName("pgn-wallet-management-scroll");managementScroll->setWidgetResizable(true);managementScroll->setFrameShape(QFrame::NoFrame);managementScroll->setAlignment(Qt::AlignTop|Qt::AlignHCenter);auto* managementContent=new QWidget;managementContent->setMaximumWidth(1100);auto* managementBox=new QVBoxLayout(managementContent);managementBox->setContentsMargins(0,8,0,16);auto* backToOverview=new QPushButton("← Back to overview");backToOverview->setObjectName("pgn-wallet-overview");managementBox->addWidget(backToOverview,0,Qt::AlignLeft);managementScroll->setWidget(managementContent);walletPages->addWidget(managementScroll);walletPages->setCurrentIndex(0);connect(manageWallets,&QPushButton::clicked,this,[walletPages]{walletPages->setCurrentIndex(1);});connect(backToOverview,&QPushButton::clicked,this,[walletPages]{walletPages->setCurrentIndex(0);});workspace->addTab(walletPage,"Wallet");
-  runtime_=new pgn::wallet::CoreRuntime(root,this,testnet,pgn::wallet::coreRuntimeDirectory(root,testnet));metrics_=new NetworkMetricsHub([this](int span,auto consume){runtime_->readNetworkMetrics(span,std::move(consume));},this);networkExplorer_=new BlockExplorerView(runtime_);workspace->addTab(networkExplorer_,"Explorer");
-  workspace->addTab(new WalletPeersView([runtime=QPointer(runtime_)](auto done){if(runtime)runtime->readPeerSnapshot(std::move(done));else done({},"Core is unavailable");}),"Peers");
+  runtime_=new pgn::wallet::CoreRuntime(root,this,testnet,pgn::wallet::coreRuntimeDirectory(root,testnet));metrics_=new NetworkMetricsHub([this](int span,auto consume){runtime_->readNetworkMetrics(span,std::move(consume));},this);networkExplorer_=new BlockExplorerView(runtime_);
+  networkPages_=new QTabWidget;networkPages_->setObjectName("pgn-wallet-network-tabs");networkPages_->addTab(networkExplorer_,"Blocks");networkPages_->addTab(new WalletPeersView([runtime=QPointer(runtime_)](auto done){if(runtime)runtime->readPeerSnapshot(std::move(done));else done({},"Core is unavailable");}),"Peers");workspace->addTab(networkPages_,"Explorer");
    management_=new WalletManagementPanel(runtime_->walletManager(),managementContent);managementBox->addWidget(management_);managementBox->addStretch();
    management_->onComponents=[this,root,testnet]{
     if(componentDialog_){componentDialog_->raise();componentDialog_->activateWindow();return;}
@@ -236,7 +236,7 @@ private:
   setProperty("pgn_wallet_embedded",accountPanel_->window()==window());setProperty("pgn_wallet_embedded_pid",runtime_->processId());setProperty("pgn_wallet_frontend_loaded",true);setProperty("pgn_wallet_genuine_page_count",accountPanel_->pageCount());
  }
  pgn::wallet::CoreRuntime* runtime_{};QLabel* status_{};QWidget* placeholder_{};
- BlockExplorerView* networkExplorer_{};bool networkBusy_{};QString networkDone_;
+ BlockExplorerView* networkExplorer_{};QTabWidget* networkPages_{};bool networkBusy_{};QString networkDone_;
  QVBoxLayout* viewport_{};WalletAccountPanel* accountPanel_{};WalletManagementPanel* management_{};QPointer<ComponentVersionsDialog> componentDialog_;bool setupOpen_{};quint64 displayGeneration_{};
  QTimer attachClock_;int attempts_{};
 
