@@ -63,4 +63,29 @@ class PublisherTests(unittest.TestCase):
    with self.assertRaisesRegex(ValueError,'already reserved'):publisher.publish(self.keys,self.archive,self.receipt,self.root/('reused-'+str(version)),version)
   result=publisher.publish(self.keys,self.archive,self.receipt,self.root/'renewed',3)
   self.assertEqual(result['metadata_version'],3);self.assertEqual(json.loads((self.keys/'publication-state.json').read_bytes())['state'],'prepared')
+ def test_authenticated_other_platform_targets_survive_both_publication_directions(self):
+  from datetime import datetime,timedelta,timezone
+  from tuf.api.metadata import Metadata,Targets,TargetFile
+  from tuf.api.serialization.json import JSONSerializer
+  first=self.root/'windows-first';publisher.publish(self.keys,self.archive,self.receipt,first,2)
+  raw=(first/'metadata/targets.json').read_bytes()
+  kept=publisher.retained_platform_targets(self.bootstrap,raw,2,'linux-x86_64')
+  self.assertEqual(set(kept),{'components.json','components-2.zip'})
+  both=Metadata(Targets(version=3,expires=datetime.now(timezone.utc)+timedelta(days=1)))
+  both.signed.targets.update(kept)
+  for name in ('components-linux-x86_64.json','components-linux-x86_64-3.zip'):
+   both.signed.targets[name]=TargetFile.from_data(name,b'linux test target',['sha256'])
+  both.sign(publisher._signer(self.keys,'targets')[0]);raw=both.to_bytes(JSONSerializer(compact=True))
+  kept=publisher.retained_platform_targets(self.bootstrap,raw,3,'windows-x86_64')
+  self.assertEqual(set(kept),{'components-linux-x86_64.json','components-linux-x86_64-3.zip'})
+  with self.assertRaisesRegex(ValueError,'current publisher version'):
+   publisher.retained_platform_targets(self.bootstrap,raw,2,'windows-x86_64')
+ def test_modified_previous_platform_metadata_is_not_promoted(self):
+  from tuf.api.metadata import Metadata
+  from tuf.api.exceptions import UnsignedMetadataError
+  first=self.root/'windows-first';publisher.publish(self.keys,self.archive,self.receipt,first,2)
+  previous=Metadata.from_file(str(first/'metadata/targets.json'))
+  previous.signed.targets['components-2.zip'].length+=1
+  with self.assertRaises(UnsignedMetadataError):
+   publisher.retained_platform_targets(self.bootstrap,previous.to_bytes(),2,'linux-x86_64')
 if __name__=='__main__':unittest.main()

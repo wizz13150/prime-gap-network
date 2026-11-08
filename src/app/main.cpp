@@ -273,7 +273,7 @@ int main(int argc,char** argv) {
      receipt.insert("pgn_update_shutdown_error",inspectCanvas->window()->property("pgn_update_shutdown_error").toString());
      for(const auto* name:{"pgn_native_small_icon","pgn_native_large_icon","pgn_update_resume_error"})receipt.insert(name,QJsonValue::fromVariant(inspectCanvas->window()->property(name)));
      receipt.insert("pgn_update_resume_pending",QJsonValue::fromVariant(inspectCanvas->property("pgn_update_resume_pending")));
-     for(const auto* name:{"pgn_update_application_root","pgn_update_data_root","pgn_update_genesis","pgn_update_explicit_root"})receipt.insert(name,QJsonValue::fromVariant(inspectCanvas->window()->property(name)));
+     for(const auto* name:{"pgn_update_application_root","pgn_update_data_root","pgn_update_core_runtime_directory","pgn_update_genesis","pgn_update_explicit_root"})receipt.insert(name,QJsonValue::fromVariant(inspectCanvas->window()->property(name)));
     for(const auto* name:{"pgn_wallet_connected","pgn_wallet_height","pgn_wallet_genesis","pgn_wallet_observed_utc"})
      receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(inspectCanvas->property(name)));
     if(inspectWallet)for(const auto* name:{"pgn_core_link_state","pgn_core_link_detail","pgn_core_link_transitions","pgn_wallet_frontend_loaded","pgn_wallet_frontend_error","pgn_wallet_genuine_page_count","pgn_wallet_embedded","pgn_wallet_embedded_pid","pgn_network_block_rows","pgn_network_leases","pgn_network_height","pgn_network_selected_transactions","pgn_network_ticket_width"})
@@ -351,6 +351,7 @@ int main(int argc,char** argv) {
  scopeWindow=&window;
  window.setProperty("pgn_update_application_root",pgn::app::cleanApplicationRoot(root));
  window.setProperty("pgn_update_data_root",pgn::app::mutableDataRoot(root));
+ window.setProperty("pgn_update_core_runtime_directory",pgn::wallet::coreRuntimeDirectory(root,testnetMode));
  window.setProperty("pgn_update_genesis",pgn::wallet::installedCoreGenesis(root));
  window.setProperty("pgn_update_explicit_root",explicitLegacyRoot);
  struct CoreUpdateDrain {bool pending{},ready{};};

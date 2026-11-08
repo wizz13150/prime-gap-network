@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import uuid
 import zipfile
@@ -81,14 +82,14 @@ def _signer(directory,role):
     return signer,store
 
 
-def publish(directory,bundle,build_receipt,output,version,now=None):
+def publish(directory,bundle,build_receipt,output,version,now=None,*,previous_targets=None):
     # Serialize reservations, including failed signing attempts. A later build
     # must not reuse the same signed metadata version for different contents.
     with stage.owned_lock(stage._plain_chain(directory)):
-        return _publish(directory,bundle,build_receipt,output,version,now)
+        return _publish(directory,bundle,build_receipt,output,version,now,previous_targets=previous_targets)
 
 
-def publish_in_memory(directory,archive,build_receipt,output,version,now=None):
+def publish_in_memory(directory,archive,build_receipt,output,version,now=None,*,previous_targets=None):
     """Verify bounded archive bytes and prepare metadata without a disk copy.
 
     The caller must upload the exact archive as a separate immutable target
@@ -97,7 +98,7 @@ def publish_in_memory(directory,archive,build_receipt,output,version,now=None):
     stage.require(type(archive)is bytes and 0<len(archive)<=stage.MAX_ARCHIVE,
                   'Bounded immutable archive bytes required')
     with stage.owned_lock(stage._plain_chain(directory)):
-        return _publish(directory,None,build_receipt,output,version,now,memory=archive)
+        return _publish(directory,None,build_receipt,output,version,now,memory=archive,previous_targets=previous_targets)
 
 
 class _MemoryArchive:
@@ -117,7 +118,21 @@ def _publication_state(path,value):
     finally:temporary.unlink(missing_ok=True)
 
 
-def _publish(directory,bundle,build_receipt,output,version,now=None,*,memory=None):
+def retained_platform_targets(root,raw,previous_version,platform):
+    """Preserve the other OS's authenticated catalogue and immutable bundle."""
+    previous=Metadata.from_bytes(raw)
+    stage.require(isinstance(previous.signed,Targets)and previous.signed.version==previous_version,'Previous targets are not the current publisher version')
+    Metadata.from_bytes(root).signed.verify_delegate('targets',previous.signed_bytes,previous.signatures)
+    opposite='components.json'if platform=='linux-x86_64'else'components-linux-x86_64.json'
+    pattern=r'components-\d+\.zip'if platform=='linux-x86_64'else r'components-linux-x86_64-\d+\.zip'
+    names=previous.signed.targets
+    stage.require(len(names)<=4,'Previous platform target set exceeds bound')
+    retained={name:value for name,value in names.items()if name==opposite or re.fullmatch(pattern,name)}
+    stage.require(not retained or(opposite in retained and len(retained)==2),'Previous platform catalogue/bundle pair is incomplete')
+    return retained
+
+
+def _publish(directory,bundle,build_receipt,output,version,now=None,*,memory=None,previous_targets=None):
     directory=stage._plain_chain(directory);bundle=stage._plain_chain(bundle)if memory is None else _MemoryArchive(memory);output=stage._plain_chain(output)
     stage.require(not output.exists()and output.parent.is_dir(),'New publication output required')
     stage.require(not output.is_relative_to(directory)and not directory.is_relative_to(output),'Public output overlaps private key store')
@@ -133,20 +148,28 @@ def _publish(directory,bundle,build_receipt,output,version,now=None,*,memory=Non
     with bundle.open('rb')as archive_stream,zipfile.ZipFile(archive_stream)as archive:
         entry=archive.getinfo('component-bundle.json');stage.require(entry.file_size<=stage.MAX_MANIFEST,'Bundle manifest exceeds bound')
         stage.require(stage._json(archive.read(entry))==manifest,'Publication receipt describes another archive')
-    counter=directory/'publication-state.json'
+    platform=manifest['platform'];stage.require(platform in ('windows-x86_64','linux-x86_64'),'Unsupported publication platform')
+    catalogue='components-linux-x86_64.json'if platform=='linux-x86_64'else'components.json'
+    counter=directory/'publication-state.json';prior=None;retained={}
     if counter.exists():
         prior=stage._json(stage._read_plain(counter,8192))
         stage.require(version>prior['metadata_version'],'Signed metadata version was already reserved')
         stage.require(manifest['sequence']>=prior['bundle_sequence'],'Bundle sequence would roll back')
         stage.require(manifest['sequence']!=prior['bundle_sequence']or actual==prior['bundle_sha256'],'An immutable bundle sequence cannot describe different bytes')
-    reservation=dict(schema='PGN_PUBLISHER_SEQUENCE_V1',state='reserved',metadata_version=version,bundle_sequence=manifest['sequence'],bundle_sha256=actual)
+    if previous_targets is not None:
+        stage.require(prior is not None,'Previous publication state is required')
+        retained=retained_platform_targets(root,stage._read_plain(Path(previous_targets),stage.MAX_MANIFEST),prior['metadata_version'],platform)
+    elif prior is not None:
+        stage.require(prior.get('catalogues',['components.json'])==[catalogue],'Current signed targets are required to preserve the other platform')
+    reservation=dict(schema='PGN_PUBLISHER_SEQUENCE_V1',state='reserved',metadata_version=version,bundle_sequence=manifest['sequence'],bundle_sha256=actual,catalogues=sorted([catalogue]+[name for name in retained if name.endswith('.json')]))
     _publication_state(counter,reservation)
-    bundle_name='components-'+str(manifest['sequence'])+'.zip'
+    bundle_name=('components-linux-x86_64-'if platform=='linux-x86_64'else'components-')+str(manifest['sequence'])+'.zip'
     catalog=json.dumps(dict(schema='PGN_AUTHENTICATED_UPDATE_CATALOG_V1',bundle_target=bundle_name,manifest=manifest),separators=(',',':')).encode()
     stage.require(len(catalog)<=stage.MAX_MANIFEST,'Update catalog exceeds bound')
     now=now or datetime.now(timezone.utc)
     targets=Metadata(Targets(version=version,expires=now+timedelta(days=90)))
-    targets.signed.targets['components.json']=TargetFile.from_data('components.json',catalog,['sha256'])
+    targets.signed.targets.update(retained)
+    targets.signed.targets[catalogue]=TargetFile.from_data(catalogue,catalog,['sha256'])
     targets.signed.targets[bundle_name]=TargetFile(length=bundle.stat().st_size,hashes={'sha256':actual},path=bundle_name)
     targets.sign(_signer(directory,'targets')[0]);traw=targets.to_bytes(JSONSerializer(compact=True))
     snapshot=Metadata(Snapshot(version=version,expires=now+timedelta(days=30)));snapshot.signed.meta['targets.json']=MetaFile.from_data(version,traw,['sha256']);snapshot.sign(_signer(directory,'snapshot')[0]);sraw=snapshot.to_bytes(JSONSerializer(compact=True))
@@ -156,7 +179,7 @@ def _publish(directory,bundle,build_receipt,output,version,now=None,*,memory=Non
         metadata=pending/'metadata';assets=pending/'targets';metadata.mkdir();assets.mkdir()
         for name,raw in [('1.root.json',root),('root.json',root),('targets.json',traw),(str(version)+'.targets.json',traw),('snapshot.json',sraw),(str(version)+'.snapshot.json',sraw),('timestamp.json',tsraw)]:
             (metadata/name).write_bytes(raw)
-        (assets/(stage.sha(catalog)+'.components.json')).write_bytes(catalog)
+        (assets/(stage.sha(catalog)+'.'+catalogue)).write_bytes(catalog)
         if memory is None:shutil.copyfile(bundle,assets/(actual+'.'+bundle_name))
         stage._publish_pending(pending,output,lambda:False)
     finally:
@@ -164,4 +187,4 @@ def _publish(directory,bundle,build_receipt,output,version,now=None,*,memory=Non
     _publication_state(counter,dict(reservation,state='prepared'))
     return dict(schema='PGN_SIGNED_PUBLICATION_RECEIPT_V1',root_sha256=store['root_sha256'],metadata_version=version,
         bundle_sha256=actual,files=9 if memory is None else 8,archive_included=memory is None,
-        private_key_files_exported=False,uploaded=False)
+        private_key_files_exported=False,uploaded=False,catalogue=catalogue,retained_targets=sorted(retained))

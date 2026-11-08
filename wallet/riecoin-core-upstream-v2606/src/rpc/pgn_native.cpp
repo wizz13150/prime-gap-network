@@ -24,6 +24,7 @@
 #include <rpc/util.h>
 #include <util/time.h>
 #include <util/strencodings.h>
+#include <algorithm>
 #include <limits>
 #include <logging.h>
 #include <set>
@@ -87,7 +88,7 @@ std::shared_ptr<const NativeAuditLedger> ReadRpcAuditLedger(ChainstateManager& m
  return snapshot;
 }
 RPCMethod getpgnstate(){
- return RPCMethod{"getpgnstate","Read actual native issuance, target and assigned ranges at the current tip.",{{"offset",RPCArg::Type::NUM,RPCArg::Default{0},"First lease in current branch order"},{"limit",RPCArg::Type::NUM,RPCArg::Default{100},"Page size 1 through 100"},{"request_id",RPCArg::Type::STR_HEX,RPCArg::Optional::OMITTED,"Exact owned request lookup"}},
+ return RPCMethod{"getpgnstate","Read actual native issuance, target and assigned ranges at the current tip.",{{"offset",RPCArg::Type::NUM,RPCArg::Default{0},"First lease, ordered newest issue height first, then lower range bound"},{"limit",RPCArg::Type::NUM,RPCArg::Default{100},"Page size 1 through 100"},{"request_id",RPCArg::Type::STR_HEX,RPCArg::Optional::OMITTED,"Exact owned request lookup"}},
  RPCResult{RPCResult::Type::OBJ,"","Native state",{
   {RPCResult::Type::STR_HEX,"genesis","Native genesis"},{RPCResult::Type::NUM,"height","Current height"},
   {RPCResult::Type::NUM,"median_time_past","Median chain time at this exact tip"},
@@ -133,6 +134,12 @@ RPCMethod getpgnstate(){
     auto schedule=ReconstructCandidateRangeSchedule(active.CoinsTip(),tip,*range.policy,history.archive,budget.schedule);
     if(!schedule.schedule)throw JSONRPCError(RPC_MISC_ERROR,"Complete native range schedule held; no fabricated free ranges");
     total_active=schedule.schedule->active.size();leases_to_show=std::move(schedule.schedule->active);
+     // Sort the complete presentation copy before pagination. The range
+     // schedule and its consensus selection order remain untouched.
+     std::sort(leases_to_show.begin(),leases_to_show.end(),[](const CandidateRangeLease& a,const CandidateRangeLease& b){
+      if(a.issued!=b.issued)return a.issued>b.issued;
+      return a.assignment.start<b.assignment.start;
+     });
    }
   const auto phase=InspectNativeBootstrapPhase(active.CoinsTip(),tip,manager.m_options.pgn_candidate_bootstrap_budget->maximum_phase_blocks);
   if(phase!=NativeBootstrapPhaseVerdict::Bootstrap&&phase!=NativeBootstrapPhaseVerdict::Scientific)throw JSONRPCError(RPC_MISC_ERROR,"Native phase history held");

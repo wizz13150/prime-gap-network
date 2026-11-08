@@ -37,7 +37,8 @@ ComponentUpdateDeployment componentUpdateDeployment(const QString& applicationDi
     require(error.error==QJsonParseError::NoError&&config.value("schema")=="PGN_UPDATE_DEPLOYMENT_V1","Update deployment is invalid");
     require(config.value("network").toString()==(testnet?"testnet":"main"),"Update deployment belongs to another network");
     require(QRegularExpression("^[0-9a-f]{64}$").match(config.value("genesis_hash").toString()).hasMatch(),"Update genesis is invalid");
-    require(config.value("helper")=="UpdateRuntime/horizon-updater.exe","Unexpected update helper path");
+    const auto helperName=QSysInfo::kernelType()=="winnt"?"UpdateRuntime/horizon-updater.exe":"UpdateRuntime/horizon-updater";
+    require(config.value("helper")==helperName,"Unexpected update helper path");
     const auto helper=QFileInfo(root+"/"+config.value("helper").toString()).canonicalFilePath();
     require(helper.startsWith(root+"/",Qt::CaseInsensitive),"Update helper is outside its deployment");
     QFile file(helper);
@@ -113,9 +114,19 @@ QJsonObject currentUpdateActivation(const QString& applicationRoot,const QString
     return {{"schema","PGN_WINDOWS_UPDATE_ACTIVATION_V1"},{"ui_pid",QCoreApplication::applicationPid()},
         {"ui_birth",QString::number(birth)},{"application_root",QDir::cleanPath(applicationRoot)},
         {"data_root",QDir::cleanPath(mutableDataRoot)}};
+#elif defined(Q_OS_LINUX)
+    QFile stat("/proc/self/stat"),boot("/proc/sys/kernel/random/boot_id");
+    require(stat.open(QIODevice::ReadOnly)&&boot.open(QIODevice::ReadOnly),"Current process identity is unavailable");
+    const auto raw=stat.readAll();const auto fields=raw.mid(raw.lastIndexOf(") ")+2).simplified().split(' ');
+    const auto bootId=QString::fromLatin1(boot.readAll().trimmed());
+    require(fields.size()>19&&QRegularExpression("^[0-9]+$").match(QString::fromLatin1(fields.at(19))).hasMatch()
+        &&QRegularExpression("^[0-9a-f-]{36}$").match(bootId).hasMatch(),"Current process identity is invalid");
+    return {{"schema","PGN_LINUX_UPDATE_ACTIVATION_V1"},{"ui_pid",QCoreApplication::applicationPid()},
+        {"ui_birth",bootId+":"+QString::fromLatin1(fields.at(19))},{"application_root",QDir::cleanPath(applicationRoot)},
+        {"data_root",QDir::cleanPath(mutableDataRoot)}};
 #else
     Q_UNUSED(applicationRoot);Q_UNUSED(mutableDataRoot);
-    throw std::runtime_error("Integrated installation is currently qualified for Windows.");
+    throw std::runtime_error("Integrated installation is unavailable on this platform.");
 #endif
 }
 

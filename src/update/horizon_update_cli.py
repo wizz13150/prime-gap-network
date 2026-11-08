@@ -17,7 +17,7 @@ from horizon_update_client import AuthenticatedUpdates
 from horizon_component_install import CohortStore, _write
 import horizon_update_progress as progress
 
-VERSION='2026.11.8.11'
+VERSION='2026.11.8.17'
 
 
 def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,recovery_factory=None):
@@ -35,12 +35,16 @@ def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,
     repository=repositories.get(context['network'])
     stage.require(repository is not None and context['genesis_hash']==repository['genesis_hash']and context['compatibility_set']==repository['compatibility_set'],'No trusted update repository for this network/genesis/compatibility set')
     if action=='recover':
-        stage.require(context['platform']=='windows-x86_64','Native recovery is qualified for Windows only')
+        stage.require(context['platform'] in ('windows-x86_64','linux-x86_64'),'Native recovery platform is unsupported')
         stage.require(type(request['installation_store'])is str and Path(request['installation_store']).is_absolute(),'Absolute installation store required')
         store=CohortStore(Path(request['installation_store']),context,context_sha)
         if recovery_factory is None:
-            from horizon_windows_recovery import WindowsRecovery
-            recovery_factory=WindowsRecovery
+            if context['platform']=='windows-x86_64':
+                from horizon_windows_recovery import WindowsRecovery
+                recovery_factory=WindowsRecovery
+            else:
+                from horizon_linux_recovery import LinuxRecovery
+                recovery_factory=LinuxRecovery
         lifecycle=None
         def restore(previous,failed):
             nonlocal lifecycle
@@ -63,12 +67,16 @@ def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,
     store=(CohortStore(store_path,context,context_sha)if store_path.exists()else CohortStore.initialize(store_path,Path(request['base_cohort']),context,context_sha))
     candidate=store.prepare(client,selected)
     if action=='install':
-        stage.require(context['platform']=='windows-x86_64','Native installation is qualified for Windows only')
+        stage.require(context['platform'] in ('windows-x86_64','linux-x86_64'),'Native installation platform is unsupported')
         if lifecycle_factory is None:
             from horizon_runtime_preflight import candidate_runtime_preflight
             candidate_runtime_preflight(Path(candidate['cohort']))
-            from horizon_windows_install import WindowsCohortLifecycle
-            lifecycle_factory=WindowsCohortLifecycle
+            if context['platform']=='windows-x86_64':
+                from horizon_windows_install import WindowsCohortLifecycle
+                lifecycle_factory=WindowsCohortLifecycle
+            else:
+                from horizon_linux_install import LinuxCohortLifecycle
+                lifecycle_factory=LinuxCohortLifecycle
         # The factory writes its lifecycle journal. Construct it only after
         # activate() owns the store lock and has preserved/refused old recovery.
         lifecycle=None
@@ -123,6 +131,18 @@ def main():
                     executable=Path(sys.executable).resolve()
                     with executable.open('rb')as stream:identity=hashlib.file_digest(stream,'sha256').hexdigest()
                     with OwnedWindowsProcess(os.getpid(),executable,identity)as own:
+                        result['native_process_identity_verified']=not own.exited()
+            elif sys.platform=='linux':
+                from horizon_linux_install import LinuxCohortLifecycle
+                from horizon_linux_lifecycle import OwnedLinuxProcess
+                from horizon_linux_recovery import LinuxRecovery
+                result['linux_lifecycle_imported']=True
+                result['linux_recovery_imported']=True
+                if getattr(sys,'frozen',False):
+                    import hashlib
+                    executable=Path(sys.executable).resolve()
+                    with executable.open('rb')as stream:identity=hashlib.file_digest(stream,'sha256').hexdigest()
+                    with OwnedLinuxProcess(os.getpid(),executable,identity)as own:
                         result['native_process_identity_verified']=not own.exited()
         else:
             if args.request_file:

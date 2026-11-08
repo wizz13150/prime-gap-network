@@ -16,13 +16,19 @@ from check_public_release import inspect
 PRIMARY = {'ui': 'PGN-Horizon.exe', 'core': 'Core/pgn-core.exe',
            'gpu': 'EngineRuntime/network/horizon-engine-host.exe',
            'cpu': 'EngineRuntime/cpu/horizon-cpu-controller.exe'}
+LINUX_PRIMARY = {key: value.removesuffix('.exe') for key,value in PRIMARY.items()}
+
+
+def primary_programs(platform):
+    stage.require(platform in ('windows-x86_64','linux-x86_64'),'Unsupported component platform')
+    return PRIMARY if platform=='windows-x86_64' else LINUX_PRIMARY
 COMPONENT_PREFIX = {'ui': '', 'core': 'Core/', 'gpu': 'EngineRuntime/',
                     'cpu': 'EngineRuntime/cpu/'}
 
 
 def validate_update_deployment(root, declared_paths, context, abi):
     """The delivered UI must be able to invoke its own authenticated updater."""
-    helper = 'UpdateRuntime/horizon-updater.exe'
+    helper = 'UpdateRuntime/horizon-updater'+('.exe' if context['platform']=='windows-x86_64' else '')
     if helper not in declared_paths:
         return
     descriptor = 'UpdateRuntime/deployment.json'
@@ -42,12 +48,26 @@ def validate_update_deployment(root, declared_paths, context, abi):
                   'Update deployment helper fingerprint differs')
 
 
+def validate_network_bootstrap(root, declared_paths, context):
+    """A managed testnet host without its connection descriptor is incomplete."""
+    if context['network'] != 'testnet' or primary_programs(context['platform'])['gpu'] not in declared_paths:
+        return
+    name='EngineRuntime/network/bootstrap.json'
+    stage.require(name in declared_paths,'Testnet network host is missing bootstrap.json')
+    value=stage._json(stage._read_plain(root/name,8192))
+    stage.require(value.get('schema')=='PGN_TESTNET_BOOTSTRAP_V1'
+                  and value.get('genesis')==context['genesis_hash'],
+                  'Network bootstrap belongs to a different network')
+
+
 def build(cohort, context_path, output, sequence, release_version, abi):
     root = stage._plain_chain(cohort)
     context, context_hash = stage.read_context(context_path)
+    primary = primary_programs(context['platform'])
     inventory = stage._json(stage._read_plain(root/'components.json', stage.MAX_MANIFEST))
     stage.require(inventory.get('schema') == 'PGN_COMPONENT_MANIFEST_V1'
-                  and inventory.get('network') == context['network'], 'Explicit matching component inventory required')
+                  and inventory.get('network') == context['network']
+                  and inventory.get('platform','windows-x86_64') == context['platform'], 'Explicit matching component inventory required')
     components, sources, final_paths, omitted = [], {}, set(), []
     declared = inventory.get('components', [])
     stage.require(type(declared) is list and 1 <= len(declared) <= 4, 'Bounded component inventory required')
@@ -83,15 +103,17 @@ def build(cohort, context_path, output, sequence, release_version, abi):
         if component=='ui' and (root/'assets/audit-animation.rcc').is_file():
             stage.require('core' in versions,'The global audit renderer requires its Core reader')
             dependencies.append(dict(id='core',version=versions['core'],abi=abi))
-        if component=='gpu' and (root/'pgn-native-gap-evidence.exe').is_file():
+        proof_helper='pgn-native-gap-evidence'+('.exe' if context['platform']=='windows-x86_64' else '')
+        if component=='gpu' and (root/proof_helper).is_file():
             stage.require('ui'in versions,'The shared proof helper requires its UI component')
             dependencies.append(dict(id='ui',version=versions['ui'],abi=abi))
         components.append(dict(id=component,version=row['version'],abi=abi,
-            primary='payload/'+component+'/'+PRIMARY[component],dependencies=dependencies,files=files))
+            primary='payload/'+component+'/'+primary[component],dependencies=dependencies,files=files))
     actual_files = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
     stage.require(actual_files == {str(p.relative_to(root)).replace('\\','/') for p in sources.values()} | set(omitted) | {'components.json'},
                   'Cohort contains undeclared files')
     validate_update_deployment(root, actual_files, context, abi)
+    validate_network_bootstrap(root, actual_files, context)
     manifest = dict(schema='PGN_COMPONENT_STAGE_BUNDLE_V1',bundle_id='pgn.'+str(sequence),
         sequence=sequence,release_version=release_version,network=context['network'],
         genesis_hash=context['genesis_hash'],platform=context['platform'],

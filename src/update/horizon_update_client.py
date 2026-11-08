@@ -171,7 +171,8 @@ class AuthenticatedUpdates:
 
     def _catalog(self, updater, selected):
         updater.refresh()
-        file, target = self._download(updater, 'components.json', MAX_CATALOG)
+        name='components.json' if self.context['platform']=='windows-x86_64' else 'components-linux-x86_64.json'
+        file, target = self._download(updater, name, MAX_CATALOG)
         catalog = stage._json(stage._read_plain(file, MAX_CATALOG))
         stage._keys(catalog, 'schema bundle_target manifest')
         stage.require(catalog['schema'] == 'PGN_AUTHENTICATED_UPDATE_CATALOG_V1'

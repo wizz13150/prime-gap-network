@@ -10,12 +10,14 @@
 #include <QJsonArray>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QSysInfo>
 #include <iostream>
 #include <stdexcept>
 
 int main(int argc,char** argv){
  QCoreApplication app(argc,argv);
- if(QFileInfo(app.applicationFilePath()).fileName()=="horizon-updater.exe"){
+ const auto helperName=QSysInfo::kernelType()=="winnt"?"horizon-updater.exe":"horizon-updater";
+ if(QFileInfo(app.applicationFilePath()).fileName()==helperName){
   QFile input;input.open(stdin,QIODevice::ReadOnly);const auto request=QJsonDocument::fromJson(input.readAll()).object();const auto fixture=request.value("fixture").toString();
   if(fixture=="delay")QThread::sleep(30);
   if(fixture=="oversized"){std::cout<<std::string(140000,'x');return 0;}
@@ -32,10 +34,18 @@ int main(int argc,char** argv){
   require(pgn::update::componentUpdateFailureMessage("HTTP 429").contains("429"),"Rate-limit detail lost");
   require(pgn::update::componentUpdateFailureMessage("getaddrinfo failed").contains("Internet connection"),"Connection failure has no actionable message");
   require(pgn::update::componentUpdateFailureMessage("Signature mismatch")=="Signature mismatch","Integrity error was relabelled as a network outage");
-  QTemporaryDir temp;require(temp.isValid(),"Temporary directory unavailable");QDir().mkpath(temp.path()+"/UpdateRuntime");const auto helper=temp.path()+"/UpdateRuntime/horizon-updater.exe";require(QFile::copy(app.applicationFilePath(),helper),"Inert helper copy failed");QFile binary(helper);require(binary.open(QIODevice::ReadOnly),"Helper fixture unreadable");QCryptographicHash digest(QCryptographicHash::Sha256);require(digest.addData(&binary),"Fixture hash failed");binary.close();
-  QJsonObject deployment{{"schema","PGN_UPDATE_DEPLOYMENT_V1"},{"network","testnet"},{"genesis_hash",QString(64,'5')},{"helper","UpdateRuntime/horizon-updater.exe"},{"sha256",QString::fromLatin1(digest.result().toHex())}};
+  QTemporaryDir temp;require(temp.isValid(),"Temporary directory unavailable");QDir().mkpath(temp.path()+"/UpdateRuntime");const auto helper=temp.path()+"/UpdateRuntime/"+helperName;require(QFile::copy(app.applicationFilePath(),helper),"Inert helper copy failed");QFile binary(helper);require(binary.open(QIODevice::ReadOnly),"Helper fixture unreadable");QCryptographicHash digest(QCryptographicHash::Sha256);require(digest.addData(&binary),"Fixture hash failed");binary.close();
+  QJsonObject deployment{{"schema","PGN_UPDATE_DEPLOYMENT_V1"},{"network","testnet"},{"genesis_hash",QString(64,'5')},{"helper","UpdateRuntime/"+QString(helperName)},{"sha256",QString::fromLatin1(digest.result().toHex())}};
   QFile descriptor(temp.path()+"/UpdateRuntime/deployment.json");require(descriptor.open(QIODevice::WriteOnly),"Descriptor fixture unavailable");descriptor.write(QJsonDocument(deployment).toJson());descriptor.close();
   auto resolved=pgn::update::componentUpdateDeployment(temp.path(),true);require(resolved.helper==helper,"Wrong helper selected");bool rejected=false;try{pgn::update::componentUpdateDeployment(temp.path(),false);}catch(const std::exception&){rejected=true;}require(rejected,"Wrong network was admitted");
+  const auto activation=pgn::update::currentUpdateActivation(temp.path(),temp.path()+"/user-data");
+  require(activation.value("ui_pid").toInteger()==app.applicationPid(),"Activation process identity differs");
+  require(activation.value("application_root")==temp.path()&&activation.value("data_root")==temp.path()+"/user-data","Activation changed the application/data scope");
+#ifdef Q_OS_LINUX
+  require(activation.value("schema")=="PGN_LINUX_UPDATE_ACTIVATION_V1","Wrong Linux activation schema");
+  QFile boot("/proc/sys/kernel/random/boot_id");require(boot.open(QIODevice::ReadOnly),"Boot identity unavailable");
+  require(activation.value("ui_birth").toString().startsWith(QString::fromLatin1(boot.readAll().trimmed())+":"),"Linux activation lost boot identity");
+#endif
   require(pgn::update::componentVersionComparison("1.2","1.2.0").value_or(1)==0,"Padded version comparison differs");
   require(pgn::update::componentVersionComparison("1.9","1.10").value_or(0)<0,"Numeric versions compared as text");
   require(!pgn::update::componentVersionComparison("custom","1.2"),"Unknown version became current");

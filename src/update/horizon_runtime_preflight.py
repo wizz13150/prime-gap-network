@@ -13,13 +13,14 @@ import stage_component_bundle as stage
 
 def candidate_runtime_preflight(cohort):
     cohort=Path(cohort)
-    _,files,_,_=inventory(cohort)
+    value,files,_,_=inventory(cohort)
+    suffix='.exe' if value.get('platform','windows-x86_64')=='windows-x86_64' else ''
     environment=dict(os.environ,PYINSTALLER_RESET_ENVIRONMENT='1')
     environment.pop('PGN_PRIVATE_OWNER_BOOTSTRAP',None)
     checks=[]
     for relative,argument in (
-        ('EngineRuntime/network/horizon-engine-host.exe','--help'),
-        ('UpdateRuntime/horizon-updater.exe','--self-test'),
+        ('EngineRuntime/network/horizon-engine-host'+suffix,'--help'),
+        ('UpdateRuntime/horizon-updater'+suffix,'--self-test'),
     ):
         stage.require(relative.casefold()in files,'Required runtime loader is missing')
         executable=cohort/relative

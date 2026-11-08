@@ -94,12 +94,13 @@ class UpdateTests(unittest.TestCase):
   payload=io.BytesIO()
   with zipfile.ZipFile(payload,'w')as z:z.writestr('component-bundle.json',json.dumps(archive_manifest or self.manifest));z.writestr(self.manifest['components'][0]['primary'],self.pe)
   archive=payload.getvalue();catalog=json.dumps(dict(schema='PGN_AUTHENTICATED_UPDATE_CATALOG_V1',bundle_target='components.zip',manifest=self.manifest)).encode()
-  targets=Metadata(Targets(version=version,expires=self.expires));targets.signed.targets={n:TargetFile.from_data(n,v,['sha256'])for n,v in [('components.json',catalog),('components.zip',archive)]}
+  catalog_name='components.json' if self.context['platform']=='windows-x86_64' else 'components-linux-x86_64.json'
+  targets=Metadata(Targets(version=version,expires=self.expires));targets.signed.targets={n:TargetFile.from_data(n,v,['sha256'])for n,v in [(catalog_name,catalog),('components.zip',archive)]}
   if bad_signature:targets.sign(CryptoSigner.generate_ed25519());traw=targets.to_bytes(JSONSerializer(compact=True))
   else:traw=self.raw(targets,'targets')
   snapshot=Metadata(Snapshot(version=version,expires=self.expires));snapshot.signed.meta['targets.json']=MetaFile.from_data(version,traw,['sha256']);sraw=self.raw(snapshot,'snapshot')
   timestamp=Metadata(Timestamp(version=version,expires=self.now-timedelta(seconds=10)if expired else self.expires));timestamp.signed.snapshot_meta=MetaFile.from_data(version,sraw,['sha256']);tsraw=self.raw(timestamp,'timestamp')
-  self.transport.files={self.base+'timestamp.json':tsraw,self.base+'snapshot.json':sraw,self.base+'targets.json':traw,self.target+'components.json':catalog,self.target+'components.zip':archive}
+  self.transport.files={self.base+'timestamp.json':tsraw,self.base+'snapshot.json':sraw,self.base+'targets.json':traw,self.target+catalog_name:catalog,self.target+'components.zip':archive}
  def client(self,context=None):return AuthenticatedUpdates(self.root/'cache',self.bootstrap,digest(self.bootstrap),self.base,self.target,context or self.context,self.context_sha,fetcher=self.transport)
  def test_signed_catalog_reports_versions_without_installing(self):
   value=self.client().refresh(['cpu']);self.assertTrue(value['publisher_authenticated']);self.assertEqual(value['components'][0]['version'],'1.0.0');self.assertFalse(value['installation_performed'])

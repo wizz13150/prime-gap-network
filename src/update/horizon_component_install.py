@@ -13,7 +13,7 @@ import os
 import shutil
 import uuid
 import stage_component_bundle as stage
-from build_component_bundle import COMPONENT_PREFIX, PRIMARY
+from build_component_bundle import COMPONENT_PREFIX, PRIMARY, primary_programs
 from horizon_update_client import locked_cache
 
 MARKER = b'PGN_COMPONENT_INSTALL_STORE_V1\n'
@@ -49,6 +49,7 @@ def inventory(root):
     stage.require(value.get('schema')=='PGN_COMPONENT_MANIFEST_V1' and
                   value.get('network') in ('testnet','main'),'Invalid cohort inventory')
     components=value.get('components');stage.require(type(components)is list and 1<=len(components)<=4,'Invalid cohort components')
+    primary=primary_programs(value.get('platform','windows-x86_64'))
     names,seen,total={},set(),0
     for component in components:
         identity=component['id'];stage.require(identity in COMPONENT_PREFIX and identity not in seen,'Duplicate/unknown cohort component');seen.add(identity);stage._version(component['version'])
@@ -61,7 +62,9 @@ def inventory(root):
             stage.require(_digest(path)==row['sha256'],'Cohort file fingerprint differs')
             names[relative.casefold()]=dict(relative=relative,file=path,component=identity,bytes=row['bytes'],sha256=row['sha256'])
             total+=row['bytes'];stage.require(total<=stage.MAX_CACHE,'Cohort byte budget exceeded')
-        stage.require(PRIMARY[identity].casefold()in names,'Cohort primary is absent')
+        stage.require(primary[identity].casefold()in names,'Cohort primary is absent')
+        if value.get('platform')=='linux-x86_64':
+            stage.require(names[primary[identity].casefold()]['file'].stat().st_mode&0o100,'Linux primary is not executable')
     actual=set()
     for base,dirs,files in os.walk(root,followlinks=False):
         for name in dirs+files:stage.require(not stage._linked(Path(base)/name),'Linked cohort entry')
@@ -91,7 +94,7 @@ class CohortStore:
     def initialize(cls,root,base,context,context_sha256):
         root=stage._cache_path(root,context);base=stage._plain_chain(base)
         value,_,digest,_=inventory(base)
-        stage.require(value['network']==context['network'],'Base cohort network differs')
+        stage.require(value['network']==context['network'] and value.get('platform','windows-x86_64')==context['platform'],'Base cohort network or platform differs')
         stage.require(not root.exists(),'Installation store already exists')
         root.mkdir(mode=0o700)
         (root/'.owner').write_bytes(MARKER)
@@ -164,6 +167,8 @@ class CohortStore:
                     files[relative]=source/f['path'];new_rows.append(dict(path=relative[len(prefix):],bytes=f['bytes'],sha256=f['sha256']))
                 rows[identity]=dict(id=identity,version=component['version'],files=new_rows)
             merged=dict(schema='PGN_COMPONENT_MANIFEST_V1',release_version=manifest['release_version'],network=manifest['network'],published=True,components=[rows[k]for k in sorted(rows)])
+            if self.context['platform']=='linux-x86_64' or 'platform' in old:
+                merged['platform']=self.context['platform']
             expected_digest=stage.sha((json.dumps(merged,sort_keys=True,separators=(',',':'))+'\n').encode())
             if destination.exists():
                 _,_,digest,_=inventory(destination);stage.require(digest==expected_digest,'Existing prepared cohort differs from authenticated files')
@@ -199,6 +204,9 @@ class CohortStore:
                             self._quota(remaining+stage.MAX_MANIFEST)
                             stage.require(shutil.disk_usage(self.root).free>=remaining+16*1024*1024,'Insufficient installation disk space for independent copies')
                     shutil.copyfile(source_file,target)
+                    if self.context['platform']=='linux-x86_64':
+                        with target.open('rb') as stream:is_elf=stream.read(4)==b'\x7fELF'
+                        if is_elf:target.chmod(0o755)
                 progress.report('prepare',completed=len(ordered),total=len(ordered),force=True)
                 _write(pending/'components.json',merged)
                 _,_,digest,_=inventory(pending)

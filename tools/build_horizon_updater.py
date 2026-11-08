@@ -39,13 +39,12 @@ def main():
     environment=dict(os.environ,PYTHONPATH=str(dependencies))
     subprocess.run(command,check=True,env=environment)
     omitted=[]
-    for name in ('cryptography-50.0.2','securesystemslib-1.6.0','tuf-7.0.1'):
-        marker=out/'dist/horizon-updater/_internal'/(name+'.dist-info')/'REQUESTED'
+    for marker in (out/'dist/horizon-updater/_internal').glob('*.dist-info/REQUESTED'):
         if marker.exists():
             if marker.is_symlink()or marker.stat().st_size!=0:raise RuntimeError('Unexpected installer metadata marker')
             marker.unlink();omitted.append(marker.relative_to(out/'dist/horizon-updater').as_posix())
     if any(sha(root/name)!=expected for name,expected in inputs.items()):raise RuntimeError('Updater source changed while freezing')
-    image=out/'dist/horizon-updater/horizon-updater.exe'
+    image=out/'dist/horizon-updater'/('horizon-updater.exe' if os.name=='nt' else 'horizon-updater')
     result=dict(schema='PGN_UPDATER_SOURCE_V1',sources=inputs,dependencies=versions,
         executable_sha256=sha(image),python=sys.version,scope='Build identity only; network and installer tests are separate')
     result['omitted_optional_installer_metadata']=omitted

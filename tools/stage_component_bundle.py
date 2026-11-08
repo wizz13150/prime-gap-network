@@ -43,7 +43,7 @@ DATA_PARTS = {'data', 'wallet', 'wallets', 'chainstate', 'blocks', 'indexes',
 CODE_SUFFIXES = {'.exe', '.dll', '.pyd', '.so', '.dylib', '.py', '.pyz', '.qml',
                  '.rcc', '.qm', '.svg', '.png', '.ico', '.ttf', '.otf'}
 IMMUTABLE_RESOURCES = {
-    'ui': {'data/reference/prime-gap-records.json', 'LIMITS.txt', 'README.txt', 'TESTING.txt',
+    'ui': {'data/reference/prime-gap-records.json', 'LIMITS.txt', 'README.txt', 'TESTING.txt', 'launch-horizon.sh',
            'UpdateRuntime/deployment.json', 'UpdateRuntime/_internal/codex-rejected-cas.pem'},
     'core': {'Core/core-template.json'},
     'gpu': {'EngineRuntime/bin/canonical-orders.bin',
@@ -51,6 +51,7 @@ IMMUTABLE_RESOURCES = {
             'EngineRuntime/network/scientific-source.json',
             'EngineRuntime/network/_internal/codex-rejected-cas.pem',
             'EngineRuntime/lib/proof/windows/manifest.json',
+            'EngineRuntime/lib/proof/linux/manifest.json',
             'EngineRuntime/vanity/runtime.json',
             'EngineRuntime/THIRD-PARTY-NOTICES.txt',
             'EngineRuntime/THIRD-PARTY-LICENSES/MANIFEST.json'},
@@ -147,9 +148,9 @@ def _code_path(name, component):
     relative = '/'.join(parts[2:])
     immutable = relative in IMMUTABLE_RESOURCES.get(component, set())
     immutable |= component == 'gpu' and bool(re.fullmatch(
-        r'EngineRuntime/bin/prime-gap-worker-sm(?:86|120)-k(?:8|16|32|64)[.]exe[.]module[.]json', relative))
+        r'EngineRuntime/bin/prime-gap-worker-sm(?:86|120)-k(?:8|16|32|64)(?:[.]exe)?[.]module[.]json', relative))
     immutable |= component == 'ui' and bool(re.fullmatch(
-        r'UpdateRuntime/_internal/[A-Za-z0-9_.-]+[.]dist-info/(?:entry_points[.]txt|top_level[.]txt|licenses/LICENSE(?:[.](?:txt|APACHE|BSD|MIT))?)', relative))
+        r'UpdateRuntime/_internal/[A-Za-z0-9_.-]+[.]dist-info/(?:entry_points[.]txt|top_level[.]txt|licenses/(?:LICENSE(?:[.](?:txt|APACHE|BSD|MIT))?|COPYING[.]txt))', relative))
     immutable |= component == 'ui' and bool(re.fullmatch(
         r'UpdateRuntime/_internal/cryptography-50[.]0[.]2[.]dist-info/sboms/(?:cryptography-rust[.]cyclonedx|sbom)[.]json', relative))
     require(immutable or not DATA_PARTS.intersection(p.casefold() for p in parts), 'User data path is forbidden')

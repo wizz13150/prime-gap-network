@@ -9,7 +9,38 @@
 
 No Scout console application is required. Retired independent CUDA/CPU prototypes are excluded from this preview snapshot.
 
-## Ubuntu 24.04 application and Core
+## Coherent Linux testnet build
+
+The complete source-build command assembles the UI, Core, computation host,
+CPU controller, native images, current-epoch bootstrap, component inventory and
+native updater in one folder. Do not combine the output with an old alpha's
+Core, configuration, controller or update files.
+
+```sh
+sudo apt-get install build-essential cmake ninja-build pkg-config qt6-base-dev \
+  libqt6sql6-sqlite libboost-dev libevent-dev libsqlite3-dev libgmp-dev zlib1g-dev \
+  python3-venv
+python3 -m venv build/runtime-venv
+build/runtime-venv/bin/python -m pip install -r tools/requirements-updater.txt \
+  -r tools/requirements-engine-host.txt
+build/runtime-venv/bin/python tools/build_linux_runtime.py \
+  --work-dir build/linux-runtime-work --output build/linux-runtime --jobs 2
+./build/linux-runtime/launch-horizon.sh
+```
+
+This rebuilds the UI, Core, host, updater and CPU controller from the checkout.
+It downloads one SHA256-pinned input archive for the currently qualified native
+GPU images, CPU inventory program and their libraries/licences. It rebuilds and
+tests the native CPU worker, then freezes its exact build identity into the
+controller. It never adopts the archive's old Core, wallet, network settings or
+controller. Rebuilding the CUDA images separately still requires the native
+image qualification described below.
+
+The launcher clears inherited Snap-specific environment paths. It does not
+remove an AppArmor confinement profile. Qt 6 runtime packages remain system
+dependencies. Wallet management opens automatically when no wallet is configured.
+
+## Individual Ubuntu application and Core targets
 
 Use a C++20 compiler, CMake, Ninja, Qt 6 development packages (Core, Gui, Widgets, Network, Concurrent and Sql), SQLite3, GMP and zlib. Core additionally needs the dependencies documented in its upstream build guide, including the wallet and cryptography dependencies. The qualified Ubuntu build used GCC 13.
 
@@ -24,7 +55,7 @@ cmake -S wallet/riecoin-core-upstream-v2606 -B build-core -G Ninja \
 cmake --build build-core --target riecoind riecoin-cli --parallel 2
 ```
 
-The Core executable is deployed under the product name `pgn-core`; its deployment manifest must authenticate that exact file. Renaming without updating the manifest is invalid. Wallet configuration and chain data are created by the explicit wallet assistant, not by these build commands.
+The Core executable is deployed under the product name `pgn-core`; its deployment manifest must authenticate that exact file. Renaming without updating the manifest is invalid. Wallet creation/opening is performed from Wallet management, not by these build commands.
 
 ## Windows application
 
