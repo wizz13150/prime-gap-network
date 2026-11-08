@@ -20,6 +20,28 @@ COMPONENT_PREFIX = {'ui': '', 'core': 'Core/', 'gpu': 'EngineRuntime/',
                     'cpu': 'EngineRuntime/cpu/'}
 
 
+def validate_update_deployment(root, declared_paths, context, abi):
+    """The delivered UI must be able to invoke its own authenticated updater."""
+    helper = 'UpdateRuntime/horizon-updater.exe'
+    if helper not in declared_paths:
+        return
+    descriptor = 'UpdateRuntime/deployment.json'
+    stage.require(descriptor in declared_paths,
+                  'Update helper is declared without its deployment.json')
+    value = stage._json(stage._read_plain(root / descriptor, 8192))
+    stage.require(value.get('schema') == 'PGN_UPDATE_DEPLOYMENT_V1'
+                  and value.get('network') == context['network']
+                  and value.get('genesis_hash') == context['genesis_hash']
+                  and value.get('compatibility_set') == context['compatibility_set']
+                  and value.get('abi') == abi and value.get('helper') == helper
+                  and value.get('owned_update_protocol') == 1,
+                  'Update deployment does not match the delivered cohort')
+    with (root / helper).open('rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    stage.require(value.get('sha256') == digest,
+                  'Update deployment helper fingerprint differs')
+
+
 def build(cohort, context_path, output, sequence, release_version, abi):
     root = stage._plain_chain(cohort)
     context, context_hash = stage.read_context(context_path)
@@ -69,6 +91,7 @@ def build(cohort, context_path, output, sequence, release_version, abi):
     actual_files = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
     stage.require(actual_files == {str(p.relative_to(root)).replace('\\','/') for p in sources.values()} | set(omitted) | {'components.json'},
                   'Cohort contains undeclared files')
+    validate_update_deployment(root, actual_files, context, abi)
     manifest = dict(schema='PGN_COMPONENT_STAGE_BUNDLE_V1',bundle_id='pgn.'+str(sequence),
         sequence=sequence,release_version=release_version,network=context['network'],
         genesis_hash=context['genesis_hash'],platform=context['platform'],

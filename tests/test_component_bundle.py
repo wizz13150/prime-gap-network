@@ -1,6 +1,6 @@
 """Publisher payload filtering; inert code only, strict client rules retained."""
 from pathlib import Path
-import json,sys,tempfile,unittest,zipfile
+import hashlib,json,sys,tempfile,unittest,zipfile
 P=Path(__file__).resolve().parents[1];sys.path[:0]=[str(P/'tools'),str(P/'src/update')]
 import build_component_bundle as builder
 import generate_component_manifest as component
@@ -23,6 +23,28 @@ class ComponentBundleTests(unittest.TestCase):
   (self.code/'empty.dll').write_bytes(b'');self.manifest(['PGN-Horizon.exe',self.marker,'empty.dll'])
   with self.assertRaisesRegex(ValueError,'Invalid file declaration'):builder.build(self.code,self.context,self.root/'bundle.zip',2,'1.0','qa.1')
   self.assertFalse((self.root/'bundle.zip').exists())
+ def deployment(self):
+  helper=self.code/'UpdateRuntime/horizon-updater.exe';helper.write_bytes(pe())
+  value=dict(schema='PGN_UPDATE_DEPLOYMENT_V1',network='testnet',genesis_hash='5'*64,
+   compatibility_set='qa.cohort',abi='qa.1',helper='UpdateRuntime/horizon-updater.exe',
+   sha256=hashlib.sha256(helper.read_bytes()).hexdigest(),owned_update_protocol=1)
+  return helper,value
+ def test_missing_deployment_is_rejected_before_publication(self):
+  helper,_=self.deployment();self.manifest(['PGN-Horizon.exe',self.marker,'UpdateRuntime/horizon-updater.exe'])
+  with self.assertRaisesRegex(ValueError,'without its deployment.json'):
+   builder.build(self.code,self.context,self.root/'bundle.zip',2,'1.0','qa.1')
+  self.assertFalse((self.root/'bundle.zip').exists())
+ def test_deployment_survives_actual_archive(self):
+  _,value=self.deployment();(self.code/'UpdateRuntime/deployment.json').write_text(json.dumps(value))
+  self.manifest(['PGN-Horizon.exe',self.marker,'UpdateRuntime/horizon-updater.exe','UpdateRuntime/deployment.json'])
+  builder.build(self.code,self.context,self.root/'bundle.zip',2,'1.0','qa.1')
+  with zipfile.ZipFile(self.root/'bundle.zip')as z:
+   self.assertEqual(json.loads(z.read('payload/ui/UpdateRuntime/deployment.json')),value)
+ def test_deployment_must_bind_actual_helper_and_network(self):
+  helper,value=self.deployment();context=json.loads(self.context.read_bytes())
+  for field,replacement in [('sha256','0'*64),('genesis_hash','6'*64),('abi','other.1'),('network','main')]:
+   changed=dict(value,**{field:replacement});(self.code/'UpdateRuntime/deployment.json').write_text(json.dumps(changed))
+   with self.assertRaises(ValueError):builder.validate_update_deployment(self.code,{'UpdateRuntime/horizon-updater.exe','UpdateRuntime/deployment.json'},context,'qa.1')
  def test_all_four_qualified_profile_sidecars_are_code_resources(self):
   for arch in (86,120):
    for profile in (8,16,32,64):
