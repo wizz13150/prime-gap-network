@@ -11,7 +11,9 @@ Prime Gap Network (PGN) is a collaborative initiative conceived by **Rob Smith**
 
 **PGN Horizon** is the network client in this repository: an integrated wallet, optimized search engines, automatic work tickets, independent audits, and views of network evidence. It owns its engine runtime and does not require an installed Scout application.
 
-## Windows network test — UI 2026.11.8.78
+## Windows network test — UI 2026.11.8.79
+
+UI79 also distinguishes audit preparation/current-partition computation from network acceptance, and makes interrupted update downloads atomic with a shared-volume temporary-space check.
 
 [Download Windows x64](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Windows-x64.zip) · [Release and checksums](https://github.com/wizz13150/prime-gap-network/releases/tag/horizon-testnet-updates-epoch2) · [Tester guide](docs/TESTING.md)
 
@@ -23,7 +25,7 @@ This is the current portable Windows preview for supervised tests on the PGN tes
 4. In Profile, copy your **public mining identity** and send it to the testnet coordinator for approval. A connected peer is not automatically an admitted miner/auditor. Never send wallet files, keys or RPC credentials.
 5. Turn your GPU on. The normal work cycle handles assigned audits, searches, report publication and validation. There is no separate audit-only product mode.
 
-Existing clients can update the Interface from **Software updates → Download selected → Restart and install**. The frozen r69 updater has been tested through a real signed download and installation of UI 2026.11.8.78 and its required Core 2026.11.8.4, followed by Core reconnection with the same wallet and data folder. Selecting the Interface update also includes this required Core reader; GPU and CPU engine versions are unchanged.
+Existing clients can update the Interface from **Software updates → Download selected → Restart and install**. The frozen r69 updater has been tested through a real signed download and installation of UI 2026.11.8.79 and its required Core 2026.11.8.4, followed by Core reconnection with the same wallet and data folder. Selecting the Interface update also includes this required Core reader; GPU and CPU engine versions are unchanged.
 
 **First upgrade from r69 or r76:** turn the GPU on again after this installation, because those older versions do not save active mining for the updater. **Subsequent updates started from r77:** the application records the active local devices for that update and restores them after its verified restart; a real GPU mining restart has been tested. An ordinary application launch does not silently start mining.
 
