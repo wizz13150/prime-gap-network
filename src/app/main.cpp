@@ -38,6 +38,7 @@
 #include "ui/component_status_strip.h"
 #include "ui/community_view.h"
 #include "ui/network_work_view.h"
+#include "ui/audit_animation_view.h"
 #include "ui/engine_tools_view.h"
 #include "ui/verification_receipt_view.h"
 #include "ui/local_source_proof_presentation.h"
@@ -445,6 +446,9 @@ int main(int argc,char** argv) {
  QWidget* community=nullptr;QTableWidget* testnetTickets=nullptr;
  pgn::ui::NetworkWorkView* networkWork=nullptr;
  if(testnetMode){networkWork=new pgn::ui::NetworkWorkView([&inspectWallet](int offset,auto consume){pgn::ui::readWalletTicketPage(inspectWallet,offset,std::move(consume));},[&inspectWallet](const QString& id,auto consume){pgn::ui::readWalletTicketDetails(inspectWallet,id,std::move(consume));},nullptr,[&inspectWallet](const QString& start,const QString& end,int bins,auto consume){pgn::ui::readWalletTicketAtlas(inspectWallet,start,end,bins,std::move(consume));});community=networkWork;}else community=pgn::ui::createCommunityView(bookings,nullptr,[canvas](const QString& id){return pgn::ui::miningDeviceAccent(canvas,id);});tabs->addTab(community,testnetMode?"Network work":"Community");
+#ifdef Q_OS_WIN
+ if(networkWork){auto* animation=new pgn::ui::AuditAnimationView([&inspectWallet](qint64 height,const QString& hash,const QJsonArray& watched,auto done){pgn::ui::readWalletAuditActivity(inspectWallet,height,hash,watched,std::move(done));},[networkWork](const QJsonArray& rows,QWidget* surface){return networkWork->auditProjection(rows,surface);});networkWork->onAtlasProjectionChanged=[animation]{animation->reproject();};networkWork->setAuditAnimation(animation);}
+#endif
  bookings->onSelect=[tabs,community](const QString& id){tabs->setCurrentWidget(community);pgn::ui::selectCommunityBooking(community,id);};
   bookings->onMining=[tabs,miningPage]{tabs->setCurrentWidget(miningPage);};
  auto* lensGraph=pgn::ui::createNumberLensCanvas();

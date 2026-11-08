@@ -39,6 +39,7 @@ public:
  void readTicketPage(int offset,std::function<void(QJsonObject,QString)>);
  void readTicketDetails(const QString&,std::function<void(QJsonObject,QString)>);
  void readTicketAtlas(const QString& start,const QString& end,int bins,std::function<void(QJsonObject,QString)>);
+ void readAuditActivity(qint64 afterHeight,const QString& afterHash,const QJsonArray& watched,std::function<void(QJsonObject,QString)>);
  void readBlockAtHeight(int,std::function<void(QJsonObject,QString)>);
  void readBlockPage(int height,std::function<void(QJsonObject,QString)>);
  void readAuditDetails(const QString&,std::function<void(QJsonObject,QString)>);

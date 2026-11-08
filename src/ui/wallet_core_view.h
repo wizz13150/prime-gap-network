@@ -13,6 +13,7 @@ void stopWalletCoreForUpdate(QWidget*,std::function<void(QString)>);
 void readWalletTicketPage(QWidget*,int,std::function<void(QJsonObject,QString)>);
 void readWalletTicketDetails(QWidget*,const QString&,std::function<void(QJsonObject,QString)>);
 void readWalletTicketAtlas(QWidget*,const QString&,const QString&,int,std::function<void(QJsonObject,QString)>);
+void readWalletAuditActivity(QWidget*,qint64,const QString&,const QJsonArray&,std::function<void(QJsonObject,QString)>);
 void readWalletAuditDetails(QWidget*,const QString&,std::function<void(QJsonObject,QString)>);
 void readWalletSigningIdentity(QWidget*,const QString&,std::function<void(QJsonValue,QString)>);
 void requestWalletAudit(QWidget*,const QString&,const QJsonArray&,std::function<void(QJsonValue,QString)>);

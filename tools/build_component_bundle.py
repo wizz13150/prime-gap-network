@@ -58,6 +58,9 @@ def build(cohort, context_path, output, sequence, release_version, abi):
             files.append(dict(path=name, bytes=item['bytes'], sha256=actual))
         dependencies = ([dict(id='core',version=versions['core'],abi=abi)]
                         if component in ('gpu','cpu') and 'core' in versions else [])
+        if component=='ui' and (root/'assets/audit-animation.rcc').is_file():
+            stage.require('core' in versions,'The global audit renderer requires its Core reader')
+            dependencies.append(dict(id='core',version=versions['core'],abi=abi))
         if component=='gpu' and (root/'pgn-native-gap-evidence.exe').is_file():
             stage.require('ui'in versions,'The shared proof helper requires its UI component')
             dependencies.append(dict(id='ui',version=versions['ui'],abi=abi))

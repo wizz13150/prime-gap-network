@@ -1,4 +1,5 @@
 #include "wallet/public_work_snapshot.h"
+#include "wallet/audit_activity_snapshot.h"
 #include "wallet/ticket_atlas_snapshot.h"
 #include "wallet/confirmed_snapshot_anchor.h"
 #include "wallet/explorer_projection.h"
@@ -371,6 +372,24 @@ void CoreRuntime::readWorkView(const QString& kind,int offset,int limit,const QS
   if(!error.isEmpty()||!owner.matches(epoch())||!connected_||!processAlive()){consume({},error.isEmpty()?QString("Core work view connection changed"):error);return;}
   const auto view=value.toObject();const auto invalid=validatePublicWorkSnapshot(view,profile_.genesisHash,kind,offset,limit,request);if(!invalid.isEmpty()){consume({},invalid);return;}
   verifyConfirmedSnapshotAnchor(view.value("state").toObject(),[this,owner]{return owner.matches(epoch())&&connected_&&processAlive();},[this](qint64 height,auto done){rpc("getblockhash",{height},std::move(done));},[view,consume=std::move(consume)](QString error){consume(error.isEmpty()?view:QJsonObject{},error);});
+ });
+}
+void CoreRuntime::readAuditActivity(qint64 afterHeight,const QString& afterHash,const QJsonArray& watched,std::function<void(QJsonObject,QString)> consume){
+ static const QRegularExpression hash("^[0-9a-f]{64}$");
+ if(!connected_||!processAlive()||afterHeight<0||watched.size()>64||(afterHeight>0&&!hash.match(afterHash).hasMatch())){consume({},"Verified Core and bounded audit cursor required");return;}
+ const auto owner=epoch();
+ rpc("getpgnauditactivity",{afterHeight,64,watched},[this,owner,afterHeight,afterHash,watched,consume=std::move(consume)](QJsonValue result,QString error){
+  if(!error.isEmpty()||!owner.matches(epoch())||!connected_||!processAlive()){consume({},error.isEmpty()?QString("Core audit activity connection changed"):error);return;}
+  const auto view=result.toObject();const auto invalid=validateAuditActivity(view,profile_.genesisHash,afterHeight,64,watched);if(!invalid.isEmpty()){consume({},invalid);return;}
+  auto verify=[this,owner,consume=std::move(consume)](QJsonObject value)mutable{
+   verifyConfirmedSnapshotAnchor(value.value("state").toObject(),[this,owner]{return owner.matches(epoch())&&connected_&&processAlive();},[this](qint64 height,auto done){rpc("getblockhash",{height},std::move(done));},[value,consume=std::move(consume)](QString reason){consume(reason.isEmpty()?value:QJsonObject{},reason);});
+  };
+  if(!afterHeight||view.value("rebase").toBool()){verify(view);return;}
+  // A fork can grow beyond the previous height. Compare its old ancestor;
+  // comparing only the new height would incorrectly animate that fork's past.
+  rpc("getblockhash",{afterHeight},[this,owner,view,afterHash,verify=std::move(verify)](QJsonValue previous,QString reason)mutable{
+   auto value=view;if(!reason.isEmpty()||previous.toString()!=afterHash||!owner.matches(epoch())||!connected_||!processAlive())value.insert("rebase",true);verify(value);
+  });
  });
 }
 void CoreRuntime::readTicketAtlas(const QString& start,const QString& end,int bins,std::function<void(QJsonObject,QString)> consume){

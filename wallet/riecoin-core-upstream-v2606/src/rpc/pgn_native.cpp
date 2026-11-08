@@ -7,6 +7,7 @@
 #include <pgn/rpc_history_cache.h>
 #include <pgn/rpc_public_attribution.h>
 #include <pgn/native_network_metrics.h>
+#include <pgn/audit_activity_selection.h>
 #include <pgn/ticket_atlas_projection.h>
 #include <pgn/proposed_ticket_requests.h>
 #include <pgn/native_work_duty_admission.h>
@@ -642,8 +643,46 @@ RPCMethod getpgnauditstate(){
    }
   }
   int64_t index=0,taken=0;UniValue out{UniValue::VARR};for(const auto& [id,report]:*ledger){if(selected&&id!=*selected)continue;if(selected_batch&&!selected_batch->contains(id))continue;if(index++<offset)continue;if(taken++>=limit)break;UniValue row{UniValue::VOBJ};row.pushKV("request_id",id.GetHex());row.pushKV("audited",report.Audited()&&NativeAuditOperatorsIndependent(*ledger,report));if(const auto label=DisclosedPublicAttribution(report.owner_reveal,report.report.commitment.root.GetHex(),[](std::string_view raw){return HexStr(AuditSha(Bytes{raw.begin(),raw.end()}));}))row.pushKV("public_attribution",*label);if(report.details_root)row.pushKV("details_root",HexStr(*report.details_root));UniValue jobs{UniValue::VARR};
-   for(size_t slot=0;slot<2;++slot){if(!report.jobs[slot])continue;const auto& job=*report.jobs[slot];UniValue item{UniValue::VOBJ};item.pushKV("slot",uint64_t(slot));item.pushKV("attempt",uint64_t(job.attempt));item.pushKV("actor",HexStr(job.actor));if(const auto commitment=RpcAuditCommitment(job))item.pushKV("commitment",std::string(*commitment));if(job.time_lease){item.pushKV("deadline_clock","median_chain_time");item.pushKV("issued_time",job.time_lease->issued);item.pushKV("deadline_time",job.time_lease->deadline);}else{item.pushKV("deadline_clock","ledger_height");item.pushKV("deadline",job.deadline);}item.pushKV("expired",job.stage==NativeAuditJob::Assigned&&NativeAuditAssignmentExpired(job,tip.nHeight,tip.GetMedianTimePast()));item.pushKV("state",job.stage==NativeAuditJob::Assigned?"assigned":job.stage==NativeAuditJob::Committed?"committed":job.stage==NativeAuditJob::Passed?"passed":"failed");item.pushKV("issued",job.issued);UniValue ranges{UniValue::VARR};if(const auto* seed=tip.GetAncestor(report.report.height+1)){const auto partitions=NativeAuditPartitions(report.report.commitment.root,seed->GetBlockHash());for(auto part:partitions[slot]){UniValue range{UniValue::VOBJ};range.pushKV("index",uint64_t(part));range.pushKV("start",(report.range.start+report.range.length*part/100).convert_to<std::string>());range.pushKV("end",(report.range.start+report.range.length*(part+1)/100).convert_to<std::string>());ranges.push_back(range);}}item.pushKV("ranges",ranges);jobs.push_back(item);}row.pushKV("jobs",jobs);out.push_back(row);
+   for(size_t slot=0;slot<2;++slot){if(!report.jobs[slot])continue;const auto& job=*report.jobs[slot];UniValue item{UniValue::VOBJ};item.pushKV("slot",uint64_t(slot));item.pushKV("attempt",uint64_t(job.attempt));item.pushKV("actor",HexStr(job.actor));if(const auto commitment=RpcAuditCommitment(job))item.pushKV("commitment",std::string(*commitment));if(job.time_lease){item.pushKV("deadline_clock","median_chain_time");item.pushKV("issued_time",job.time_lease->issued);item.pushKV("deadline_time",job.time_lease->deadline);}else{item.pushKV("deadline_clock","ledger_height");item.pushKV("deadline",job.deadline);}item.pushKV("expired",job.stage==NativeAuditJob::Assigned&&NativeAuditAssignmentExpired(job,tip.nHeight,tip.GetMedianTimePast()));item.pushKV("state",job.stage==NativeAuditJob::Assigned?"assigned":job.stage==NativeAuditJob::Committed?"committed":job.stage==NativeAuditJob::Passed?"passed":"failed");item.pushKV("issued",job.issued);if(job.passed_height>0)item.pushKV("passed_height",job.passed_height);UniValue ranges{UniValue::VARR};if(const auto* seed=tip.GetAncestor(report.report.height+1)){const auto partitions=NativeAuditPartitions(report.report.commitment.root,seed->GetBlockHash());for(auto part:partitions[slot]){UniValue range{UniValue::VOBJ};range.pushKV("index",uint64_t(part));range.pushKV("start",(report.range.start+report.range.length*part/100).convert_to<std::string>());range.pushKV("end",(report.range.start+report.range.length*(part+1)/100).convert_to<std::string>());ranges.push_back(range);}}item.pushKV("ranges",ranges);jobs.push_back(item);}row.pushKV("jobs",jobs);out.push_back(row);
   }return out;
+ }};
+}
+
+RPCMethod getpgnauditactivity(){
+ return RPCMethod{"getpgnauditactivity","Read a bounded global audit activity projection from the authenticated current branch. No expected answers, private keys, or inferred GPU progress.",{
+  {"after_height",RPCArg::Type::NUM,RPCArg::Default{0},"Last observed accepted height; zero establishes a current snapshot"},
+  {"limit",RPCArg::Type::NUM,RPCArg::Default{64},"Maximum report identities in this response,1 through100"},
+  {"watched_requests",RPCArg::Type::ARR,RPCArg::Optional::OMITTED,"Previously displayed reports whose terminal states must be retained",{{"request_id",RPCArg::Type::STR_HEX,RPCArg::Optional::NO,"Canonical public report request"}}}},
+ RPCResult{RPCResult::Type::OBJ_DYN,"","PGN_AUDIT_ACTIVITY_V1 global counts, bounded rows and explicit sampling limits",{{RPCResult::Type::ELISION,"","One authenticated chain anchor and public audit states"}}},RPCExamples{""},
+ [](const RPCMethod&,const JSONRPCRequest& request)->UniValue{
+  const auto after=request.params[0].isNull()?0:request.params[0].getInt<int64_t>(),limit=request.params[1].isNull()?64:request.params[1].getInt<int64_t>();
+  if(after<0||limit<1||limit>100)throw JSONRPCError(RPC_INVALID_PARAMETER,"Bounded activity height and report limit required");
+  std::vector<uint256> watched;std::set<uint256> distinct;
+  if(!request.params[2].isNull())for(const auto& item:request.params[2].get_array().getValues()){
+   if(!item.isStr())throw JSONRPCError(RPC_INVALID_PARAMETER,"Canonical watched report required");const auto text=item.get_str();const auto id=uint256::FromHex(text);
+   if(!id||id->IsNull()||id->GetHex()!=text||!distinct.insert(*id).second||watched.size()>=size_t(limit))throw JSONRPCError(RPC_INVALID_PARAMETER,"Distinct watched reports must fit the response limit");watched.push_back(*id);
+  }
+  auto& manager=EnsureAnyChainman(request.context);LOCK(cs_main);RequireNative(manager);auto& tip=Tip(manager);const auto history=ReadOwnHistory(manager);const auto ledger=ReadRpcAuditLedger(manager,history,tip);
+  if(!ledger)throw JSONRPCError(RPC_MISC_ERROR,"Authenticated audit history held");
+  const bool rebase=after==0||after>tip.nHeight;uint64_t passed_since=0;
+  const auto selected=SelectAuditActivity(*ledger,watched,size_t(limit),[&](const NativeReportAudit& report){
+   AuditActivityRating rating;
+   for(const auto& item:report.jobs)if(item){const auto& job=*item;const bool active=job.stage==NativeAuditJob::Committed||(job.stage==NativeAuditJob::Assigned&&!NativeAuditAssignmentExpired(job,tip.nHeight,tip.GetMedianTimePast()));rating.active_jobs+=active;
+    const auto changed=std::max(job.issued,job.passed_height);rating.newest_height=std::max(rating.newest_height,int64_t(changed));rating.recent|=!rebase&&changed>after;
+    if(!rebase&&job.stage==NativeAuditJob::Passed&&job.passed_height>after)++passed_since;
+   }return rating;
+  });
+  UniValue rows{UniValue::VARR};
+  if(!selected.requests.empty()){
+   UniValue ids{UniValue::VARR};for(const auto& id:selected.requests)ids.push_back(id.GetHex());UniValue params{UniValue::VARR};params.push_back(0);params.push_back(selected.requests.size());params.push_back(UniValue{});params.push_back(ids);
+   auto nested=request;nested.strMethod="getpgnauditstate";nested.params=std::move(params);const auto states=getpgnauditstate().HandleRequest(nested);
+   for(auto row:states.getValues()){const auto id=uint256::FromHex(row["request_id"].get_str());CHECK_NONFATAL(id);const auto& report=ledger->at(*id);row.pushKV("start",report.range.start.convert_to<std::string>());row.pushKV("end",(report.range.start+report.range.length).convert_to<std::string>());rows.push_back(row);}
+  }
+  UniValue state{UniValue::VOBJ};state.pushKV("genesis",manager.GetConsensus().hashGenesisBlock.GetHex());state.pushKV("bestblockhash",tip.GetBlockHash().GetHex());state.pushKV("height",tip.nHeight);state.pushKV("median_time_past",tip.GetMedianTimePast());
+  UniValue totals{UniValue::VOBJ};totals.pushKV("active_reports",selected.active_reports);totals.pushKV("active_jobs",selected.active_jobs);totals.pushKV("recent_reports",selected.recent_reports);totals.pushKV("passed_audits_since_height",passed_since);totals.pushKV("selected_active_reports",selected.selected_active_reports);totals.pushKV("selected_recent_reports",selected.selected_recent_reports);
+  UniValue absent{UniValue::VARR};for(const auto& id:selected.absent)absent.push_back(id.GetHex());
+  UniValue out{UniValue::VOBJ};out.pushKV("schema","PGN_AUDIT_ACTIVITY_V1");out.pushKV("state",state);out.pushKV("scope","global_counts_with_bounded_public_job_rows");out.pushKV("after_height",after);out.pushKV("rebase",rebase);out.pushKV("totals",totals);out.pushKV("truncated",selected.active_reports>selected.selected_active_reports||selected.recent_reports>selected.selected_recent_reports);out.pushKV("absent_watched_requests",absent);out.pushKV("audits",rows);
+  if(out.write().size()>524288)throw JSONRPCError(RPC_MISC_ERROR,"Audit activity response exceeds its byte budget; choose a smaller limit");return out;
  }};
 }
 
@@ -765,6 +804,6 @@ RPCMethod getpgnnetworkmetrics(){
 
 }
 void RegisterPgnNativeRPCCommands(CRPCTable& table){
- static const CRPCCommand commands[]{{"mining",&getpgnstate},{"mining",&getpgnticketrequest},{"mining",&getpgnbootstraptemplate},{"mining",&getpgnscientificwork},{"mining",&getpgnscientifictemplate},{"mining",&getpgnreportcommit},{"mining",&getpgnreports},{"mining",&getpgnauditevent},{"mining",&getpgnauditstate},{"mining",&getpgnparticipants},{"mining",&getpgnworkdutystatus},{"mining",&getpgnnetworkmetrics},{"mining",&getpgnworkview},{"mining",&getpgnticketatlas}};
+ static const CRPCCommand commands[]{{"mining",&getpgnstate},{"mining",&getpgnticketrequest},{"mining",&getpgnbootstraptemplate},{"mining",&getpgnscientificwork},{"mining",&getpgnscientifictemplate},{"mining",&getpgnreportcommit},{"mining",&getpgnreports},{"mining",&getpgnauditevent},{"mining",&getpgnauditstate},{"mining",&getpgnauditactivity},{"mining",&getpgnparticipants},{"mining",&getpgnworkdutystatus},{"mining",&getpgnnetworkmetrics},{"mining",&getpgnworkview},{"mining",&getpgnticketatlas}};
  for(const auto& command:commands)table.appendCommand(command.name,&command);
 }

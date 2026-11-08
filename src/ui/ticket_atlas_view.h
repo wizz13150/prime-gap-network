@@ -34,6 +34,7 @@ public:
     using Reply=std::function<void(QJsonObject,QString)>;
     using Reader=std::function<void(const QString&,const QString&,int,Reply)>;
     std::function<void(const QString&)> inspect;
+    std::function<void()> onViewportChanged;
 private:
     using Int=pgn::wallet::AtlasInteger;
     Reader reader_;QJsonObject snapshot_;QString first_,last_,selected_;
@@ -73,6 +74,7 @@ private:
         const auto bitLabel=lowerBits==upperBits?QString("%1 bits").arg(lowerBits):QString("%1–%2 bits").arg(lowerBits).arg(upperBits);
         domain_->setText(QString("%1 · %2 · %3").arg(entire?"Network domain":"Ticket area",bitLabel,bitScale_?"one band per bit":"linear scale"));
         domain_->setToolTip("Exact integer interval ["+text(a)+", "+text(a+span)+") · upper bound excluded. This is the network search domain, not detected hardware capacity.");
+        if(onViewportChanged)onViewportChanged();
     }
     void requestSoon(){debounce_.start();}
     void fetch(){
@@ -197,5 +199,16 @@ public:
     // Same inspection-point convention as the reused community renderer. An
     // empty identity addresses an aggregate cell, never an arbitrary ticket.
     QPointF inspectionPoint(const QString& id={})const{for(const auto& hit:hits_)if(id.isEmpty()?hit.second.value("atlas_bin").toBool():hit.second.value("request")==id)return hit.first.center();return {-1,-1};}
+    QJsonObject auditProjection(const QJsonArray& audits,QWidget* surface)const{
+        QJsonObject result;if(!surface||first_.isEmpty()||surface->width()<1||surface->height()<1)return result;
+        auto rows=audits;if(rows.isEmpty()){const auto details=snapshot_.value("details").toArray();for(int i=0;i<4&&!details.isEmpty();++i){auto row=details[std::min(details.size()-1,qsizetype(i)*details.size()/4)].toObject();row.insert("request_id",row.value("request"));rows.append(row);}}
+        for(const auto& entry:rows){const auto row=entry.toObject();if(!row.value("start").isString()||!row.value("end").isString())continue;
+            const Int a=pgn::wallet::atlasInteger(row.value("start")),b=pgn::wallet::atlasInteger(row.value("end"));if(b<=a)continue;const Int midpoint=a+(b-a)/2;
+            auto point=inspectionPoint(row.value("request_id").toString());if(point.x()<0)point=QPointF(std::clamp(pixel(midpoint),plot().left(),plot().right()),plot().center().y());
+            const auto mapped=surface->mapFromGlobal(mapToGlobal(point.toPoint()));
+            const QJsonObject endpoint{{"x",std::clamp(double(mapped.x())/surface->width(),0.,1.)},{"y",std::clamp(double(mapped.y())/surface->height(),1.01,3.)}};
+            result.insert(row.value("request_id").toString(),QJsonObject{{"source",endpoint},{"target",endpoint},{"outside",midpoint<first()||midpoint>=last()}});
+        }return result;
+    }
 };
 }

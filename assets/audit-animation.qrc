@@ -1,0 +1,9 @@
+<RCC><qresource prefix="/">
+ <file alias="network-animation.html">audit3d/network-animation.html</file>
+ <file alias="audit_network_controller.js">audit3d/audit_network_controller.js</file>
+ <file alias="audit_network_scene.mjs">audit3d/audit_network_scene.mjs</file>
+ <file alias="audit_activity_model.mjs">audit3d/audit_activity_model.mjs</file>
+ <file alias="four-audit-entities.glb">audit3d/four-audit-entities.glb</file>
+ <file alias="assets.json">audit3d/assets.json</file>
+ <file alias="WEBVIEW2-LICENSE.txt">audit3d/WEBVIEW2-LICENSE.txt</file>
+</qresource></RCC>

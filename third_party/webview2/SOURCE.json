@@ -1,0 +1,6 @@
+{
+  "package": "Microsoft.Web.WebView2",
+  "version": "1.0.4314.35",
+  "source": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4314.35",
+  "scope": "Header interfaces and official x64 loader; no runtime download or wallet bridge"
+}

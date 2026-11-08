@@ -1,0 +1,95 @@
+import{AuditActivityModel}from'./audit_activity_model.mjs';
+const entities=['michael','helel','boshel','kitabel'],model=new AuditActivityModel(),actor=document.querySelector('#actor');
+let scene,controllers=new Map(),ready=false,shown=false,last=0,lastRender=0,preview=false,latest=null,projection={};
+const targetHeights={michael:3.2,helel:3.3,boshel:1.75,kitabel:2.6};
+function meshBounds(root){let box=null;root.traverse(n=>{if(!n.isMesh)return;if(n.isSkinnedMesh)n.computeBoundingBox();else n.geometry.computeBoundingBox();const local=n.isSkinnedMesh?n.boundingBox:n.geometry.boundingBox;if(local){const bounds=local.clone().applyMatrix4(n.matrixWorld);box=box?box.union(bounds):bounds}});return box}
+function normalizeActors(){const heights={},floor=-Math.max(...Object.values(targetHeights))/2;for(const entity of entities){const root=scene.getObjectByName('Actor'+entity[0].toUpperCase()+entity.slice(1));let bounds=meshBounds(root);if(!bounds)throw Error('Actor geometry missing '+entity);const original=bounds.max.y-bounds.min.y;root.scale.multiplyScalar(targetHeights[entity]/original);root.updateWorldMatrix(false,true);bounds=meshBounds(root);const position=root.getWorldPosition(root.position.clone());position.y+=floor-bounds.min.y;root.position.copy(root.parent.worldToLocal(position));root.updateWorldMatrix(false,true);bounds=meshBounds(root);heights[entity]={original_height:original,display_height:bounds.max.y-bounds.min.y};}window.__auditNetwork.worldHeights=heights}
+function native(value){window.chrome?.webview?.postMessage(JSON.stringify(value))}
+function names(){if(!scene)return;for(const name of document.querySelectorAll('[data-entity-name]')){const entity=name.dataset.entityName,root=scene.getObjectByName('Actor'+entity[0].toUpperCase()+entity.slice(1));if(root){const v=root.getWorldPosition(root.position.clone()).project(scene.getCamera());name.style.left=((v.x+1)/2*actor.clientWidth)+'px'}}}
+function staging(){if(!scene)return;const camera=scene.getCamera();camera.updateWorldMatrix(true,false);const matrix=camera.projectionMatrix.clone().multiply(camera.matrixWorldInverse).elements;
+ for(let i=0;i<entities.length;i++){const n=entities[i],root=scene.getObjectByName('Actor'+n[0].toUpperCase()+n.slice(1)),old=root.getWorldPosition(root.position.clone()),next=old.clone(),ndc=((i+.5)/4)*2-1;
+  // Solve the current camera projection for the slot centre, rather than
+  // guessing world spacing from the viewport aspect ratio.
+  const denominator=matrix[0]-ndc*matrix[3];if(Math.abs(denominator)<1e-8)continue;
+  next.x=-(matrix[4]*old.y+matrix[8]*old.z+matrix[12]-ndc*(matrix[7]*old.y+matrix[11]*old.z+matrix[15]))/denominator;
+  const delta=next.clone().sub(old);root.position.copy(root.parent.worldToLocal(next));root.updateWorldMatrix(false,true);controllers.get(n)?.relocate(delta.toArray())}scene.queueRender();names()}
+
+function points(job){return projection[job.request]||{source:{x:entities.indexOf(job.entity)/4+.125,y:1.08},target:{x:entities.indexOf(job.entity)/4+.125,y:1.08},outside:true}}
+function display(snapshot){
+ if(!ready)return;latest=snapshot;preview=snapshot.preview===true;shown=true;projection=snapshot.projection??{};
+ const observed=model.observe(snapshot.view,{now:performance.now(),reset:snapshot.reset===true,visible:true,capturedAt:performance.now()-(snapshot.age_ms??0)}),events=model.take(performance.now());
+ if(observed.rebased)for(const controller of controllers.values())controller.clear();
+ for(const controller of controllers.values())controller.palette(snapshot.preview===true?'preview':'live');
+ // Keep identities attached while represented. A busy network is sampled,
+ // never expanded into an unbounded delayed replay queue.
+ const assigned=new Set(),candidates=[...observed.active,...events.filter(e=>!observed.active.some(a=>a.request===e.request&&a.slot===e.slot))];
+ for(const job of candidates){
+  const key=job.request+':'+job.slot,existing=[...controllers.values()].find(c=>{const j=c.inspect().job;return j&&j.request+':'+j.slot===key});
+  let controller=existing;
+  if(!controller){const first=entities.indexOf(job.entity);for(let n=0;n<4;n++){const candidate=controllers.get(entities[(first+n)%4]);if(!candidate.inspect().job&&!assigned.has(candidate.entity)){controller=candidate;break}}}
+  if(!controller)continue;controller.apply(job,points(job),observed.rebased||!events.some(e=>e.request===job.request&&e.slot===job.slot&&e.attempt===job.attempt));assigned.add(controller.entity);
+ }
+ for(const controller of controllers.values()){
+  const j=controller.inspect().job;if(!j)continue;const current=model.rows.get(j.request+':'+j.slot);
+  if(current)controller.apply(current,points(current));
+  // Absence can be sampling or a rollback. It is never a success verdict.
+  else if(observed.rebased||snapshot.view.absent_watched_requests?.includes(j.request))controller.clear();
+ }
+ if(!preview)native({event:'watched',requests:[...new Set([...controllers.values()].map(c=>c.inspect().job?.request).filter(Boolean))]});
+ window.__auditNetwork.observation=observed;
+}
+async function initialize(){
+ actor.pause();await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+ for(let p=actor;p;p=Object.getPrototypeOf(p))for(const symbol of Object.getOwnPropertySymbols(p))if(symbol.description==='scene'&&actor[symbol]?.getObjectByName)scene=actor[symbol];
+ if(!scene)throw Error('3D scene unavailable');scene.mixer.stopAllAction();actor.minimumRenderScale=1;normalizeActors();
+ staging();
+ const prototype=scene.getObjectByName('ReportFromMining');if(!prototype)throw Error('Report geometry unavailable');prototype.visible=false;prototype.scale.setScalar(1);
+ for(const entity of entities)controllers.set(entity,window.pgnCreateAuditController(scene,entity,prototype));
+ ready=true;scene.queueRender();names();new ResizeObserver(()=>staging()).observe(actor);native({event:'ready'});if(latest)display(latest);
+}
+window.pgnAuditApply=value=>{latest=value;if(ready)display(value)};
+window.pgnAuditProject=value=>{projection=value;for(const c of controllers.values()){const job=c.inspect().job;if(job)c.setEndpoints(points(job))}};
+window.pgnAuditSuspend=()=>{shown=false;preview=false;model.suspend();for(const controller of controllers.values())controller.clear();scene?.queueRender()};
+const id=n=>n.toString(16).padStart(64,'0');
+function fixture(height,jobs,rebase=false){return{schema:'PGN_AUDIT_ACTIVITY_V1',state:{genesis:id(1),bestblockhash:id(height+100),height},scope:'global_counts_with_bounded_public_job_rows',rebase,truncated:false,totals:{active_reports:4,active_jobs:4,recent_reports:0,passed_audits_since_height:0,selected_active_reports:4,selected_recent_reports:0},audits:jobs.map((job,i)=>({request_id:id(i+1),audited:false,jobs:[job]}))}}
+function previewStart(nativePoints={}){model.suspend();for(const controller of controllers.values())controller.clear();shown=true;preview=true;const projections={},points=Object.values(nativePoints);const rows=entities.map((entity,i)=>{projections[id(i+1)]=points[i]||{source:{x:[.08,.43,.65,.83][i],y:1.08},target:{x:[.08,.43,.65,.83][i],y:1.08}};return{slot:0,attempt:0,state:'assigned',actor:'0014'+(i+1).toString(16).padStart(2,'0'),issued:2}});display({view:fixture(1,[],true),projection:projections,reset:true,preview:true});display({view:fixture(2,rows),projection:projections,preview:true});preview=true;return rows}
+window.pgnAuditPreview=points=>{previewStart(points);window.__auditNetwork.previewStarted=performance.now()};
+window.__auditNetwork={get ready(){return ready},controllers,model,apply:display,suspend:window.pgnAuditSuspend,observation:null,inspect:()=>[...controllers.values()].map(c=>c.inspect())};
+window.pgnAuditProbe=async()=>{
+ const rows=previewStart();for(let n=0;n<1800;n++)for(const c of controllers.values())c.step(1/60);
+ const held=[...controllers.values()].map(c=>c.inspect()),{auditMeshClearance}=await import('./audit_mesh_clearance.mjs'),meshClearance=auditMeshClearance(scene,controllers);
+ const passed=rows.map(j=>({...j,state:'passed',passed_height:3}));display({view:fixture(3,passed),projection,reset:false});
+ for(let n=0;n<1500;n++)for(const c of controllers.values())c.step(1/60);
+ const released=[...controllers.values()].map(c=>c.inspect());
+ window.pgnAuditSuspend();display({view:fixture(80,passed),projection,reset:true});
+ const rebased=[...controllers.values()].map(c=>c.inspect());
+ const context=document.createElement('canvas').getContext('webgl2'),extension=context?.getExtension('WEBGL_debug_renderer_info');
+ const rigChecks=[];for(const entity of entities){const root=scene.getObjectByName('Actor'+entity[0].toUpperCase()+entity.slice(1));root.traverse(mesh=>{if(!mesh.isSkinnedMesh)return;for(const suffix of ['Head','LeftHand','RightHand']){const bone=mesh.skeleton.bones.find(b=>b.name.endsWith(suffix));if(!bone)continue;const index=mesh.skeleton.bones.indexOf(bone),weights=mesh.geometry.attributes.skinWeight,indices=mesh.geometry.attributes.skinIndex,distances=[],center=bone.getWorldPosition(mesh.position.clone());for(let i=0;i<indices.count;i++){let weight=0;for(const part of ['getX','getY','getZ','getW'])if(indices[part](i)===index)weight+=weights[part](i);if(weight>.4){const point=mesh.getVertexPosition(i,mesh.position.clone());mesh.localToWorld(point);distances.push(point.distanceTo(center))}}distances.sort((a,b)=>a-b);rigChecks.push({entity,bone:suffix,world:center.toArray(),vertices:distances.length,median_distance:distances[Math.floor(distances.length/2)],maximum_distance:distances[distances.length-1]})}})}
+ native({event:'probe',PASS:held.every(s=>s.phase==='examine'&&s.visible)&&released.every(s=>s.metrics.complete)&&rebased.every(s=>!s.visible)&&meshClearance.every(s=>s.triangle_clearance>=0),mesh_clearance:meshClearance,rig_checks:rigChecks,world_heights:window.__auditNetwork.worldHeights,held,released,return_replays:model.snapshot().queued,renderer:extension?context.getParameter(extension.UNMASKED_RENDERER_WEBGL):null});shown=false;
+};
+document.addEventListener('visibilitychange',()=>{if(document.hidden)window.pgnAuditSuspend()});
+window.pgnAuditTrajectoryProbe=async()=>{
+ const{auditMeshClearance}=await import('./audit_mesh_clearance.mjs'),cases=[];shown=false;preview=false;
+ for(const origins of [[.08,.43,.65,.83],[.83,.65,.43,.08]]){
+  for(const c of controllers.values())c.clear();const jobs=[];
+  for(let i=0;i<4;i++){const entity=entities[i],job={request:id(i+1),slot:0,attempt:0,state:'assigned',actor:'0014'+(i+1).toString(16).padStart(2,'0'),entity};jobs.push(job);controllers.get(entity).apply(job,{source:{x:origins[i],y:1.08},target:{x:origins[i],y:1.08}})}
+  let checkedApproach=false;for(let n=0;n<1800;n++){for(const c of controllers.values())c.step(1/60);if(!checkedApproach&&[...controllers.values()].some(c=>c.inspect().phase==='capture')){cases.push({origins,stage:'capture',clearance:auditMeshClearance(scene,controllers)});checkedApproach=true}if([...controllers.values()].every(c=>c.inspect().phase==='examine'))break}
+  cases.push({origins,stage:'held',clearance:auditMeshClearance(scene,controllers),phases:[...controllers.values()].map(c=>c.inspect().phase)});
+  for(let i=0;i<4;i++)controllers.get(entities[i]).apply({...jobs[i],state:'passed'},{source:{x:origins[i],y:1.08},target:{x:origins[i],y:1.08}});
+  for(let n=0;n<30;n++)for(const c of controllers.values())c.step(1/60);cases.push({origins,stage:'opening',clearance:auditMeshClearance(scene,controllers)});
+  for(let n=0;n<60;n++)for(const c of controllers.values())c.step(1/60);cases.push({origins,stage:'departure',clearance:auditMeshClearance(scene,controllers)});
+  for(let n=0;n<1800;n++){for(const c of controllers.values())c.step(1/60);if([...controllers.values()].every(c=>c.inspect().metrics.complete))break}
+  cases.push({origins,stage:'complete',complete:[...controllers.values()].every(c=>c.inspect().metrics.complete)});
+ }
+ const minimum=Math.min(...cases.flatMap(c=>(c.clearance||[]).map(m=>m.triangle_clearance))),context=document.createElement('canvas').getContext('webgl2'),extension=context?.getExtension('WEBGL_debug_renderer_info');
+ native({event:'probe',PASS:minimum>=0&&cases.filter(c=>c.stage==='held').every(c=>c.phases.every(p=>p==='examine'))&&cases.filter(c=>c.stage==='complete').every(c=>c.complete),trajectory_cases:cases,minimum_exact_mesh_clearance:minimum,scope:'Eight actual rig/origin cases,32 sampled posed-mesh states; not a universal continuous surface proof',renderer:extension?context.getParameter(extension.UNMASKED_RENDERER_WEBGL):null});window.pgnAuditSuspend();
+};
+let dragging=false,home={theta:0,phi:84*Math.PI/180,radius:6.8};actor.addEventListener('pointerdown',()=>{dragging=true});for(const e of['pointerup','pointercancel','lostpointercapture'])actor.addEventListener(e,()=>{dragging=false});
+function tick(now){let dt=Math.min(.06,(now-last)/1000||0);last=now;
+ if(ready&&shown&&!document.hidden&&now-lastRender>=1000/30){dt=Math.min(.1,(now-lastRender)/1000);lastRender=now;
+  if(preview&&now-window.__auditNetwork.previewStarted>14000){for(const c of controllers.values()){const j=c.inspect().job;if(j&&!['passed','failed'].includes(j.state))c.apply({...j,state:'passed'},points(j))}}
+  for(const c of controllers.values()){let rest=dt;while(rest>1e-6){const step=Math.min(rest,1/60);c.step(step);rest-=step}if(c.inspect().metrics.complete)c.clear()}
+  if(!dragging){const orbit=actor.getCameraOrbit(),k=1-Math.exp(-dt*4),theta=orbit.theta+(home.theta-orbit.theta)*k,phi=orbit.phi+(home.phi-orbit.phi)*k;actor.cameraOrbit=`${theta}rad ${phi}rad ${home.radius}m`}
+  names();
+ }requestAnimationFrame(tick)}requestAnimationFrame(tick);
+actor.addEventListener('load',()=>initialize().catch(e=>native({event:'error',message:String(e)})));if(actor.loaded)initialize().catch(e=>native({event:'error',message:String(e)}));

@@ -1,0 +1,42 @@
+{
+  "schema": "PGN_AUDIT_3D_ASSETS_V1",
+  "actors": [
+    "Michael",
+    "Helel",
+    "Boshel",
+    "Kitabel"
+  ],
+  "rig_joints_per_actor": 24,
+  "individual_finger_joints": false,
+  "source_geometry_decimated": false,
+  "constellation_size": "Same immutable geometry for all actors; collision radius derived from its geometry and bounded orbital displacement",
+  "collision_model": "Skeleton capsules plus mesh-derived torso envelopes; exact skinned-triangle checks are offline QA, not a universal continuous proof",
+  "packet_palette": "Preview retains its recorded report colors; live generic report glyphs use audit states, never invented Gold discoveries or coin amounts",
+  "data_source": "Authenticated public Core audit activity; no wallet or signing bridge",
+  "files": {
+    "audit_activity_model.mjs": {
+      "bytes": 5599,
+      "sha256": "e6a97a994458f3d18fe7d567dda8baf93e7ef693b562df6ddb4d8ba6291250e6"
+    },
+    "audit_network_controller.js": {
+      "bytes": 22179,
+      "sha256": "7ad89c232545348ebcc736feabba3e4f7cefcf6e59c6146ed6e430701e1a11e1"
+    },
+    "audit_network_scene.mjs": {
+      "bytes": 13828,
+      "sha256": "aa3f5d05a90d01f1904f2dc1314b42f1802522485344cb0b7de77a8411647eac"
+    },
+    "four-audit-entities.glb": {
+      "bytes": 77552852,
+      "sha256": "80032a7595d628ca1a04ca3410a5d7e5828b0d93e75f267efc46c1a755d71290"
+    },
+    "network-animation.html": {
+      "bytes": 1416238,
+      "sha256": "97acb12b87c2bd79d752b7c6c355db269dd624275ce7968240ba988735608e60"
+    },
+    "WEBVIEW2-LICENSE.txt": {
+      "bytes": 1487,
+      "sha256": "0af8f1b807512aae39c2ac1aa4d0cae65cabecb6fd554b8439a5162a0d6eca55"
+    }
+  }
+}
