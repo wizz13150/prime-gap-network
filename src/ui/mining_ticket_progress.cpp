@@ -314,9 +314,9 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  const bool audit=role=="audit"||(role.isEmpty()&&frame_.value("audit_service").toObject().value("active_role")=="audit");
  QString displayPhase=phase;
  if(audit){
-  if(active)displayPhase="Auditing partition";
+  if(active)displayPhase="Auditing";
   else if(phase=="Starting")displayPhase="Preparing audit";
-  else if(phase=="Report ready")displayPhase="Audit partition computed";
+  else if(phase=="Report ready")displayPhase="Audit computed";
   else if(phase=="Paused")displayPhase="Audit paused";
  }
  const auto accent=transition?QColor("#ffbd69"):QColor("#69efc5");
@@ -360,7 +360,7 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  painter.setPen(QColor("#dffff5"));painter.drawText(QRectF(18,98,leftWidth,21),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(title,Qt::ElideRight,leftWidth));
  painter.setPen(accent);painter.drawText(QRectF(width()-rightWidth-18,98,rightWidth,21),Qt::AlignRight|Qt::AlignVCenter,painter.fontMetrics().elidedText(status,Qt::ElideRight,rightWidth));
  QFont detailFont("Consolas");detailFont.setPixelSize(width()<800?11:13);painter.setFont(detailFont);painter.setPen(QColor("#b8ded8"));
- const QString positions=frame_.contains("positions_total")?(audit?QString("Current audit partition · "):QString{})+positionFormats(frame_.value("positions_total").toString()).inlineText()+" positions":QString{};
+ const QString positions=frame_.contains("positions_total")?(audit?QString("Complete audit · "):QString{})+positionFormats(frame_.value("positions_total").toString()).inlineText()+" positions":QString{};
  painter.drawText(QRectF(18,123,std::max(1,width()-200),19),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(positions,Qt::ElideRight,std::max(1,width()-200)));
  QString remaining;
  if(eta&&std::isfinite(*eta)&&*eta<365.*86400){const auto value=qint64(std::ceil(*eta));remaining=QString("ETA ≈ %1:%2:%3").arg(value/3600,2,10,QChar('0')).arg(value/60%60,2,10,QChar('0')).arg(value%60,2,10,QChar('0'));}

@@ -9,6 +9,7 @@ from report_commitment import audit_commitment, canonical_bytes
 from horizon_coordination import confirm_candidate, validate_intent
 from horizon_audit_answers import AuditAnswers
 from horizon_owner_reports import OwnerReports
+from horizon_audit_progress import presentation as audit_presentation
 
 def save(file, value):
     atomic_bytes(Path(file), canonical_bytes(value) + b"\n")
@@ -377,7 +378,7 @@ class NetworkAudits:
             start, end = int(part["start"]), int(part["end"])
             job = partition_ticket(audit, part)
             identity = job['ticket_id']
-            self.presentation = dict(folder=self.worker.root / "tickets" / identity, request_id=audit["request_id"], title="Audit " + str(audit["slot"] + 1) + " · partition " + str(part["index"]))
+            self.presentation = audit_presentation(audit, part, self.worker.root / "tickets" / identity)
             result = self.worker.source.run_ticket(job, self.worker.args.piece_limit)
             if result.get('state') != 'PAUSED':
                 finalizer = getattr(self.worker.source, 'finalize_report', None)

@@ -172,7 +172,8 @@ def main():
                 context = current["context"]
                 frame["work_role"] = current["role"]
                 if current["role"] == "audit":
-                    frame.update(title=context["presentation"]["title"], request_id=context["presentation"]["request_id"], record_pairs=[])
+                    from horizon_audit_progress import whole_audit_frame
+                    frame = whole_audit_frame(context['presentation'], frame, paused=frame.get('phase') == 'Paused')
         except (OSError, ValueError, KeyError) as error:
             frame = dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", message=str(error)[:400])
         print(json.dumps(frame, separators=(",", ":")), flush=True)

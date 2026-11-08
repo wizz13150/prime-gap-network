@@ -14,6 +14,7 @@ from horizon_ticket_prefetch import TicketPrefetch
 from horizon_work_cycle import WorkCycleJournal
 from horizon_core_rpc import CoreRpcError
 from horizon_ticket_archive import SCHEMA as COMPLETED_TICKET_SCHEMA
+from horizon_audit_progress import presentation as audit_presentation
 from pgn_native_contract import fields
 from pgn_session import atomic_bytes
 from report_commitment import canonical_bytes
@@ -74,11 +75,8 @@ class AuditGpuProxy:
         part = next((p for p in audit['ranges'] if p['start'] == ticket['start'] and p['end'] == ticket['end']), None)
         if part is None:
             raise ValueError('Queued audit partition differs from its confirmed assignment')
-        presentation = dict(request_id=audit['request_id'],
-                            title='Audit ' + str(audit['slot'] + 1) + ' · partition ' + str(part['index']),
-                            folder=self.flow.worker.root / 'tickets' / ticket['ticket_id'])
-        # Keep queue metadata serializable; restore the local path when active.
-        presentation["folder"] = str(presentation["folder"])
+        presentation = audit_presentation(audit, part,
+                            self.flow.worker.root / 'tickets' / ticket['ticket_id'])
         if audit.get("work_cycle"):
             cycle = self.flow.cycles.snapshot(audit["work_cycle"])
             presentation["title"] = "Ticket " + cycle["work"]["ticket_number"] + " · Audit " + str(self.position + 1) + "/2"
@@ -453,11 +451,9 @@ class MiningFlow:
             done, total = len(counts), len(ranges)
             if not 0 <= done <= total:
                 continue
-            stage = ('checking partition ' + str(ranges[done]['index'])
-                     if done < total else 'result publication pending')
+            stage = ('verifying computed results' if done < total else 'result publication pending')
             pending.append('Audit ' + str(position + 1) + '/' + str(len(lanes))
-                           + ': ' + str(done) + '/' + str(total)
-                           + ' partitions verified · ' + stage)
+                           + ': ' + stage)
         if pending:
             self.worker.message(' | '.join(pending), 'Completing audits')
             return

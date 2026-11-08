@@ -27,8 +27,9 @@ class MiningFlowCycleTests(unittest.TestCase):
                           SimpleNamespace(current_audit={'ranges':[{'index':24},{'index':31}], 'counts':[7,8]})]
         flow.waiting();text,phase=messages[-1]
         self.assertEqual(phase,'Completing audits')
-        self.assertIn('Audit 1/2: 0/2 partitions verified · checking partition 12',text)
-        self.assertIn('Audit 2/2: 2/2 partitions verified · result publication pending',text)
+        self.assertIn('Audit 1/2: verifying computed results',text)
+        self.assertIn('Audit 2/2: result publication pending',text)
+        self.assertNotIn('partition',text)
         self.assertNotIn('Required audit service',text)
         flow.audit_lanes[0].current_audit=None;flow.audit_lanes[1].current_audit=None
         flow.waiting();self.assertEqual(messages[-1],(flow.prefetch.error,'Waiting for next ticket'))

@@ -39,7 +39,8 @@ private:
     using Int=pgn::wallet::AtlasInteger;
     Reader reader_;QJsonObject snapshot_;QString first_,last_,selected_;
     QTimer debounce_,poll_;QLabel *status_,*domain_;QVector<QPair<QRectF,QJsonObject>> hits_;
-    QPoint pressed_;Int pressedFirst_{},pressedLast_{};bool dragging_{},busy_{},pending_{},autoFocused_{},bitScale_{},pressedBitScale_{};
+    QPoint pressed_;Int pressedFirst_{},pressedLast_{};bool dragging_{},busy_{},pending_{},autoFocused_{},bitScale_{},pressedBitScale_{},embedded_{};
+    bool readable()const{return isVisible()||(embedded_&&parentWidget()&&parentWidget()->isVisible());}
     static QColor color(size_t s){static const std::array<QColor,5> c{QColor("#70badb"),QColor("#e6bd64"),QColor("#ba9aee"),QColor("#63dfb3"),QColor("#f37b7e")};return c[s];}
     static QString stageTitle(size_t s){static const std::array<QString,5> names{"Assigned","Awaiting audits","Audits assigned","Audits passed","Audit failed"};return names[s];}
     QVector<size_t> visibleStages()const{QVector<size_t> result;const auto totals=snapshot_.value("totals").toObject();for(size_t s=0;s<5;++s)if(totals.value(pgn::wallet::AtlasStates[s]).toObject().value("tickets").toInteger()>0)result.append(s);if(result.isEmpty())result.append(0);return result;}
@@ -70,7 +71,7 @@ private:
         const bool entire=a==origin&&a+span==limit;
         const auto bits=[](const Int& n){return n>0?int(boost::multiprecision::msb(n))+1:1;};
         const int lowerBits=bits(a),upperBits=bits(Int(a+span-1));
-        bitScale_=upperBits-lowerBits>1;setProperty("pgn_ticket_atlas_bit_scale",bitScale_);setMinimumHeight(bitScale_?285:172);
+        bitScale_=upperBits-lowerBits>1;setProperty("pgn_ticket_atlas_bit_scale",bitScale_);if(!embedded_)setMinimumHeight(bitScale_?285:172);
         const auto bitLabel=lowerBits==upperBits?QString("%1 bits").arg(lowerBits):QString("%1–%2 bits").arg(lowerBits).arg(upperBits);
         domain_->setText(QString("%1 · %2 · %3").arg(entire?"Network domain":"Ticket area",bitLabel,bitScale_?"one band per bit":"linear scale"));
         domain_->setToolTip("Exact integer interval ["+text(a)+", "+text(a+span)+") · upper bound excluded. This is the network search domain, not detected hardware capacity.");
@@ -78,7 +79,7 @@ private:
     }
     void requestSoon(){debounce_.start();}
     void fetch(){
-        if(!reader_||!isVisible())return;if(busy_){pending_=true;return;}
+        if(!reader_||!readable())return;if(busy_){pending_=true;return;}
         const QString start=first_,end=last_;busy_=true;pending_=false;const QPointer<TicketAtlasView> guard(this);
         reader_(start,end,256,[guard,start,end](QJsonObject value,QString error){
             if(!guard)return;guard->busy_=false;
@@ -192,15 +193,35 @@ public:
         auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,3);layout->addStretch();layout->addLayout(controls);status_=new QLabel("Reading the authenticated ticket map…");status_->setWordWrap(true);status_->setStyleSheet("color:#92bac6;font-size:12px");layout->addWidget(status_);layout->setStretch(0,1);
         connect(active,&QPushButton::clicked,this,[this]{focusActive();});connect(all,&QPushButton::clicked,this,[this]{if(snapshot_.isEmpty())return;viewport(pgn::wallet::atlasInteger(snapshot_.value("range_origin")),pgn::wallet::atlasInteger(snapshot_.value("range_limit")));requestSoon();});
         connect(plus,&QPushButton::clicked,this,[this]{zoom(1,plot().center().x());});connect(minus,&QPushButton::clicked,this,[this]{zoom(-1,plot().center().x());});
-        debounce_.setSingleShot(true);debounce_.setInterval(120);connect(&debounce_,&QTimer::timeout,this,[this]{fetch();});poll_.setInterval(5000);connect(&poll_,&QTimer::timeout,this,[this]{if(isVisible())fetch();});poll_.start();
+        debounce_.setSingleShot(true);debounce_.setInterval(120);connect(&debounce_,&QTimer::timeout,this,[this]{fetch();});poll_.setInterval(5000);connect(&poll_,&QTimer::timeout,this,[this]{if(readable())fetch();});poll_.start();
     }
     void focusActive(){if(!snapshot_.contains("observed_start"))return;const Int a=pgn::wallet::atlasInteger(snapshot_.value("observed_start")),b=pgn::wallet::atlasInteger(snapshot_.value("observed_end"));const Int margin=std::max(Int(1),Int((b-a)/20));viewport(a-margin,b+margin);requestSoon();}
-    void setSelected(QString id){selected_=std::move(id);setProperty("pgn_ticket_atlas_selected",selected_);update();}
+    void setSelected(QString id){selected_=std::move(id);setProperty("pgn_ticket_atlas_selected",selected_);update();if(embedded_&&onViewportChanged)onViewportChanged();}
+    void embed(){embedded_=true;hide();QTimer::singleShot(0,this,[this]{fetch();});}
+    void embeddedCommand(const QJsonObject& command){
+        const auto action=command.value("action").toString();
+        if(action=="active")focusActive();
+        else if(action=="bin"){
+            const auto bins=snapshot_.value("bins").toArray();const int index=command.value("index").toInt(-1);
+            if(index>=0&&index<bins.size()){const auto bin=bins[index].toObject();viewport(pgn::wallet::atlasInteger(bin.value("start")),pgn::wallet::atlasInteger(bin.value("end")));requestSoon();}
+        }
+        else if(action=="overview"&&!snapshot_.isEmpty()){viewport(pgn::wallet::atlasInteger(snapshot_.value("range_origin")),pgn::wallet::atlasInteger(snapshot_.value("range_limit")));requestSoon();}
+        else if(action=="zoom")zoom(std::clamp(command.value("steps").toInt(),-4,4),plot().left()+plot().width()*std::clamp(command.value("x_ppm").toInt(500000),0,1000000)/1000000.);
+        else if(action=="shift"&&!snapshot_.isEmpty()){
+            const int delta=std::clamp(command.value("delta_ppm").toInt(),-1000000,1000000);
+            if(bitScale_){const auto a=atlasBitCoordinate(first()),b=atlasBitCoordinate(last()),d=(Int(b-a)*delta/1000000).convert_to<qint64>();viewport(atlasBitInteger(a+d),atlasBitInteger(b+d));}
+            else{const Int d=(last()-first())*delta/1000000;viewport(first()+d,last()+d);}requestSoon();
+        }else if(action=="inspect"){
+            const auto id=command.value("request").toString();for(const auto& row:snapshot_.value("details").toArray())if(row.toObject().value("request")==id){setSelected(id);if(inspect)inspect(id);break;}
+        }
+        if(onViewportChanged)onViewportChanged();
+    }
     // Same inspection-point convention as the reused community renderer. An
     // empty identity addresses an aggregate cell, never an arbitrary ticket.
     QPointF inspectionPoint(const QString& id={})const{for(const auto& hit:hits_)if(id.isEmpty()?hit.second.value("atlas_bin").toBool():hit.second.value("request")==id)return hit.first.center();return {-1,-1};}
     QJsonObject auditProjection(const QJsonArray& audits,QWidget* surface)const{
         QJsonObject result;if(!surface||first_.isEmpty()||surface->width()<1||surface->height()<1)return result;
+        if(embedded_){auto map=snapshot_;map.insert("start",first_);map.insert("end",last_);map.insert("bit_scale",bitScale_);map.insert("selected",selected_);result.insert("__atlas",map);}
         auto rows=audits;if(rows.isEmpty()){const auto details=snapshot_.value("details").toArray();for(int i=0;i<4&&!details.isEmpty();++i){auto row=details[std::min(details.size()-1,qsizetype(i)*details.size()/4)].toObject();row.insert("request_id",row.value("request"));rows.append(row);}}
         for(const auto& entry:rows){const auto row=entry.toObject();if(!row.value("start").isString()||!row.value("end").isString())continue;
             const Int a=pgn::wallet::atlasInteger(row.value("start")),b=pgn::wallet::atlasInteger(row.value("end"));if(b<=a)continue;const Int midpoint=a+(b-a)/2;

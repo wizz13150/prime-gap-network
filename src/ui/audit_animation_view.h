@@ -14,6 +14,7 @@ public:
  ~AuditAnimationView()override;
  void preview();
  void reproject();
+ std::function<void(const QJsonObject&)> onAtlasCommand;
 protected:
  void showEvent(QShowEvent*)override;
  void hideEvent(QHideEvent*)override;

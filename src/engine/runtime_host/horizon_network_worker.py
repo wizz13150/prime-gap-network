@@ -23,6 +23,7 @@ from horizon_network_audits import NetworkAudits
 from horizon_gold_proof import build as build_gap_proof, assemble as assemble_gold_proof
 from horizon_engine_host import EngineService
 from horizon_status_stream import ticket_frame
+from horizon_audit_progress import whole_audit_frame
 from horizon_testnet_admission import AdmissionMonitor
 from pgn_native_contract import fields
 from pgn_session import atomic_bytes, SessionControllerBusy
@@ -185,7 +186,7 @@ class NetworkWorker:
                     frame.update(phase='Paused',speed_rate=None,average_rate=None,compute_tests_rate=None,eta_rate=None)
                 if self.audits.presentation:
                     item = self.audits.presentation
-                    frame.update(request_id=item['request_id'],title=item['title'],work_role='audit',record_pairs=[])
+                    frame = whole_audit_frame(item, frame, paused=event.get('phase') == 'PAUSED_ACK')
                 elif self.current:
                     frame.update(request_id=self.current['request_id'],title='Ticket '+str(self.current.get('ticket_number','')),work_role='search')
                 self.emit(frame)
@@ -194,12 +195,14 @@ class NetworkWorker:
             try:
                 item = self.audits.presentation
                 frame = ticket_frame(item["folder"], self.sequence)
-                frame.update(request_id=item["request_id"], title=item["title"], work_role="audit", record_pairs=[], validation_state="Independent audit computation · original discovery attribution retained")
-                if event.get("phase") == "PAUSED_ACK":
-                    frame.update(phase="Paused", speed_rate=None, average_rate=None)
+                frame = whole_audit_frame(item, frame, paused=event.get('phase') == 'PAUSED_ACK')
                 self.emit(frame)
-            except (OSError, ValueError, KeyError):
-                self.message("Checkpoint saved; GPU released" if event.get("phase") == "PAUSED_ACK" else "Preparing the assigned audit partition", "Paused" if event.get("phase") == "PAUSED_ACK" else "Starting")
+            except (OSError, ValueError, KeyError) as error:
+                # A new internal input may not have its first session yet.
+                # Retain the audit's completed prefix instead of resetting it.
+                frame = whole_audit_frame(item, paused=event.get('phase') == 'PAUSED_ACK')
+                frame['progress_notice'] = str(error)[:300]
+                self.emit(frame)
             return
         if not self.current:
             return

@@ -22,7 +22,7 @@ struct AuditAnimationView::Impl{
 #endif
 };
 AuditAnimationView::AuditAnimationView(Reader reader,Projection projection,QWidget* parent):QWidget(parent),impl_(std::make_unique<Impl>()){
- setObjectName("pgn-network-audit-animation");setMinimumHeight(220);setMaximumHeight(310);impl_->reader=std::move(reader);impl_->projection=std::move(projection);
+ setObjectName("pgn-network-audit-animation");setMinimumHeight(280);setMaximumHeight(310);impl_->reader=std::move(reader);impl_->projection=std::move(projection);
  auto* box=new QVBoxLayout(this);box->setContentsMargins(0,0,0,0);box->setSpacing(0);auto* line=new QHBoxLayout;line->setSpacing(10);
  auto* title=new QLabel("NETWORK AUDITS");title->setStyleSheet("color:#bce3e7;font:600 11px 'Segoe UI';");line->addWidget(title);
  impl_->status=new QLabel("Connecting to current audit activity…");impl_->status->setStyleSheet("color:#93b8c4;font:11px 'Segoe UI';");line->addWidget(impl_->status,1);
@@ -30,6 +30,7 @@ AuditAnimationView::AuditAnimationView(Reader reader,Projection projection,QWidg
  connect(previewButton,&QPushButton::clicked,this,[this]{preview();});
 #ifdef Q_OS_WIN
  impl_->surface=new pgn::audit3d::Surface(this);box->addWidget(impl_->surface,1);
+ impl_->surface->onAtlas=[this](const QJsonObject& command){if(onAtlasCommand)onAtlasCommand(command);reproject();};
  impl_->surface->onWatched=[this](const QJsonArray& ids){if(!impl_->preview)impl_->displayed=ids;};
  impl_->surface->onReady=[this]{impl_->ready=true;impl_->previewButton->setEnabled(true);refresh();};
  impl_->surface->onError=[this](const QString& error){impl_->previewButton->setEnabled(false);impl_->status->setText(error);setProperty("pgn_audit_animation_error",error);};
@@ -57,7 +58,7 @@ void AuditAnimationView::hideEvent(QHideEvent* event){++impl_->generation;impl_-
 void AuditAnimationView::resizeEvent(QResizeEvent* event){QWidget::resizeEvent(event);QTimer::singleShot(0,this,[this]{reproject();});}
 void AuditAnimationView::reproject(){
 #ifdef Q_OS_WIN
- if(impl_->ready&&isVisible()&&!impl_->preview&&impl_->projection&&!impl_->last.isEmpty())impl_->surface->project(impl_->projection(impl_->last.value("audits").toArray(),impl_->surface));
+ if(impl_->ready&&isVisible()&&impl_->projection)impl_->surface->project(impl_->projection(impl_->last.value("audits").toArray(),impl_->surface));
 #endif
 }
 void AuditAnimationView::preview(){

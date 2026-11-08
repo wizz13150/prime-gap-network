@@ -6,4 +6,6 @@
  <file alias="four-audit-entities.glb">audit3d/four-audit-entities.glb</file>
  <file alias="assets.json">audit3d/assets.json</file>
  <file alias="WEBVIEW2-LICENSE.txt">audit3d/WEBVIEW2-LICENSE.txt</file>
+ <file alias="audit_native_rail.mjs">audit3d/audit_native_rail.mjs</file>
+ <file alias="audit_mesh_clearance.mjs">audit3d/audit_mesh_clearance.mjs</file>
 </qresource></RCC>

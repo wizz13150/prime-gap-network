@@ -21,7 +21,8 @@ class AuditPrefetchTests(unittest.TestCase):
         self.assertEqual(len(self.queue.audits),5)
         self.assertEqual([j.context['audit_position']for j in self.queue.audits],[0]*5)
         self.assertEqual([j.ticket for j in self.queue.audits],self.tickets)
-        self.assertEqual([j.context['presentation']['title']for j in self.queue.audits],[f'Audit 1 · partition {i}'for i in range(5)])
+        self.assertEqual([j.context['presentation']['title']for j in self.queue.audits],['Audit 1']*5)
+        self.assertEqual([j.context['presentation']['offset']for j in self.queue.audits],['0','10','20','30','40'])
     def test_staged_partitions_keep_audit_service_ready_across_producer_gap(self):
         self.proxy.register_preparation(self.tickets)
         self.queue.update_audit_backlog(100,1,86400)

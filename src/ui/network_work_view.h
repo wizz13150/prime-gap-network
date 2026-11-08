@@ -159,7 +159,14 @@ protected:
 void presentStatus(const QString& text,bool error=false){status_->setText(text);status_->setVisible(error);status_->setToolTip(text);if(table_)table_->setToolTip(text);}
 public:
     QJsonObject auditProjection(const QJsonArray& audits,QWidget* surface)const{return atlas_?atlas_->auditProjection(audits,surface):QJsonObject{};}
-    void setAuditAnimation(QWidget* view){if(!view)return;workspace_->insertWidget(0,view);workspace_->setStretchFactor(0,0);workspace_->setStretchFactor(1,0);workspace_->setStretchFactor(2,1);workspace_->setSizes({240,190,500});}
+    void atlasCommand(const QJsonObject& command){if(atlas_)atlas_->embeddedCommand(command);}
+    void setAuditAnimation(QWidget* view){if(!view)return;workspace_->insertWidget(0,view);
+#ifdef Q_OS_WIN
+        if(atlas_)atlas_->embed();workspace_->setStretchFactor(0,0);workspace_->setStretchFactor(workspace_->count()-1,1);workspace_->setSizes({290,0,600});
+#else
+        workspace_->setStretchFactor(0,0);workspace_->setStretchFactor(1,0);workspace_->setStretchFactor(2,1);workspace_->setSizes({240,190,500});
+#endif
+    }
     NetworkWorkView(PageReader pageReader,DetailReader details,QWidget* parent=nullptr,TicketAtlasView::Reader atlas={}):QWidget(parent),pageReader_(std::move(pageReader)),detailReader_(std::move(details)){
         setObjectName("pgn-network-work-explorer");auto* box=new QVBoxLayout(this);box->setContentsMargins(18,14,18,14);auto* top=new QHBoxLayout;search_=new QLineEdit;search_->setPlaceholderText("Search this page by ticket, interval or owner script");filter_=new QComboBox;filter_->setObjectName("pgn-network-ticket-filter");filter_->addItems({"All work","Assigned","Report submitted","Audits passed"});auto* refreshButton=new QPushButton("Refresh work");top->addWidget(search_,1);top->addWidget(filter_);top->addWidget(refreshButton);status_=new QLabel("Connecting to verified network work…");summary_=new QLabel;summary_->setWordWrap(true);status_->hide();status_->setStyleSheet("color:#edc17c;font:12px 'Segoe UI';");summary_->setStyleSheet("font:12px 'Segoe UI';");summary_->setWordWrap(false);
         workspace_=new QSplitter(Qt::Vertical);workspace_->setObjectName("pgn-network-map-split");workspace_->setChildrenCollapsible(false);workspace_->setHandleWidth(6);

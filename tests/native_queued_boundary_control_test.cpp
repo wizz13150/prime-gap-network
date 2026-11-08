@@ -20,6 +20,10 @@
 // PowerShell, installed engine, UI, GPU/driver or user database is accessed.
 using namespace pgn::mining;using namespace pgn::booking;
 namespace {
+// Deliberately expire a physical read during SQL, independently of CPU speed.
+// Registered only in this isolated test executable's temporary databases.
+void fixtureSqlDelay(sqlite3_context* result,int,sqlite3_value**){QThread::msleep(1750);sqlite3_result_int(result,0);}
+int fixtureSqlExtension(sqlite3* db,char**,const void*){return sqlite3_create_function_v2(db,"fixture_sql_delay",0,SQLITE_UTF8,nullptr,fixtureSqlDelay,nullptr,nullptr,nullptr);}
 int checks{};
 void check(bool ok,const char* why){++checks;if(!ok)throw std::runtime_error(why);}
 void need(bool ok,const char* why){if(!ok)throw std::runtime_error(why);}
@@ -178,12 +182,12 @@ void failures(){
  {Fixture f;f.queue(8,9);auto c=f.controller();auto invalid=registry();invalid.ranges[0].end=plus(99);check(f.submit(*c,10,scope(),invalid),"registry validation separate from source commit");f.settled();check(f.sourceState()=="SOURCE_FINISHED"&&f.prepared().isEmpty()&&f.calls()==0,"invalid next registry does not discard SOURCE");check(f.submit(*c,20),"new actual proof can reopen nonmutating registry Held");f.settled(2);check(f.calls()==1&&!f.prepared().isEmpty(),"Held did not consume predecessor before real PREPARED");}
  {Fixture f;f.queue(8,9);auto c=f.controller();f.db.exec("CREATE TRIGGER fixture_fail BEFORE INSERT ON dispatch_requests WHEN NEW.state='PREPARED' BEGIN SELECT RAISE(ABORT,'TESTONLY next failure'); END");check(f.submit(*c),"next trigger failure attempt");f.settled();check(f.sourceState()=="SOURCE_FINISHED"&&f.prepared().isEmpty()&&f.calls()==0,"next rollback preserves prior SOURCE transaction");f.db.exec("DROP TRIGGER fixture_fail");check(f.submit(*c,20),"new proof after no PREPARED may reopen");f.settled(2);check(f.calls()==1,"retry after repaired nonmutating next Held only");}
  {Fixture f;auto c=f.controller();f.db.exec("CREATE TRIGGER fixture_fail BEFORE UPDATE OF state ON bookings WHEN NEW.state='SOURCE_FINISHED' BEGIN SELECT RAISE(ABORT,'TESTONLY SOURCE failure'); END");const auto before=f.db.dump();check(f.submit(*c),"source commit failure attempt");f.settled();check(f.db.dump()==before&&f.packets.size()==1&&f.calls()==0&&f.sourceState()=="STARTED","SOURCE failure rolls back all and publishes no completion");}
- {Fixture f;f.queue(8,9);auto c=f.controller(200);f.db.exec("CREATE TRIGGER fixture_sql_cost BEFORE INSERT ON dispatch_requests WHEN NEW.state='PREPARED' BEGIN SELECT sum(x) FROM (WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000) SELECT x FROM n); END");check(f.submit(*c),"real temporary SQL cost attempt");f.settled();if(f.prepared().isEmpty())std::cerr<<json(f.last()).constData()<<'\n';check(f.sourceState()=="SOURCE_FINISHED"&&!f.prepared().isEmpty()&&f.calls()==0&&f.last().value("error").toString().contains("expired during next SQL/readback/encode"),"postSQL TTL check leaves PREPARED unsent; no lifetime renewal");}
+ {Fixture f;f.queue(8,9);auto c=f.controller(1500);f.db.exec("CREATE TRIGGER fixture_sql_cost BEFORE INSERT ON dispatch_requests WHEN NEW.state='PREPARED' BEGIN SELECT fixture_sql_delay(); END");check(f.submit(*c),"real temporary SQL cost attempt");f.settled();if(f.prepared().isEmpty())std::cerr<<json(f.last()).constData()<<'\n';check(f.sourceState()=="SOURCE_FINISHED"&&!f.prepared().isEmpty()&&f.calls()==0&&f.last().value("error").toString().contains("expired during next SQL/readback/encode"),"postSQL TTL check leaves PREPARED unsent; no lifetime renewal");}
  for(const auto& mode:QStringList{"held","bad","slow"}){Fixture f;f.queue(8,9);f.endpoint.host=mode;auto c=f.controller(30000,mode=="slow"?NativeControlTimeouts{1000,1200}:NativeControlTimeouts{5000,10000});check(f.submit(*c),"SELF uncertain/held attempt");f.settled();check(f.last().value("accepted")==false&&!f.prepared().isEmpty()&&f.last().value("applied")==false,"remote uncertainty never erases PREPARED or proves applied");const auto calls=f.calls();check(f.submit(*c,20),"new fresh proof after uncertain enters reconciliation only");f.settled(2);check(f.calls()==calls&&f.last().value("accepted")==false,"no automatic retry on new nonce after uncertain");}
 }
 void unsentPreparedRecovery(){
- Fixture f;f.queue(8,9);auto c=f.controller(200);
- f.db.exec("CREATE TRIGGER fixture_sql_cost BEFORE INSERT ON dispatch_requests WHEN NEW.state='PREPARED' BEGIN SELECT sum(x) FROM (WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000) SELECT x FROM n); END");
+ Fixture f;f.queue(8,9);auto c=f.controller(1500);
+ f.db.exec("CREATE TRIGGER fixture_sql_cost BEFORE INSERT ON dispatch_requests WHEN NEW.state='PREPARED' BEGIN SELECT fixture_sql_delay(); END");
  check(f.submit(*c),"first fresh acquisition pays actual SQL cost");f.settled();
  const auto selected=f.prepared();const auto before=f.db.dump();
  check(!selected.isEmpty()&&f.calls()==0&&f.last().value("reacquire_prepared_unsent")==true&&f.last().value("transport_attempted")==false,"only provably unsent postSQL expiry requests a fresh read");
@@ -225,4 +229,4 @@ void csvLineIsNotZone(){
  }
 }
 }
-int main(int argc,char** argv){QCoreApplication app(argc,argv);if(app.arguments().contains("-F"))return fake(app.arguments());try{primary();orderedAndPending();stagedRecovery();latches();validation();failures();unsentPreparedRecovery();lineage();legacyScopeAbi();csvLineIsNotZone();std::cout<<"NATIVE_QUEUED_BOUNDARY "<<checks<<" checks / 0 failures; CLOSED SELF+tempSQLite only, not physical or independent coverage\n";return 0;}catch(const std::exception& e){std::cerr<<"NATIVE_QUEUED_BOUNDARY failed check "<<checks<<": "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv){QCoreApplication app(argc,argv);if(app.arguments().contains("-F"))return fake(app.arguments());try{check(sqlite3_auto_extension(reinterpret_cast<void(*)()>(fixtureSqlExtension))==SQLITE_OK,"register temporary SQL expiry fixture");primary();orderedAndPending();stagedRecovery();latches();validation();failures();unsentPreparedRecovery();lineage();legacyScopeAbi();csvLineIsNotZone();std::cout<<"NATIVE_QUEUED_BOUNDARY "<<checks<<" checks / 0 failures; CLOSED SELF+tempSQLite only, not physical or independent coverage\n";return 0;}catch(const std::exception& e){std::cerr<<"NATIVE_QUEUED_BOUNDARY failed check "<<checks<<": "<<e.what()<<'\n';return 1;}}

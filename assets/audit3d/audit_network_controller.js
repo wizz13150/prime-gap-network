@@ -54,11 +54,23 @@ window.pgnCreateAuditController=function(scene,entity,prototype){
  function clearance(p,items=volumes()){let value=Infinity;for(const c of items)value=Math.min(value,distance(p,c.a,c.b)-c.r-packetRadius);for(const profile of scene.userData.auditTorsoProfiles?.values()||[])value=Math.min(value,torsoClearance(p,profile));return value}
  function sweepClear(from,to){const items=volumes(),length=from.distanceTo(to),steps=Math.max(2,Math.ceil(length/.025));let result=Infinity;for(let i=0;i<=steps;i++)result=Math.min(result,clearance(from.clone().lerp(to,i/steps),items));return result-length/steps/2}
  function curve(from,to,u,bulge){
-  // Approach along the front normal at the handover, rather than crossing a
-  // wrist diagonally from the Atlas. Reverse this corridor for departure.
-  const t=smooth(u),reverse=state.phase==='depart',distance=Math.max(.9,bulge||.9);
-  const c1=from.clone().addScaledVector(front,reverse?distance:distance*.55),c2=to.clone().addScaledVector(front,reverse?distance*.55:distance);
-  return from.clone().multiplyScalar((1-t)**3).addScaledVector(c1,3*(1-t)**2*t).addScaledVector(c2,3*(1-t)*t*t).addScaledVector(to,t**3);
+  // Keep transit in the free plane in front of all actors. The terminal
+  // segment still follows the receiving actor's own hand-facing normal.
+  const outward=scene.getCamera().getWorldDirection(v()).negate(),reverse=state.phase==='depart';
+  const margin=packetRadius+.12;let plane=Math.max(from.dot(outward),to.dot(outward));
+  for(const c of volumes())plane=Math.max(plane,c.a.dot(outward)+c.r+margin,c.b.dot(outward)+c.r+margin);
+  // A depth-only leg must follow the endpoint's perspective ray. A parallel
+  // camera-forward leg changes its screen position and produces a visible
+  // overshoot/return before the packet reaches its Atlas point.
+  const cameraPosition=scene.getCamera().getWorldPosition(v());
+  const firstDirection=reverse?front:cameraPosition.clone().sub(from).normalize();
+  const lastDirection=reverse?cameraPosition.clone().sub(to).normalize():front;
+  const a=from.clone().addScaledVector(firstDirection,Math.max(0,plane-from.dot(outward))/Math.max(.2,firstDirection.dot(outward)));
+  const b=to.clone().addScaledVector(lastDirection,Math.max(0,plane-to.dot(outward))/Math.max(.2,lastDirection.dot(outward)));
+  const knots=[from,a,b,to],lengths=[from.distanceTo(a),a.distanceTo(b),b.distanceTo(to)],total=lengths.reduce((x,y)=>x+y,0);state.routeLength=total;
+  let distance=clamp(u,0,1)*total;
+  for(let i=0;i<3;i++){if(distance<=lengths[i]||i===2){const t=lengths[i]>1e-7?clamp(distance/lengths[i],0,1):1,e=t*t*t*(10+t*(-15+6*t));return knots[i].clone().lerp(knots[i+1],e)}distance-=lengths[i]}
+  return to.clone();
  }
  function solveArm(a,palm,dt,opening){
   const wantedPalm=hold.clone().sub(palm).normalize().lerp(front,opening*.7).normalize();let finger=up.clone().multiplyScalar(.85).addScaledVector(front,.35);finger.addScaledVector(wantedPalm,-finger.dot(wantedPalm));if(finger.lengthSq()<.001)finger.copy(front).addScaledVector(wantedPalm,-front.dot(wantedPalm));finger.normalize();
@@ -108,7 +120,7 @@ window.pgnCreateAuditController=function(scene,entity,prototype){
   if(packet.scale.x>.01&&clearance(center)<.018){for(let i=0;i<arms.length;i++){const a=arms[i];[a.upper,a.lower,a.hand].forEach((bone,j)=>bone.quaternion.copy(rotations[i][j]));a.upper.updateWorldMatrix(false,true)}metrics.deniedArmSteps=(metrics.deniedArmSteps||0)+1}
   if(phase==='summon'&&state.age>.35){transition('approach');state.pathStart=center.clone()}
   else if(phase==='approach'||phase==='depart'){
-   const target=phase==='approach'?hold:anchor('#returnedReport'),start=state.pathStart||center,nextU=Math.min(1,state.u+dt/Math.max(.9,start.distanceTo(target)/3)),candidate=curve(start,target,nextU,state.bulge||.3),clear=sweepClear(center,candidate);
+   const target=phase==='approach'?hold:anchor('#returnedReport'),start=state.pathStart||center,nextU=Math.min(1,state.u+dt/Math.max(.9,(state.routeLength||start.distanceTo(target))/3)),candidate=curve(start,target,nextU,state.bulge||.3),clear=sweepClear(center,candidate);
    metrics.lastClearance=clear;
    if(clear>=.018){place(candidate);state.u=nextU;state.blocked=0;metrics.minFlightClearance=Math.min(metrics.minFlightClearance,clear)}
    else{state.blocked+=dt;metrics.deniedSteps++;if(state.blocked>.5){state.pathStart=center.clone();state.u=0;state.bulge=Math.min(1.8,(state.bulge||.3)+.1);state.blocked=0}}
