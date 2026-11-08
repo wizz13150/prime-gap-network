@@ -630,6 +630,8 @@ def main():
     parser.add_argument("--proof-builder", type=Path)
     parser.add_argument("--piece-limit", type=int, default=64 * 10**12)
     parser.add_argument("--pilot-coordination", action="store_true")
+    parser.add_argument("--controlled-lab-audit-actors", type=Path,
+                        help="Explicit testnet laboratory audit identities; never enabled by default")
     parser.add_argument("--require-scientific-source", action="store_true")
     parser.add_argument("--wait-for-network-sync", action="store_true")
     parser.add_argument("--bootstrap-height", type=int)

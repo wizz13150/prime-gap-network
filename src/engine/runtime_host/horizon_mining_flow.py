@@ -1,6 +1,7 @@
 """Resident management lanes keep prepared useful work ahead of the single GPU lane."""
 from concurrent.futures import TimeoutError, CancelledError
 from pathlib import Path
+from copy import deepcopy
 from types import SimpleNamespace
 import json
 import threading
@@ -33,6 +34,7 @@ class AuditGpuProxy:
         self.flow = flow
         self.position = position
         self.audit = None
+        self.prepared = {}
 
     def finalize_report(self, work, computed):
         # NetworkAudits calls this after its GPU Future returns, on the audit
@@ -44,21 +46,37 @@ class AuditGpuProxy:
         register = getattr(self.flow.worker.source, 'register_preparation', None)
         if callable(register):
             register(tickets)
+        # All partitions of this confirmed assignment are independent GPU
+        # inputs. Expose their readiness before waiting for the first result;
+        # otherwise a long search can win the producer's tiny handoff gap.
+        # Two existing lanes x five partitions fit the existing ten-job bound.
+        for ticket in tickets:
+            self.queue_ticket(ticket, self.flow.worker.args.piece_limit)
 
     def acknowledge_preparation(self, ticket):
         acknowledge = getattr(self.flow.worker.source, 'acknowledge_preparation', None)
         if callable(acknowledge):
             acknowledge(ticket)
+        self.prepared.pop(ticket, None)
 
     def retain_audit_partition(self,audit,part,computed=None):
         retain=getattr(self.flow.worker.source,'retain_audit_partition',None)
         if callable(retain):retain(audit,part,computed)
 
-    def run_ticket(self, ticket, maximum_piece):
+    def queue_ticket(self, ticket, maximum_piece):
+        if ticket['ticket_id'] in self.prepared:
+            previous, limit, future = self.prepared[ticket['ticket_id']]
+            if previous != ticket or limit != maximum_piece:
+                raise ValueError('Prepared audit partition identity changed')
+            return future
         audit = self.audit.current_audit
         self.flow.bind_audit_cycle(self.position, audit)
-        presentation = dict(self.audit.presentation)
-        presentation["folder"] = self.flow.worker.root / "tickets" / ticket["ticket_id"]
+        part = next((p for p in audit['ranges'] if p['start'] == ticket['start'] and p['end'] == ticket['end']), None)
+        if part is None:
+            raise ValueError('Queued audit partition differs from its confirmed assignment')
+        presentation = dict(request_id=audit['request_id'],
+                            title='Audit ' + str(audit['slot'] + 1) + ' · partition ' + str(part['index']),
+                            folder=self.flow.worker.root / 'tickets' / ticket['ticket_id'])
         # Keep queue metadata serializable; restore the local path when active.
         presentation["folder"] = str(presentation["folder"])
         if audit.get("work_cycle"):
@@ -68,6 +86,11 @@ class AuditGpuProxy:
                                      work_cycle=audit.get("work_cycle"), audit_position=self.position,
                                      audit_request_id=audit["request_id"], audit_slot=audit["slot"],
                                      audit_attempt=audit["attempt"]), maximum_piece)
+        self.prepared[ticket['ticket_id']] = (deepcopy(ticket), maximum_piece, future)
+        return future
+
+    def run_ticket(self, ticket, maximum_piece):
+        future = self.queue_ticket(ticket, maximum_piece)
         while not self.flow.worker.quitting.is_set():
             try:
                 return future.result(.2)
@@ -109,6 +132,10 @@ class MiningFlow:
         self.allocator = allocator
         self.prefetch = TicketPrefetch(allocator, worker.running, worker.quitting, worker.network_lock, self.prepared)
         self.audit_lanes = []
+        from horizon_lab_audit_actors import load_lab_audit_actors
+        lab_actors = load_lab_audit_actors(getattr(worker.args, 'controlled_lab_audit_actors', None),
+                                         worker.rpc, worker.args.genesis,
+                                         pilot_coordination=getattr(worker.args, 'pilot_coordination', False))
         for index in range(2):
             folder = worker.root / "audit-lanes" / str(index)
             folder.mkdir(parents=True, exist_ok=True)
@@ -116,6 +143,8 @@ class MiningFlow:
             lane = SimpleNamespace(root=folder, args=worker.args, rpc=worker.rpc,
                                    running=worker.running, network_lock=worker.network_lock,
                                    source=proxy, address=worker.address, ledger=worker.ledger)
+            if lab_actors is not None:
+                lane.address = lambda actor=lab_actors[index]: actor
             audit = NetworkAudits(lane,
                 on_assigned=lambda value, index=index: self.bind_audit_cycle(index, value),
                 on_reassigned=lambda value, block, index=index: self.reopen_audit_cycle(index, value, block),
@@ -125,6 +154,7 @@ class MiningFlow:
             proxy.audit = audit
             self.audit_lanes.append(audit)
         self.audit_pressure_notice = None
+        self.controlled_lab_audit_actors = lab_actors is not None
         worker.audit_service_snapshot = self.audit_service_snapshot
         self.pressure_thread = threading.Thread(target=self.refresh_audit_pressure, name="audit-service-policy", daemon=True)
         self.report_thread = threading.Thread(target=self.publish_reports, name="report-publication", daemon=True)
@@ -481,6 +511,9 @@ class MiningFlow:
     def audit_service_snapshot(self):
         value = self.gpu.audit_service_view()
         value["measurement_notice"] = self.audit_pressure_notice
+        controlled = getattr(self, 'controlled_lab_audit_actors', False)
+        value["controlled_lab_identities"] = controlled
+        value["independent_economic_auditors"] = False if controlled else None
         return value
 
     def refresh_audit_pressure(self):

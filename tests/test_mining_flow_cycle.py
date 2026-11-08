@@ -69,6 +69,10 @@ class MiningFlowCycleTests(unittest.TestCase):
     def test_native_initial_allocation_waits_for_audits_without_deadlocking_gpu(self):
         self.exercise('no_eligible_independent_work', should_search=True, have_audits=True, full_run=True, native=True)
 
+    def test_explicit_lab_actors_use_the_same_visible_resident_audit_queue(self):
+        self.exercise('no_eligible_independent_work', should_search=True, have_audits=True,
+                      full_run=True, native=True, lab=True)
+
     def test_native_no_eligible_work_bootstraps_without_fabricating_two_audits(self):
         self.exercise('no_eligible_independent_work', should_search=True, full_run=True, native=True)
 
@@ -79,13 +83,13 @@ class MiningFlowCycleTests(unittest.TestCase):
         self.exercise('no_eligible_independent_work', should_search=False, full_run=True, native=True, held=True)
 
     def exercise(self, reason, should_search, have_audits=False, permission_recovers=False, preseal=False,
-                 full_run=False, native=False, held=False):
+                 full_run=False, native=False, held=False, lab=False):
         computed = json.loads((ROOT / 'tests/fixtures/network/computed-report.json').read_bytes())
         work = json.loads((ROOT / 'tests/fixtures/network/issued-work.json').read_bytes())
         work['ticket_number'] = str((int(work['start']) - 150000000000000000000) // 200000000000000 + 1)
         with tempfile.TemporaryDirectory() as temporary:
             class Rpc:
-                def __init__(self): self.assigned = 0; self.jobs = {}; self.serial = 0; self.denials = 0
+                def __init__(self): self.assigned = 0; self.jobs = {}; self.serial = 0; self.denials = 0; self.audit_actors=set()
                 def cancel_all(self): pass
                 def native_receipt(self):
                     return dict(schema='PGN_NATIVE_ASSIGNED_AUDIT_SERVICE_V1',enforced=True,
@@ -94,6 +98,8 @@ class MiningFlowCycleTests(unittest.TestCase):
                                  for k,v in sorted(self.jobs.items())if v['state']=='committed'])
                 def call(self, method, args=None, wallet=False):
                     args = args or []
+                    if method == 'getblockchaininfo': return dict(chain='test')
+                    if method == 'getaddressinfo': return dict(ismine=args[0] in lab_actors)
                     if method == 'getpgnworkdutystatus':
                         return dict(schema='PGN_NATIVE_WORK_DUTY_STATUS_V1',genesis=work['genesis'],
                             bestblockhash='a'*64,enforced=True,may_request=not held and
@@ -103,6 +109,7 @@ class MiningFlowCycleTests(unittest.TestCase):
                     if method == 'getblockhash':return 'c'*64
                     if method == 'signmessage': return 'fixture-signature'
                     if method == 'getpgnauditevent':
+                        self.audit_actors.add(args[1])
                         action = args[0]
                         if not have_audits or action == 'assign' and self.assigned >= 2:
                             unavailable = reason
@@ -175,11 +182,17 @@ class MiningFlowCycleTests(unittest.TestCase):
                 def progress(self, event): pass
             worker = Worker(); worker.root = Path(temporary)
             worker.args = SimpleNamespace(genesis=work['genesis'], piece_limit=64000000000000)
+            lab_actors=['tpgn'+'A'*30,'tpgn'+'B'*30]
+            if lab:
+                profile=worker.root/'controlled-lab-actors.json'
+                profile.write_text(json.dumps(dict(schema='PGN_CONTROLLED_LAB_AUDIT_ACTORS_V1',genesis=work['genesis'],scope='controlled-testnet-laboratory',independent_economic_auditors=False,actors=lab_actors)))
+                worker.args.controlled_lab_audit_actors=profile;worker.args.pilot_coordination=True
             worker.rpc = Rpc(); worker.source = Source(); worker.messages = []
             worker.running = threading.Event(); worker.running.set(); worker.quitting = threading.Event()
             worker.state_lock = threading.RLock(); worker.network_lock = threading.RLock()
             worker.sequence = 0; worker.device_lease = None; worker.audits = SimpleNamespace(presentation=None)
             flow = MiningFlow(worker, finalize=(lambda work, report: report) if preseal else None)
+            self.assertEqual([lane.worker.address()for lane in flow.audit_lanes],lab_actors if lab else ['fixture-auditor']*2)
             if preseal:self.assertTrue(worker.source.retention_required)
             if not full_run:
                 flow.prefetch.ready = work
@@ -204,6 +217,9 @@ class MiningFlowCycleTests(unittest.TestCase):
                         self.assertFalse(thread.is_alive())
                 cycle = flow.cycles.snapshot(work['request_id']) if flow.cycles.contains(work['request_id'])else None
                 if should_search:
+                    if lab:
+                        self.assertEqual(worker.rpc.audit_actors,set(lab_actors))
+                        service=flow.audit_service_snapshot();self.assertTrue(service['controlled_lab_identities']);self.assertFalse(service['independent_economic_auditors'])
                     if permission_recovers: self.assertGreater(worker.rpc.denials, 2)
                     self.assertEqual(len(worker.source.calls), 11 if have_audits else 1,
                                      (getattr(worker,'network_notice',None),flow.prefetch.error,worker.messages[-3:]))

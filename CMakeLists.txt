@@ -1707,4 +1707,7 @@ include(cmake/MiningUiRegression.cmake)
 
 if(Python3_Interpreter_FOUND)
     add_test(NAME owner-publication-budget COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_owner_publication_budget.py")
+    add_test(NAME controlled-lab-audit-actors COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lab_audit_actors.py")
+    add_test(NAME audit-partition-prefetch COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audit_partition_prefetch.py")
+    set_tests_properties(controlled-lab-audit-actors audit-partition-prefetch PROPERTIES TIMEOUT 30 LABELS "audits;recovery;scheduling;synthetic;no-gpu" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endif()
