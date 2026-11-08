@@ -16,6 +16,8 @@ from tuf.ngclient import Updater
 from tuf.ngclient.config import UpdaterConfig
 from tuf.api.exceptions import LengthOrHashMismatchError
 import stage_component_bundle as stage
+import horizon_update_progress as progress
+from tuf.ngclient.urllib3_fetcher import Urllib3Fetcher
 
 MAX_CATALOG = 128 * 1024
 MAX_CACHE = 1024 * 1024 * 1024
@@ -54,7 +56,8 @@ class AuthenticatedUpdates:
             self.cache.mkdir(parents=True, mode=0o700)
             (self.cache / '.owner').write_bytes(MARKER)
         self.bootstrap, self.bootstrap_sha256 = bootstrap, bootstrap_sha256
-        self.metadata_url, self.target_url, self.fetcher = metadata_url, target_url, fetcher
+        self.metadata_url, self.target_url = metadata_url, target_url
+        self.fetcher=progress.ProgressFetcher(fetcher or Urllib3Fetcher(app_user_agent='PGN-Horizon-Updater'))
         namespace=self.cache/bootstrap_sha256[:20]
         stage._plain_chain(namespace);namespace.mkdir(parents=True,exist_ok=True)
         marker=namespace/'.bootstrap-sha256';expected=(bootstrap_sha256+'\n').encode()
@@ -95,6 +98,7 @@ class AuthenticatedUpdates:
                 stage.require(total + additional <= MAX_CACHE, 'Update cache quota exceeded')
 
     def _updater(self):
+        progress.report('metadata',force=True)
         return Updater(str(self.metadata), self.metadata_url, str(self.targets),
                        self.target_url, fetcher=self.fetcher, bootstrap=self.bootstrap,
                        config=UpdaterConfig(max_root_rotations=32, max_delegations=1,
@@ -124,10 +128,17 @@ class AuthenticatedUpdates:
                 destination.unlink()
                 self.cache_repairs.append(name)
         if not destination.exists():
-            updater.download_target(target, filepath=str(destination))
+            import shutil,tempfile
+            for folder in (self.targets,Path(tempfile.gettempdir())):
+                stage.require(shutil.disk_usage(folder).free>=target.length+16*1024*1024,'Insufficient download disk space; free space and retry')
+            if name.endswith('.zip'):progress.report('download',completed=0,total=target.length,force=True)
+            self.fetcher.target_length=target.length if name.endswith('.zip')else 0
+            try:updater.download_target(target, filepath=str(destination))
+            finally:self.fetcher.target_length=0
         stage._plain_chain(destination)
         with destination.open('rb') as stream:
             target.verify_length_and_hashes(stream)
+        if name.endswith('.zip'):progress.report('download',completed=target.length,total=target.length,force=True)
         return destination, target
 
     def _catalog(self, updater, selected):
@@ -184,7 +195,7 @@ class AuthenticatedUpdates:
                     stage.init_cache(stage_cache, self.context)
                 folder, plan = stage.stage_bundle(archive, artifact.hashes['sha256'],
                                                  self.context, self.context_sha256,
-                                                 stage_cache, selection)
+                                                 stage_cache, selection,progress=progress.report)
             raw = stage._read_plain(folder / 'component-bundle.json', MAX_CATALOG)
             stage.require(stage._json(raw) == manifest,
                           'Signed catalogue and downloaded bundle describe different components')

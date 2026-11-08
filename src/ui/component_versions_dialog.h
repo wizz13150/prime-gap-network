@@ -6,7 +6,7 @@
 #include <QMap>
 #include <QPointer>
 #include <functional>
-class QLabel;class QPushButton;class QTableWidget;class QTimer;
+class QLabel;class QPushButton;class QTableWidget;class QTimer;class QProgressBar;
 namespace pgn::ui {
 struct ComponentVersionsContext {
  QMap<QString,QString> codeRoots;
@@ -24,12 +24,14 @@ public:
  void refreshPublished();
  void presentLocal(const QJsonObject&);
  void presentPublished(const QJsonObject&,const QString& status={});
+ void presentProgress(const QJsonObject&);
  std::function<void(const QJsonObject&)> onLocalSnapshot;
  std::function<void(const QJsonObject&)> onPublishedCatalog;
 private:
  void updateRows();void prepareSelected();void installPrepared();void setBusy(bool);void updateRecovery();
  QStringList selected()const;QJsonObject request(const QString&,const QStringList&)const;bool ensureService();
  ComponentVersionsContext context_;QLabel* localSummary_{};QLabel* status_{};QTableWidget* components_{};
+ QProgressBar* progress_{};
  QPushButton *refresh_{},*selectAll_{},*prepare_{},*install_{},*cancel_{},*recover_{};
  QPointer<QFutureWatcher<QJsonObject>> localWatcher_;
  pgn::update::ComponentUpdateService* service_{};pgn::update::ComponentUpdateDeployment deployment_;

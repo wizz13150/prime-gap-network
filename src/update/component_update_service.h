@@ -18,6 +18,7 @@ QJsonObject componentUpdateRequest(const ComponentUpdateDeployment&,const QJsonO
     const QString& applicationDirectory,const QString& mutableDataRoot,const QString& action,const QStringList& selected);
 std::optional<int> componentVersionComparison(QString installed,QString available);
 bool componentUpdateNeedsRecovery(const QString& genesis);
+bool validComponentUpdateProgress(const QJsonObject&);
 QJsonObject currentUpdateActivation(const QString& applicationRoot,const QString& mutableDataRoot);
 QString startDetachedComponentInstall(const ComponentUpdateDeployment&,const QJsonObject& request);
 
@@ -34,12 +35,13 @@ public:
     std::function<void(const QString&)> onStatus;
     std::function<void(const QJsonObject&)> onResult;
     std::function<void(const QString&)> onError;
+    std::function<void(const QJsonObject&)> onProgress;
 private:
     void complete();
     ComponentUpdateDeployment deployment_;
     QProcess* process_{};
     QTimer* timer_{};
-    QByteArray output_,errors_;
+    QByteArray output_,errors_,progressBuffer_;
     QString action_;
     QMetaObject::Connection startedConnection_;
     bool settled_{true},cancelled_{},oversized_{},timedOut_{};

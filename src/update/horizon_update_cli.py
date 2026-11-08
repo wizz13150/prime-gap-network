@@ -15,8 +15,9 @@ import stage_component_bundle as stage
 from horizon_update_bootstrap import REPOSITORIES
 from horizon_update_client import AuthenticatedUpdates
 from horizon_component_install import CohortStore, _write
+import horizon_update_progress as progress
 
-VERSION='2026.11.7.8'
+VERSION='2026.11.8.9'
 
 
 def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,recovery_factory=None):
@@ -73,13 +74,17 @@ def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,
         lifecycle=None
         def drain():
             nonlocal lifecycle
+            progress.report('drain',force=True)
             lifecycle=lifecycle_factory(store,Path(request['base_cohort']),request['activation'])
             return lifecycle.drain()
-        def start(path):return lifecycle.start_and_verify(path)
+        def start(path):
+            progress.report('startup',force=True)
+            return lifecycle.start_and_verify(path)
         def restore(*args):
             if lifecycle is not None:return lifecycle.restore_previous(*args)
         try:
             committed=store.activate(candidate,drain,start,restore)
+            if committed:progress.report('committed',completed=1,total=1,force=True)
             return dict(schema='PGN_UPDATE_INSTALL_RESULT_V1',publisher_authenticated=True,
                 installation_performed=committed,installation_committed=committed,
                 selected=candidate['selected'],current=store.current(),process_control_performed=True)
@@ -133,7 +138,12 @@ def main():
             else:
                 stage.require(args.result_file is None,'A result file requires an owned request file')
                 raw=sys.stdin.buffer.read(stage.MAX_MANIFEST+1);stage.require(len(raw)<=stage.MAX_MANIFEST,'Update request exceeds bound');request=stage._json(raw)
-            result=run(request)
+            def emit_progress(value):
+                if result_path:_write(result_path,value)
+                else:sys.stderr.write(json.dumps(value,separators=(',',':'))+'\n');sys.stderr.flush()
+            progress.configure(emit_progress)
+            try:result=run(request)
+            finally:progress.configure(None)
         if result_path:_write(result_path,result)
         print(json.dumps(result,separators=(',',':')),flush=True);return 0
     except Exception as error:

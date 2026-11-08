@@ -16,12 +16,24 @@ inline void ApplyFrontierNativeFrame(QWidget* window)
 {
 #ifdef Q_OS_WIN
     if (!window) return;
+    const HWND handle = reinterpret_cast<HWND>(window->winId());
+    // A recreated native window can lose its shell icon while Qt still owns
+    // a non-null QIcon. Repair that exact HWND from our compiled PE resource.
+    struct AppIcons {
+        HICON small=static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(1),IMAGE_ICON,GetSystemMetrics(SM_CXSMICON),GetSystemMetrics(SM_CYSMICON),0));
+        HICON large=static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(1),IMAGE_ICON,GetSystemMetrics(SM_CXICON),GetSystemMetrics(SM_CYICON),0));
+        ~AppIcons(){if(small)DestroyIcon(small);if(large)DestroyIcon(large);}
+    };
+    static AppIcons icons;
+    if(!SendMessageW(handle,WM_GETICON,ICON_SMALL,0)&&icons.small)SendMessageW(handle,WM_SETICON,ICON_SMALL,reinterpret_cast<LPARAM>(icons.small));
+    if(!SendMessageW(handle,WM_GETICON,ICON_BIG,0)&&icons.large)SendMessageW(handle,WM_SETICON,ICON_BIG,reinterpret_cast<LPARAM>(icons.large));
+    window->setProperty("pgn_native_small_icon",bool(SendMessageW(handle,WM_GETICON,ICON_SMALL,0)));
+    window->setProperty("pgn_native_large_icon",bool(SendMessageW(handle,WM_GETICON,ICON_BIG,0)));
     QLibrary dwm(QStringLiteral("dwmapi"));
     using SetWindowAttribute = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
     auto setAttribute = reinterpret_cast<SetWindowAttribute>(
         dwm.resolve("DwmSetWindowAttribute"));
     if (!setAttribute) return;
-    const HWND handle = reinterpret_cast<HWND>(window->winId());
     const BOOL dark = TRUE;
     constexpr DWORD useImmersiveDarkMode = 20;
     constexpr DWORD useImmersiveDarkModeLegacy = 19;

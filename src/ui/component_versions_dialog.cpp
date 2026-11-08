@@ -14,6 +14,7 @@
 #include <QLabel>
 #include <QColor>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QSysInfo>
 #include <QTableWidget>
 #include <QTimer>
@@ -88,6 +89,7 @@ ComponentVersionsDialog::ComponentVersionsDialog(ComponentVersionsContext contex
  components_=table({"Component","Installed","Available","Status"});components_->setObjectName("pgn-components-table");components_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);components_->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Fixed);components_->setColumnWidth(0,200);components_->verticalHeader()->setDefaultSectionSize(34);components_->setMinimumHeight(177);box->addWidget(components_,1);
  auto* line=new QHBoxLayout;selectAll_=new QPushButton("Select available updates");selectAll_->setObjectName("pgn-components-select-all");refresh_=new QPushButton("Check for updates");refresh_->setObjectName("pgn-components-check");line->addWidget(selectAll_);line->addStretch();line->addWidget(refresh_);box->addLayout(line);
  status_=label("Available versions are checked against signed publisher metadata.");status_->setObjectName("pgn-components-status");status_->setMinimumHeight(40);box->addWidget(status_);
+ progress_=new QProgressBar;progress_->setObjectName("pgn-components-progress");progress_->setMinimumHeight(22);progress_->hide();box->addWidget(progress_);
  auto* controls=new QHBoxLayout;auto* close=new QPushButton("Close");controls->addWidget(close);controls->addStretch();cancel_=new QPushButton("Cancel download");cancel_->hide();controls->addWidget(cancel_);
  recover_=new QPushButton("Restore previous version");recover_->setObjectName("pgn-components-recover");recover_->hide();controls->addWidget(recover_);
  prepare_=new QPushButton("Download selected");prepare_->setObjectName("pgn-components-prepare");prepare_->setEnabled(false);controls->addWidget(prepare_);install_=new QPushButton("Restart and install");install_->setObjectName("pgn-components-install");install_->hide();controls->addWidget(install_);box->addLayout(controls);
@@ -99,16 +101,27 @@ ComponentVersionsDialog::ComponentVersionsDialog(ComponentVersionsContext contex
  resultPoll_=new QTimer(this);resultPoll_->setInterval(500);connect(resultPoll_,&QTimer::timeout,this,[this]{
   QFile file(property("pgn_update_result_file").toString());if(!file.open(QIODevice::ReadOnly)||file.size()>128*1024)return;
   const auto value=QJsonDocument::fromJson(file.readAll()).object();
-  if(value.value("schema")=="PGN_UPDATE_HELPER_ERROR_V1"){resultPoll_->stop();installStarted_=false;setBusy(false);preparedRequest_={};install_->hide();prepare_->show();updateRecovery();status_->setText(value.value("error").toString("Installation could not finish. The previous version is retained."));}
+  if(pgn::update::validComponentUpdateProgress(value)){presentProgress(value);return;}
+  if(value.value("schema")=="PGN_UPDATE_HELPER_ERROR_V1"){resultPoll_->stop();installStarted_=false;setBusy(false);progress_->setValue(0);progress_->setFormat("Installation stopped");preparedRequest_={};install_->hide();prepare_->show();updateRecovery();status_->setText(value.value("error").toString("Installation could not finish. The previous version is retained."));}
   else if(value.value("schema")=="PGN_UPDATE_RECOVERY_RESULT_V1"&&value.value("recovery_performed").toBool()){resultPoll_->stop();installStarted_=false;setBusy(false);preparedRequest_={};install_->hide();refreshLocal();status_->setText("The previous version has been restored and verified.");}
  });
  QTimer::singleShot(0,this,[this]{refreshLocal();});
 }
-ComponentVersionsDialog::~ComponentVersionsDialog(){closing_=true;if(service_){service_->onResult={};service_->onError={};service_->onStatus={};if(service_->busy())service_->cancel();}}
+ComponentVersionsDialog::~ComponentVersionsDialog(){closing_=true;if(service_){service_->onResult={};service_->onError={};service_->onStatus={};service_->onProgress={};if(service_->busy())service_->cancel();}}
 QStringList ComponentVersionsDialog::selected()const{
  QStringList result;for(int row=0;row<components_->rowCount();++row){const auto* item=components_->item(row,0);if(item&&(item->flags()&Qt::ItemIsUserCheckable)&&item->checkState()==Qt::Checked)result.append(item->data(Qt::UserRole).toString());}return result;
 }
-void ComponentVersionsDialog::setBusy(bool busy){busy_=busy;refresh_->setEnabled(!busy);components_->setEnabled(!busy);selectAll_->setEnabled(!busy);prepare_->setEnabled(!busy&&!selected().isEmpty());install_->setEnabled(!busy&&!preparedRequest_.isEmpty());recover_->setEnabled(!busy);cancel_->setVisible(busy&&!installStarted_);}
+void ComponentVersionsDialog::setBusy(bool busy){busy_=busy;if(busy){progress_->show();progress_->setRange(0,0);}else{progress_->setRange(0,1);progress_->setValue(1);}refresh_->setEnabled(!busy);components_->setEnabled(!busy);selectAll_->setEnabled(!busy);prepare_->setEnabled(!busy&&!selected().isEmpty());install_->setEnabled(!busy&&!preparedRequest_.isEmpty());recover_->setEnabled(!busy);cancel_->setVisible(busy&&!installStarted_);}
+void ComponentVersionsDialog::presentProgress(const QJsonObject& value){
+ if(!pgn::update::validComponentUpdateProgress(value))return;
+ const auto stage=value.value("stage").toString(),component=value.value("component").toString();
+ const QMap<QString,QString> labels{{"metadata","Checking signed versions"},{"download","Downloading shared package"},{"verify","Verifying components"},{"prepare","Preparing installation"},{"drain","Saving mining checkpoints and stopping Core"},{"startup","Restarting and checking Horizon"},{"committed","Installation completed"}};
+ const auto done=value.value("completed").toInteger(),total=value.value("total").toInteger();
+ const auto set=[&](QProgressBar* bar){bar->show();if(total>0&&total<=2147483647){bar->setRange(0,int(total));bar->setValue(int(done));bar->setFormat(QString("%1 · %p% · %2 / %3%4").arg(labels.value(stage)).arg(done).arg(total).arg(stage=="download"||stage=="verify"?" bytes":stage=="prepare"?" files":""));}else{bar->setRange(0,0);bar->setFormat(labels.value(stage));}};
+ if(component.isEmpty()){set(progress_);status_->setText(labels.value(stage));}
+ else{const int row=ids.indexOf(component);if(row>=0){components_->setColumnCount(5);components_->setHorizontalHeaderItem(4,new QTableWidgetItem("Progress"));auto* bar=qobject_cast<QProgressBar*>(components_->cellWidget(row,4));if(!bar){bar=new QProgressBar;bar->setMinimumWidth(155);components_->setCellWidget(row,4,bar);}set(bar);}}
+ setProperty("pgn_update_progress",value);
+}
 void ComponentVersionsDialog::updateRecovery(){
  const bool needed=!context_.genesisHash.isEmpty()&&pgn::update::componentUpdateNeedsRecovery(context_.genesisHash);
  recover_->setVisible(needed);if(needed){prepare_->setEnabled(false);install_->hide();status_->setText("An interrupted update needs recovery. Restore the previous version before installing another update. Wallets and results stay in their folders.");}
@@ -138,7 +151,8 @@ bool ComponentVersionsDialog::ensureService(){
   deployment_=pgn::update::componentUpdateDeployment(QFileInfo(context_.manifestPath).absolutePath(),context_.testnet);
   if(!context_.genesisHash.isEmpty()&&context_.genesisHash!=deployment_.context.value("genesis_hash").toString())throw std::runtime_error("Update repository belongs to another Core epoch.");
   service_=new pgn::update::ComponentUpdateService(deployment_,this);service_->onStatus=[this](const QString& text){status_->setText(text);};
-  service_->onError=[this](const QString& error){setBusy(false);status_->setText(error);updateRecovery();};
+  service_->onProgress=[this](const QJsonObject& value){presentProgress(value);};
+  service_->onError=[this](const QString& error){setBusy(false);progress_->setValue(0);progress_->setFormat("Update stopped");status_->setText(error);updateRecovery();};
   service_->onResult=[this](const QJsonObject& value){setBusy(false);if(value.value("schema")=="PGN_AUTHENTICATED_COMPONENT_VIEW_V1")presentPublished(value);else if(value.value("schema")=="PGN_UPDATE_INSTALL_PREPARATION_V1"){
    try{preparedRequest_=request("install",selected());preparedRequest_.insert("activation",pgn::update::currentUpdateActivation(context_.applicationRoot,context_.mutableDataRoot));prepare_->hide();install_->show();install_->setEnabled(true);status_->setText("Download verified. Restart when you are ready; mining will pause during installation. Wallets and results keep their current folders.");}
    catch(const std::exception& error){preparedRequest_={};status_->setText(QString::fromUtf8(error.what()));}

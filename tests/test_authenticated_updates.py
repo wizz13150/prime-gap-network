@@ -24,6 +24,24 @@ class Transport(FetcherInterface):
   yield self.files[url]
 
 class UpdateTests(unittest.TestCase):
+ def test_measured_progress_retains_authentication_and_exact_component_bytes(self):
+  import horizon_update_progress as progress
+  events=[];progress.configure(events.append)
+  try:result=self.client().prepare(['cpu'])
+  finally:progress.configure(None)
+  self.assertTrue(result['publisher_authenticated'])
+  self.assertTrue(any(e['stage']=='download'and e['total']>0 and e['completed']==e['total']for e in events))
+  self.assertTrue(any(e['stage']=='verify'and e['component']=='cpu'and e['total']>0 and e['completed']==e['total']for e in events))
+  self.assertTrue(all(set(e)=={'schema','stage','component','completed','total'}and 0<=e['completed']<=e['total']for e in events))
+  self.assertTrue(self.sentinel.exists())
+ def test_download_disk_full_is_explicit_and_preserves_installed_data(self):
+  from types import SimpleNamespace
+  from unittest.mock import patch
+  client=self.client()
+  with patch('shutil.disk_usage',return_value=SimpleNamespace(free=0)):
+   with self.assertRaisesRegex(stage.StageError,'Insufficient download disk space'):client.prepare(['cpu'])
+  self.assertEqual(self.sentinel.read_bytes(),b'PRIVATE SENTINEL NOT READ BY UPDATER')
+  self.assertFalse(any(client.targets.glob('*-components.zip')))
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.install=self.root/'installation';self.install.mkdir();self.sentinel=self.install/'wallet.dat';self.sentinel.write_bytes(b'PRIVATE SENTINEL NOT READ BY UPDATER')
   c=dict(schema='PGN_COMPONENT_STAGE_CONTEXT_V1',network='testnet',genesis_hash='5'*64,platform='windows-x86_64',compatibility_set='qa.cohort',minimum_sequence=1,installed=[],protected_roots=[str(self.install)])

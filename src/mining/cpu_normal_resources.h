@@ -12,7 +12,7 @@ namespace pgn::mining {
 // GUI owns each exact local/SSH CPU endpoint; the logical miner supplies work.
 class CpuNormalResources final:public QObject {
     struct Bridge {QPointer<QProcess> miner;QString identity;};
-    struct Choice {QString request;bool enabled{};int percent{};};
+    struct Choice {QString request;bool enabled{};int percent{};int exactWorkers{};};
     struct Resource {CpuControlEndpoint endpoint;CpuControllerClient* client{};QJsonObject inventory,status;QHash<qint64,Bridge> pending;QString control,reason,reasonCode;bool selected{},compatible{};int desiredThreads{1};std::optional<Choice> queued;};
     QHash<QString,std::shared_ptr<Resource>> resources_;QPointer<QProcess> miner_;bool closing_{},restored_{};
     QProcess* cpuMiner_{};QString cpuProgram_;QStringList cpuArguments_;QByteArray cpuBuffer_;
@@ -46,7 +46,7 @@ class CpuNormalResources final:public QObject {
         miner->write(QJsonDocument(reply).toJson(QJsonDocument::Compact)+'\n');
     }
     bool refuse(const QString& device,const QString& request,const QString& reason){if(onControl)onControl(device,request,false,reason);return true;}
-    void settled(const std::shared_ptr<Resource>& r){if(r->queued){const auto choice=*r->queued;r->queued.reset();control(r->endpoint.deviceId,choice.request,choice.enabled,choice.percent);}}
+    void settled(const std::shared_ptr<Resource>& r){if(r->queued){const auto choice=*r->queued;r->queued.reset();control(r->endpoint.deviceId,choice.request,choice.enabled,choice.percent,choice.exactWorkers);}}
 public:
     using QObject::QObject;
     std::function<void(QString,QJsonObject,QJsonObject,bool)> onTelemetry;
@@ -104,18 +104,26 @@ public:
             miner->write(QJsonDocument(command).toJson(QJsonDocument::Compact)+'\n');
         }
     }
-    bool control(const QString& device,const QString& request,bool enabled,int percent){
+    QJsonArray updateResumeChoices()const{
+        QJsonArray choices;for(const auto& r:resources_)if(r->selected&&r->compatible&&r->client->available())choices.append(QJsonObject{{"kind","cpu"},{"device",r->endpoint.deviceId},{"threads",r->desiredThreads}});return choices;
+    }
+    bool restoreAfterUpdate(const QString& device,int workers){
+        const auto r=resources_.value(device);if(!r||!r->compatible||!r->client->available()||cpuProgram_.isEmpty())return false;
+        if(workers<1||workers>r->inventory.value("maximum_workers").toInt()){refuse(device,"update-resume","Saved CPU thread budget is no longer available");return true;}
+        control(device,"update-resume",true,100,workers);return true;
+    }
+    bool control(const QString& device,const QString& request,bool enabled,int percent,int exactWorkers=0){
         const auto r=resources_.value(device);if(!r)return device.startsWith("CPU/")?refuse(device,request,"CPU executor is unavailable"):false;
         if(closing_||!r->compatible||!r->client->available()||r->inventory.isEmpty())return refuse(device,request,"CPU normal-cycle controller is unavailable or requires version2");
-        if(cpuMiner_&&cpuMiner_->state()==QProcess::Starting){r->queued=Choice{request,enabled,percent};return true;}
-        if(!r->control.isEmpty()){r->queued=Choice{request,enabled,percent};return true;}
+        if(cpuMiner_&&cpuMiner_->state()==QProcess::Starting){r->queued=Choice{request,enabled,percent,exactWorkers};return true;}
+        if(!r->control.isEmpty()){r->queued=Choice{request,enabled,percent,exactWorkers};return true;}
         const int maximum=r->inventory.value("maximum_workers").toInt();if(maximum<1)return refuse(device,request,"CPU thread budget is unavailable");
-        const int workers=std::clamp(qRound(maximum*percent/100.),1,maximum);const auto affinity=r->client->affinityFor(workers);
+        const int workers=exactWorkers>0?exactWorkers:std::clamp(qRound(maximum*percent/100.),1,maximum);const auto affinity=r->client->affinityFor(workers);
         if(affinity.size()!=workers)return refuse(device,request,"CPU fixed affinity budget is unavailable");
         r->desiredThreads=workers;
         QSettings().setValue("mining/cpuThreads/"+device,workers);
         if(enabled&&!cpuProgram_.isEmpty()&&(!cpuMiner_||miner_!=cpuMiner_||cpuMiner_->state()!=QProcess::Running)){
-            r->queued=Choice{request,enabled,percent};if(launchCpuMiner())return true;r->queued.reset();
+            r->queued=Choice{request,enabled,percent,exactWorkers};if(launchCpuMiner())return true;r->queued.reset();
             return refuse(device,request,"CPU normal miner is not ready");
         }
         if(!miner_||miner_->state()!=QProcess::Running){

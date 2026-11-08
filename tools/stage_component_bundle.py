@@ -456,7 +456,7 @@ def _plan(manifest, components, files, chosen, selected, archive_sha256, manifes
     }
 
 
-def stage_bundle(archive_path, expected_sha256, context, context_sha256, cache_path, selected, cancelled=lambda: False):
+def stage_bundle(archive_path, expected_sha256, context, context_sha256, cache_path, selected, cancelled=lambda: False,progress=None):
     require(DIGEST.fullmatch(expected_sha256) and DIGEST.fullmatch(context_sha256), 'Explicit archive/context SHA256 required')
     source = _plain_chain(archive_path)
     require(source.is_file() and source.stat().st_size <= MAX_ARCHIVE, 'Missing or oversized local archive')
@@ -484,6 +484,9 @@ def stage_bundle(archive_path, expected_sha256, context, context_sha256, cache_p
                 _cancel(cancelled)
                 pending = cache / ('.pending-' + uuid.uuid4().hex[:24])
                 pending.mkdir(mode=0o700)
+                component_for={entry['path']:identity for identity,component in components.items()for entry in component['files']}
+                totals={identity:sum(entry['bytes']for entry in component['files'])for identity,component in components.items()}
+                completed={identity:0 for identity in components};all_total=sum(totals.values());all_done=0
                 for name, entry in files.items():
                     _cancel(cancelled)
                     require(indexed[name].file_size == entry['bytes'], 'Declared file size mismatch')
@@ -497,6 +500,10 @@ def stage_bundle(archive_path, expected_sha256, context, context_sha256, cache_p
                             while chunk := input_file.read(CHUNK):
                                 _cancel(cancelled)
                                 count += len(chunk)
+                                if progress:
+                                    component=component_for[name]
+                                    progress('verify',component,completed[component]+count,totals[component])
+                                    progress('verify',completed=all_done+count,total=all_total)
                                 require(count <= entry['bytes'], 'Payload grew beyond declared size')
                                 digest.update(chunk)
                                 if output:
@@ -505,6 +512,7 @@ def stage_bundle(archive_path, expected_sha256, context, context_sha256, cache_p
                         if output:
                             output.flush()
                             os.fsync(output.fileno())
+                        completed[component_for[name]]+=count;all_done+=count
                     finally:
                         if output:
                             output.close()

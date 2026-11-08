@@ -47,6 +47,9 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
   check(automatic.control("CPU/LOCAL/0","hot-threads",true,100),"hot CPU budget not routed");
   check(until([&]{return lastRequest=="hot-threads"&&latest.value("requested_threads")==4;}),"hot CPU budget not applied");
   check(acknowledged>=3,"CPU controls lacked real acknowledgements");
+  check(automatic.updateResumeChoices().size()==1&&automatic.updateResumeChoices().first().toObject().value("threads")==4,"CPU update snapshot lost its exact selected budget");
+  check(automatic.restoreAfterUpdate(endpoint.deviceId,3),"CPU update restore was not dispatched");
+  check(until([&]{return latest.value("requested_threads")==3;}),"CPU update restore rounded the saved budget back to the 100-percent value");
   check(automatic.requestClose()||until([&]{return automatic.allStopped();}),"CPU host and endpoints did not close together");
  }
  std::cout<<"{\"PASS\":true,\"hosts\":2,\"distinct_workspaces\":true,\"normal_cycle_bound\":true,\"all_own_processes_exited\":true}"<<std::endl;return 0;

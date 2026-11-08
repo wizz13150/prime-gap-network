@@ -184,7 +184,9 @@ class CohortStore:
             pending=cohorts/('.pending-'+uuid.uuid4().hex);pending.mkdir()
             try:
                 links_enabled=bool(reusable)
+                import horizon_update_progress as progress
                 for index,(relative,source_file)in enumerate(ordered):
+                    progress.report('prepare',completed=index,total=len(ordered))
                     target=pending/relative;target.parent.mkdir(parents=True,exist_ok=True)
                     if links_enabled and relative in reusable:
                         try:os.link(reusable[relative],target);continue
@@ -197,6 +199,7 @@ class CohortStore:
                             self._quota(remaining+stage.MAX_MANIFEST)
                             stage.require(shutil.disk_usage(self.root).free>=remaining+16*1024*1024,'Insufficient installation disk space for independent copies')
                     shutil.copyfile(source_file,target)
+                progress.report('prepare',completed=len(ordered),total=len(ordered),force=True)
                 _write(pending/'components.json',merged)
                 _,_,digest,_=inventory(pending)
                 self._quota()

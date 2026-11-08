@@ -4,6 +4,7 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QLabel>
+#include <QProgressBar>
 #include <QTimer>
 #include <QJsonArray>
 #include <QDir>
@@ -35,6 +36,10 @@ int main(int argc,char** argv){
  check(!download->isEnabled()&&table->item(0,3)->text()=="Newer local build");check(dialog.findChild<QLabel*>("pgn-components-status")->text().contains("newer than the published"));
  dialog.presentPublished({{"schema","PGN_AUTHENTICATED_COMPONENT_VIEW_V1"},{"publisher_authenticated",true},{"components",newerLocal}});check(dialog.findChild<QLabel*>("pgn-components-status")->text()=="All components are up to date.");
  dialog.presentLocal({{"manifest_state","valid"},{"components",installed}});dialog.presentPublished({{"schema","PGN_AUTHENTICATED_COMPONENT_VIEW_V1"},{"publisher_authenticated",true},{"components",available}});
+ dialog.presentProgress({{"schema","PGN_UPDATE_PROGRESS_V1"},{"stage","verify"},{"component","ui"},{"completed",2048},{"total",4096}});
+ auto* componentProgress=qobject_cast<QProgressBar*>(table->cellWidget(0,4));check(componentProgress&&componentProgress->value()==2048&&componentProgress->maximum()==4096);
+ dialog.presentProgress({{"schema","PGN_UPDATE_PROGRESS_V1"},{"stage","download"},{"component",""},{"completed",73400320},{"total",204265081}});
+ auto* globalProgress=dialog.findChild<QProgressBar*>("pgn-components-progress");check(globalProgress&&globalProgress->value()==73400320&&globalProgress->maximum()==204265081);
  if(argc>1){QDir().mkpath(QString::fromLocal8Bit(argv[1]));check(dialog.grab().save(QString::fromLocal8Bit(argv[1])+"/component-updates.png"));}
  // An interrupted installation stays visible even when no update catalogue
  // can be fetched. The fixture uses a unique test-mode application directory.

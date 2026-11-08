@@ -52,6 +52,14 @@ std::optional<int> componentVersionComparison(QString installed,QString availabl
     installed.replace('-','.');available.replace('-','.');
     return QVersionNumber::compare(QVersionNumber::fromString(installed).normalized(),QVersionNumber::fromString(available).normalized());
 }
+bool validComponentUpdateProgress(const QJsonObject& value){
+ const auto done=value.value("completed"),total=value.value("total");
+ return value.size()==5&&value.value("schema")=="PGN_UPDATE_PROGRESS_V1"
+  &&QStringList{"metadata","download","verify","prepare","drain","startup","committed"}.contains(value.value("stage").toString())
+  &&QStringList{"","ui","core","gpu","cpu"}.contains(value.value("component").toString())
+  &&done.isDouble()&&total.isDouble()&&done.toDouble()==done.toInteger(-1)&&total.toDouble()==total.toInteger(-1)
+  &&done.toInteger(-1)>=0&&total.toInteger(-1)>=done.toInteger()&&total.toDouble()<9007199254740992.;
+}
 QJsonObject componentUpdateRequest(const ComponentUpdateDeployment& deployment,const QJsonObject& snapshot,
     const QString& applicationDirectory,const QString& mutableDataRoot,const QString& action,const QStringList& selected){
     const auto config=deployment.context;
@@ -130,7 +138,13 @@ ComponentUpdateService::ComponentUpdateService(ComponentUpdateDeployment deploym
         output_+=process_->readAllStandardOutput();
         if(output_.size()>MessageLimit){oversized_=true;process_->kill();}
     });
-    connect(process_,&QProcess::readyReadStandardError,this,[this]{errors_+=process_->readAllStandardError();if(errors_.size()>ErrorLimit)errors_=errors_.right(ErrorLimit);});
+    connect(process_,&QProcess::readyReadStandardError,this,[this]{
+        const auto chunk=process_->readAllStandardError();errors_+=chunk;if(errors_.size()>ErrorLimit)errors_=errors_.right(ErrorLimit);
+        progressBuffer_+=chunk;if(progressBuffer_.size()>ErrorLimit){progressBuffer_.clear();return;}
+        while(progressBuffer_.contains('\n')){const auto end=progressBuffer_.indexOf('\n');const auto line=progressBuffer_.left(end);progressBuffer_.remove(0,end+1);if(line.size()>4096)continue;
+            const auto value=QJsonDocument::fromJson(line).object();if(validComponentUpdateProgress(value)&&onProgress){const QPointer<ComponentUpdateService> alive(this);onProgress(value);if(!alive)return;}
+        }
+    });
     connect(process_,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),this,[this](int,QProcess::ExitStatus){complete();});
     connect(process_,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){if(error==QProcess::FailedToStart)complete();});
     connect(timer_,&QTimer::timeout,this,[this]{timedOut_=true;process_->kill();});
@@ -146,7 +160,7 @@ bool ComponentUpdateService::start(const QJsonObject& request){
     if(action!="check"&&action!="prepare"&&action!="prepare_install")return false;
     const auto data=QJsonDocument(request).toJson(QJsonDocument::Compact);
     if(data.size()>MessageLimit)return false;
-    output_.clear();errors_.clear();settled_=false;cancelled_=oversized_=timedOut_=false;action_=action;
+    output_.clear();errors_.clear();progressBuffer_.clear();settled_=false;cancelled_=oversized_=timedOut_=false;action_=action;
     process_->setProgram(deployment_.helper);process_->setArguments({});process_->setWorkingDirectory(QFileInfo(deployment_.helper).absolutePath());
     disconnect(startedConnection_);
     startedConnection_=connect(process_,&QProcess::started,this,[this,data]{disconnect(startedConnection_);process_->write(data);process_->closeWriteChannel();});

@@ -1,4 +1,5 @@
 #include "update/component_update_service.h"
+#include "update/mining_update_resume.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -20,6 +21,7 @@ int main(int argc,char** argv){
   if(fixture=="oversized"){std::cout<<std::string(140000,'x');return 0;}
   if(fixture=="malformed"){std::cout<<"invalid JSON";return 0;}
   if(fixture=="failure"){std::cout<<"{\"error\":\"Fixture refused\"}";return 1;}
+  if(fixture=="progress"){std::cerr<<"{\"schema\":\"PGN_UPDATE_PROGRESS_V1\",\"stage\":\"download\",\"component\":\"\",\"completed\":5,\"total\":10}\n"<<std::flush;}
   const auto schema=fixture=="wrong-type"?"WRONG":request.value("action")=="check"?"PGN_AUTHENTICATED_COMPONENT_VIEW_V1":request.value("action")=="prepare"?"PGN_AUTHENTICATED_STAGE_RECEIPT_V1":"PGN_UPDATE_INSTALL_PREPARATION_V1";
   std::cout<<QJsonDocument(QJsonObject{{"schema",schema},{"publisher_authenticated",true},{"installation_performed",false}}).toJson(QJsonDocument::Compact).toStdString();return 0;
  }
@@ -45,12 +47,32 @@ int main(int argc,char** argv){
   const auto wait=[&]{QElapsedTimer clock;clock.start();while(service.busy()&&clock.elapsed()<10000){app.processEvents();QThread::msleep(5);}require(!service.busy(),"Helper did not settle");};
   const auto request=[](const QString& fixture=QString{}){return QJsonObject{{"action","check"},{"fixture",fixture}};};
   require(service.start(request()),"Valid helper request refused");require(!service.start(request()),"Concurrent operation was admitted");wait();require(results==1&&errors==0,"Successful helper response lost");
+  {int observed=0;service.onProgress=[&](const QJsonObject& value){if(value.value("completed").toInt()==5&&value.value("total").toInt()==10)++observed;};require(service.start(request("progress")),"Progress fixture refused");wait();require(observed==1,"Measured progress did not cross the actual child-process transport");service.onProgress={};--results;}
+  {QJsonObject value{{"schema","PGN_UPDATE_PROGRESS_V1"},{"stage","download"},{"component","gpu"},{"completed",5},{"total",10}};require(pgn::update::validComponentUpdateProgress(value),"Valid progress rejected");value.insert("completed",11);require(!pgn::update::validComponentUpdateProgress(value),"Progress beyond total admitted");value.insert("completed",1.5);require(!pgn::update::validComponentUpdateProgress(value),"Fractional byte count admitted");value.insert("completed",1);value.insert("path","private");require(!pgn::update::validComponentUpdateProgress(value),"Unbounded private progress field admitted");}
   for(const auto& fixture:{QString("failure"),QString("malformed"),QString("wrong-type"),QString("oversized")}){const auto before=errors;require(service.start(request(fixture)),"Fixture request refused");wait();require(errors==before+1&&!lastError.isEmpty(),"Bad helper response was accepted or completed twice");}
   require(service.start(request("delay")),"Cancellation fixture refused");app.processEvents();service.cancel();wait();require(lastError.contains("cancelled"),"Cancellation was not distinct");
   require(service.start(request()),"Request after cancellation refused");wait();require(results==2,"Cancellation poisoned the next request");
   service.onStatus=[&](const QString&){service.cancel();};require(service.start(request()),"Reentrant cancellation refused");wait();service.onStatus={};require(lastError.contains("cancelled"),"Status callback cancellation launched an unintended operation");
   require(!service.start(QJsonObject{{"action","execute"}}),"Arbitrary execution operation admitted");
   {pgn::update::ComponentUpdateService missing({temp.path()+"/missing.exe",{}});int failed=0;missing.onError=[&](const QString&){++failed;};require(missing.start(request()),"Failed-start fixture refused");QElapsedTimer clock;clock.start();while(missing.busy()&&clock.elapsed()<5000){app.processEvents();QThread::msleep(5);}require(!missing.busy()&&failed==1,"Failed start did not settle exactly once");}
+  {
+   const QString data=temp.path()+"/resume",genesis(64,'a');require(QDir().mkpath(data),"Resume fixture unavailable");
+   const QJsonArray devices{QJsonObject{{"kind","gpu"},{"device","GPU/first"}},QJsonObject{{"kind","gpu"},{"device","GPU/second"}},QJsonObject{{"kind","cpu"},{"device","CPU/local/0"},{"threads",137}}};
+   pgn::update::saveMiningUpdateResume(data,genesis,devices,1000);
+   require(pgn::update::takeMiningUpdateResume(data,genesis,true,1001)==devices,"Update lost devices or exact CPU thread count");
+   require(pgn::update::takeMiningUpdateResume(data,genesis,true,1002).isEmpty(),"Update state replayed a second time");
+   pgn::update::saveMiningUpdateResume(data,genesis,devices,1000);
+   require(pgn::update::takeMiningUpdateResume(data,genesis,false,1001).isEmpty(),"Normal launch started computation");
+   require(!QFile::exists(pgn::update::miningResumePath(data)),"Normal launch left a latent update restart");
+   const auto refused=[&](const auto& operation){try{operation();return false;}catch(const std::exception&){return true;}};
+   for(const auto now:{999LL,1901LL}){pgn::update::saveMiningUpdateResume(data,genesis,devices,1000);require(refused([&]{pgn::update::takeMiningUpdateResume(data,genesis,true,now);}),"Future or expired resume admitted");require(!QFile::exists(pgn::update::miningResumePath(data)),"Expired state remained replayable");}
+   pgn::update::saveMiningUpdateResume(data,genesis,devices,1000);
+   require(refused([&]{pgn::update::takeMiningUpdateResume(data,QString(64,'b'),true,1001);}),"Cross-network resume admitted");
+   auto duplicate=devices;duplicate.append(devices.first());require(!pgn::update::validMiningResumeDevices(duplicate),"Duplicate device resume admitted");
+   for(const auto threads:{0,257})require(!pgn::update::validMiningResumeDevices({QJsonObject{{"kind","cpu"},{"device","CPU/local/0"},{"threads",threads}}}),"Unsafe thread count admitted");
+   pgn::update::saveMiningUpdateResume(data,genesis,{},1000);require(pgn::update::takeMiningUpdateResume(data,genesis,true,1001).isEmpty(),"All-OFF update enabled resources");
+   require(refused([&]{pgn::update::saveMiningUpdateResume(data+"/missing-parent",genesis,devices,1000);}),"Failed state write was treated as successful");
+  }
   std::cout<<"PASS "<<checks<<" updater transport/lifecycle checks; inert helper only, no network/GPU/wallet/installed code touched\n";return 0;
  }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }
