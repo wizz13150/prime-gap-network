@@ -184,14 +184,20 @@ bool CoreRuntime::recoverOwned(){
  }
  if(WaitForSingleObject(handle,0)==WAIT_OBJECT_0){CloseHandle(handle);return false;}
  QString birth,image;const bool identified=processIdentity(handle,birth,image);
- if(!identified||!verifyCoreOwnership(profile_,saved,savedPid,birth,image).isEmpty()){
-  CloseHandle(handle);failStart("Saved Core PID was reused or its image changed; no integration or second launch");return false;
+ if(!identified){CloseHandle(handle);failStart("Saved Core process identity cannot be read; no second client launched");return false;}
+ // A different creation time proves that the saved process no longer exists.
+ // Leave the new occupant untouched and use the ordinary absent-owner path.
+ // Launch intents and Core's data lock still govern any new launch.
+ if(birth!=savedBirth){CloseHandle(handle);report("Previous Core process exited; Windows reused its number");return false;}
+ if(!verifyCoreOwnership(profile_,saved,savedPid,birth,image).isEmpty()){
+  CloseHandle(handle);failStart("Saved Core image changed within the same process; no integration or second launch");return false;
  }
  processHandle_=handle;pid_=savedPid;processBirth_=birth;launching_=false;
  clock_.start();report("EXISTING OWNED CORE RECOVERED · checking exact chain identity");inspect();return true;
 #elif defined(Q_OS_LINUX)
  QString birth,image;if(!processIdentity(savedPid,birth,image)){if(::kill(pid_t(savedPid),0)<0&&errno==ESRCH)return false;failStart("Saved Core process identity could not be inspected");return false;}
- if(!verifyCoreOwnership(profile_,saved,savedPid,birth,image).isEmpty()){failStart("Saved Core PID was reused or its image changed");return false;}pid_=savedPid;processBirth_=birth;launching_=false;clock_.start();report("EXISTING OWNED CORE RECOVERED · checking exact chain identity");inspect();return true;
+ if(birth!=savedBirth){report("Previous Core process exited; its number was reused");return false;}
+ if(!verifyCoreOwnership(profile_,saved,savedPid,birth,image).isEmpty()){failStart("Saved Core image changed within the same process");return false;}pid_=savedPid;processBirth_=birth;launching_=false;clock_.start();report("EXISTING OWNED CORE RECOVERED · checking exact chain identity");inspect();return true;
 #else
  failStart("Native process ownership is not qualified on this platform");return false;
 #endif
