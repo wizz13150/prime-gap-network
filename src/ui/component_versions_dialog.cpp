@@ -148,7 +148,17 @@ bool ComponentVersionsDialog::ensureService(){
 void ComponentVersionsDialog::refreshPublished(){if(localBusy_||busy_||installStarted_||!ensureService())return;preparedRequest_={};install_->hide();prepare_->show();setBusy(true);if(!service_->start(request("check",ids)))setBusy(false);}
 void ComponentVersionsDialog::presentPublished(const QJsonObject& value,const QString& status){
  if(value.value("schema")!="PGN_AUTHENTICATED_COMPONENT_VIEW_V1"||!value.value("publisher_authenticated").toBool()){status_->setText("Available component versions could not be authenticated.");return;}
- published_=value;if(onPublishedCatalog)onPublishedCatalog(value);updateRows();status_->setText(status.isEmpty()?selected().isEmpty()?"No verified component updates are currently available.":"Select the components to download. Installation remains optional.":status);updateRecovery();
+ published_=value;if(onPublishedCatalog)onPublishedCatalog(value);updateRows();
+ QString summary=status;
+ if(summary.isEmpty()){
+  bool newer=false,unknown=false;
+  for(int row=0;row<components_->rowCount();++row){const auto text=components_->item(row,3)->text();newer|=text=="Newer local build";unknown|=text=="Local version unverified"||text=="Not verified";}
+  summary=!selected().isEmpty()?QString("Updates are available. Select components, download, then choose Restart and install.")
+   :newer?QString("Your local build is newer than the published version. No downgrade will be installed.")
+   :unknown?QString("No updates found for verified components. Some local versions could not be verified.")
+   :QString("All components are up to date.");
+ }
+ status_->setText(summary);updateRecovery();
 }
 void ComponentVersionsDialog::prepareSelected(){if(busy_||recover_->isVisible()||selected().isEmpty()||!ensureService())return;setBusy(true);if(!service_->start(request("prepare_install",selected())))setBusy(false);}
 void ComponentVersionsDialog::installPrepared(){

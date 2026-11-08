@@ -1,5 +1,6 @@
 #include "telemetry.h"
 #include "ui/diagnostic_capture_view.h"
+#include "ui/mining_control_binding.h"
 #include "ui/dense_point_layer.h"
 #include "ui/catalog_layer.h"
 #include "ui/catalog_frame_presentation.h"
@@ -1213,7 +1214,7 @@ protected:
                     return;
                 }
             }
-            for(const auto& group:m_totalGroupHits)if(group.second.contains(event->position())){const auto cards=miningLaneCards();bool allOn=true,pending=false;for(const auto& card:cards)if(card.kind==group.first&&(!property("pgn_source_only_control").toBool()||card.stableId.compare(property("pgn_managed_source_device").toString(),Qt::CaseInsensitive)==0||card.snapshot.raw.value("pgn_cpu_control").toBool())){const auto c=m_deviceControls.value(card.stableId);allOn&=c.enabled;pending|=c.status==FrontierDeviceControlStatus::Pending;}if(!pending)for(const auto& card:cards)if(card.kind==group.first&&(!property("pgn_source_only_control").toBool()||card.stableId.compare(property("pgn_managed_source_device").toString(),Qt::CaseInsensitive)==0||card.snapshot.raw.value("pgn_cpu_control").toBool())){auto& state=m_deviceControls[card.stableId];state.enabledBeforeRequest=state.enabled;state.enabled=!allOn;state.toggleRequestPending=true;requestDeviceControl({card.stableId,card.kind,{}, {},true});}event->accept();return;}
+            for(const auto& group:m_totalGroupHits)if(group.second.contains(event->position())){const auto cards=miningLaneCards();bool allOn=true,pending=false;for(const auto& card:cards)if(card.kind==group.first&&pgn::ui::miningSourceManaged(this,card.stableId,card.snapshot.raw.value("pgn_cpu_control").toBool())){const auto c=m_deviceControls.value(card.stableId);allOn&=c.enabled;pending|=c.status==FrontierDeviceControlStatus::Pending;}if(!pending)for(const auto& card:cards)if(card.kind==group.first&&pgn::ui::miningSourceManaged(this,card.stableId,card.snapshot.raw.value("pgn_cpu_control").toBool())){auto& state=m_deviceControls[card.stableId];state.enabledBeforeRequest=state.enabled;state.enabled=!allOn;state.toggleRequestPending=true;requestDeviceControl({card.stableId,card.kind,{}, {},true});}event->accept();return;}
             for (const DeviceControlHit& hit : m_deviceControlHits) {
                 if (hit.toggle.contains(event->position())) {
                     if (m_deviceControlHandler && hit.supported) {
@@ -4208,9 +4209,7 @@ private:
         DeviceControlState& control = m_deviceControls[controlId];
         const bool labCrtTest = lane.raw.value(QStringLiteral("lab_highshift")).toBool(false);
         observeDeviceControl(controlId,lane);
-        const bool managedDevice = !property("pgn_source_only_control").toBool()
-            || stableDeviceId.compare(property("pgn_managed_source_device").toString(),Qt::CaseInsensitive)==0
-            || lane.raw.value("pgn_cpu_control").toBool();
+        const bool managedDevice = pgn::ui::miningSourceManaged(this,stableDeviceId,lane.raw.value("pgn_cpu_control").toBool());
         const bool controlConnected = static_cast<bool>(m_deviceControlHandler) && managedDevice;
         const QRectF statePill(pod.right() - 103, pod.top() + 7, 66, 17);
         const QColor stateColor = control.status == FrontierDeviceControlStatus::Pending
@@ -4488,9 +4487,7 @@ private:
         // runtime power/work-budget command.  Keep those capabilities
         // separate: the state pill remains actionable while the slider stays
         // absent.
-        const bool managedDevice = !property("pgn_source_only_control").toBool()
-            || stableDeviceId.compare(property("pgn_managed_source_device").toString(),Qt::CaseInsensitive)==0
-            || lane.raw.value("pgn_cpu_control").toBool();
+        const bool managedDevice = pgn::ui::miningSourceManaged(this,stableDeviceId,lane.raw.value("pgn_cpu_control").toBool());
         const bool controlConnected = static_cast<bool>(m_deviceControlHandler) && managedDevice;
         const bool budgetControlConnected = controlConnected && !m_legacyR4Mode;
         const FrontierVerifierDisplayState verifierDisplay = exactVerifierCard
@@ -5110,7 +5107,7 @@ private:
         const auto cards=miningLaneCards();
         for(int i=0;i<2;++i){
             const QString kind=i?"CPU":"GPU";int count=0,on=0,pending=0,unknown=0;
-            for(const auto& card:cards)if(card.kind==kind&&(!property("pgn_source_only_control").toBool()||card.stableId.compare(property("pgn_managed_source_device").toString(),Qt::CaseInsensitive)==0||card.snapshot.raw.value("pgn_cpu_control").toBool())){
+            for(const auto& card:cards)if(card.kind==kind&&pgn::ui::miningSourceManaged(this,card.stableId,card.snapshot.raw.value("pgn_cpu_control").toBool())){
                 ++count;const auto control=m_deviceControls.value(card.stableId);
                 on+=control.known&&control.enabled;unknown+=!control.known;
                 pending+=control.status==FrontierDeviceControlStatus::Pending;

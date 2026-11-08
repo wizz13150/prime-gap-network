@@ -56,7 +56,9 @@ QJsonObject componentUpdateRequest(const ComponentUpdateDeployment& deployment,c
     const QString& applicationDirectory,const QString& mutableDataRoot,const QString& action,const QStringList& selected){
     const auto config=deployment.context;
     QJsonArray installed,selection;
-    for(const auto& value:snapshot.value("components").toArray()){
+    // Catalogue discovery is read-only and must also describe an older public
+    // build. Preparation/installation retain the actual verified version floor.
+    for(const auto& value:action=="check"?QJsonArray{}:snapshot.value("components").toArray()){
         const auto item=value.toObject();if(item.value("state")!="matched_local_manifest")continue;
         installed.append(QJsonObject{{"id",item.value("id")},{"version",item.value("version")},{"abi",config.value("abi")}});
     }

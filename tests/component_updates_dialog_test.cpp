@@ -3,6 +3,7 @@
 #include <QElapsedTimer>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QLabel>
 #include <QTimer>
 #include <QJsonArray>
 #include <QDir>
@@ -29,6 +30,11 @@ int main(int argc,char** argv){
  check(!download->isEnabled());dialog.findChild<QPushButton*>("pgn-components-select-all")->click();check(download->isEnabled());
  auto unknown=installed[3].toObject();unknown.insert("state","unidentified");installed[3]=unknown;dialog.presentLocal({{"manifest_state","valid"},{"components",installed}});check(!(table->item(3,0)->flags()&Qt::ItemIsUserCheckable));
  dialog.resize(850,440);app.processEvents();check(table->viewport()->width()>700&&table->viewport()->height()>=136);
+ QJsonArray newerLocal,olderPublic;for(const auto* id:{"ui","core","gpu","cpu"}){newerLocal.append(QJsonObject{{"id",id},{"state","matched_local_manifest"},{"version","3.0"}});olderPublic.append(QJsonObject{{"id",id},{"version","2.0"}});}
+ dialog.presentLocal({{"manifest_state","valid"},{"components",newerLocal}});dialog.presentPublished({{"schema","PGN_AUTHENTICATED_COMPONENT_VIEW_V1"},{"publisher_authenticated",true},{"components",olderPublic}});
+ check(!download->isEnabled()&&table->item(0,3)->text()=="Newer local build");check(dialog.findChild<QLabel*>("pgn-components-status")->text().contains("newer than the published"));
+ dialog.presentPublished({{"schema","PGN_AUTHENTICATED_COMPONENT_VIEW_V1"},{"publisher_authenticated",true},{"components",newerLocal}});check(dialog.findChild<QLabel*>("pgn-components-status")->text()=="All components are up to date.");
+ dialog.presentLocal({{"manifest_state","valid"},{"components",installed}});dialog.presentPublished({{"schema","PGN_AUTHENTICATED_COMPONENT_VIEW_V1"},{"publisher_authenticated",true},{"components",available}});
  if(argc>1){QDir().mkpath(QString::fromLocal8Bit(argv[1]));check(dialog.grab().save(QString::fromLocal8Bit(argv[1])+"/component-updates.png"));}
  // An interrupted installation stays visible even when no update catalogue
  // can be fetched. The fixture uses a unique test-mode application directory.

@@ -28,6 +28,7 @@ inline void localRuntimeQuery(QObject* owner,const QString& program,const QStrin
                              const QJsonObject& input,std::function<void(QJsonObject,QString)> consume){
  auto* process=new LocalRuntimeQueryProcess(owner);auto* deadline=new QTimer(process);deadline->setSingleShot(true);
  auto bytes=std::make_shared<QByteArray>();auto done=std::make_shared<bool>(false);
+ auto errors=std::make_shared<QByteArray>();
  const auto finish=[process,deadline,done,consume](QJsonObject value,const QString& error){
   if(*done)return;*done=true;deadline->stop();
   if(process->state()!=QProcess::NotRunning)process->kill();
@@ -38,18 +39,20 @@ inline void localRuntimeQuery(QObject* owner,const QString& program,const QStrin
  QObject::connect(process,&QProcess::readyReadStandardOutput,process,[process,bytes,finish]{
   bytes->append(process->readAllStandardOutput());if(bytes->size()>262144)finish({},"Local runtime response exceeds 256 KiB");
  });
- QObject::connect(process,&QProcess::readyReadStandardError,process,[process]{process->readAllStandardError();});
+ QObject::connect(process,&QProcess::readyReadStandardError,process,[process,errors]{errors->append(process->readAllStandardError());if(errors->size()>2048)errors->remove(0,errors->size()-2048);});
  QObject::connect(process,&QProcess::errorOccurred,process,[finish](QProcess::ProcessError error){if(error==QProcess::FailedToStart)finish({},"Installed local runtime could not start");});
  QObject::connect(deadline,&QTimer::timeout,process,[finish]{finish({},"Local runtime discovery/preparation timed out");});
  QObject::connect(process,&QProcess::started,process,[process,input]{
   if(!input.isEmpty())process->write(QJsonDocument(input).toJson(QJsonDocument::Compact)+'\n');
   process->closeWriteChannel();
  });
- QObject::connect(process,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),process,[process,bytes,finish,done](int code,QProcess::ExitStatus status){
+ QObject::connect(process,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),process,[process,bytes,errors,finish,done](int code,QProcess::ExitStatus status){
   if(*done)return;bytes->append(process->readAllStandardOutput());QJsonParseError parse;
   const auto document=QJsonDocument::fromJson(*bytes,&parse);
   if(bytes->size()>262144||code||status!=QProcess::NormalExit||parse.error!=QJsonParseError::NoError||!document.isObject()){
-   finish({},"Installed local runtime returned an invalid response");return;
+   errors->append(process->readAllStandardError());
+   const auto lastLine=QString::fromUtf8(errors->right(2048)).trimmed().section('\n',-1).trimmed().left(600);
+   finish({},lastLine.isEmpty()?QString("Installed local runtime returned an invalid response"):QString("Mining controller: %1").arg(lastLine));return;
   }
   finish(document.object(),{});
  });

@@ -34,7 +34,9 @@ int main(int argc,char** argv){
   require(pgn::update::componentVersionComparison("1.9","1.10").value_or(0)<0,"Numeric versions compared as text");
   require(!pgn::update::componentVersionComparison("custom","1.2"),"Unknown version became current");
   const auto contextRequest=pgn::update::componentUpdateRequest(resolved,QJsonObject{{"components",QJsonArray{QJsonObject{{"id","ui"},{"state","matched_local_manifest"},{"version","1.0"}},QJsonObject{{"id","cpu"},{"state","unidentified"},{"version","custom"}}}}},temp.path(),temp.path()+"/user-data","check",{"ui"});
-  require(contextRequest.value("context").toObject().value("installed").toArray().size()==1,"Unidentified local component was declared trusted");
+  require(contextRequest.value("context").toObject().value("installed").toArray().isEmpty(),"Read-only catalogue comparison was blocked by a newer local build");
+  const auto installContext=pgn::update::componentUpdateRequest(resolved,QJsonObject{{"components",QJsonArray{QJsonObject{{"id","ui"},{"state","matched_local_manifest"},{"version","1.0"}},QJsonObject{{"id","cpu"},{"state","unidentified"},{"version","custom"}}}}},temp.path(),temp.path()+"/user-data","prepare_install",{"ui"});
+  require(installContext.value("context").toObject().value("installed").toArray().size()==1&&installContext.value("context").toObject().value("installed").toArray()[0].toObject().value("version")=="1.0","Installation lost its real verified anti-downgrade floor");
   require(contextRequest.value("context").toObject().value("protected_roots").toArray().contains(temp.path()+"/user-data"),"User data was not protected from staging");
   const auto recovery=pgn::update::componentUpdateRequest(resolved,{},temp.path(),temp.path()+"/user-data","recover",{});
   require(!recovery.contains("selected")&&!recovery.contains("activation")&&!recovery.contains("base_cohort"),"Recovery invented a new update selection/activation");

@@ -1,4 +1,5 @@
 #include "ui/mining_canvas.h"
+#include "ui/mining_control_binding.h"
 #include "telemetry.h"
 #include "booking/booking_model.h"
 #include <QApplication>
@@ -39,6 +40,23 @@ int main(int argc,char** argv){
   if(commands!=1||requested)return 24;
   pgn::ui::resolveDeviceControl(fresh.get(),gpu,pending,true,"Fixture OFF acknowledgement");paint();
   if(fresh->property("pgn_total_gpu_state").toString()!="off"){std::cerr<<"FAIL repaint of older ON telemetry undoes newer OFF acknowledgement\n";return 25;}
+ }
+ {
+  std::unique_ptr<QWidget> local(pgn::ui::createMiningCanvas());pgn::ui::configureMiningDashboard(local.get());local->resize(1380,220);
+  const QString a="GPU-local-a",b="GPU-local-b";QStringList delivered;
+  pgn::ui::bindMiningControls(local.get(),[&](const QString& device,const QString&,bool on){if(on)delivered.append(device);});
+  FrontierTelemetrySnapshot sample;sample.gpuUuid=a;sample.gpuName="Local GPU A";sample.sourceMode="live";sample.observedUtc=QDateTime::currentDateTimeUtc();sample.raw={{"pgn_device_enabled",false},{"legacy_miner_bound",false}};
+  pgn::ui::presentDevice(local.get(),sample);sample.gpuUuid=b;sample.gpuName="Local GPU B";pgn::ui::presentDevice(local.get(),sample,true);
+  const auto paint=[&]{QImage image(local->size(),QImage::Format_ARGB32_Premultiplied);QPainter painter(&image);local->render(&painter);};
+  local->setProperty("pgn_source_only_control",true);paint();
+  if(!pgn::ui::miningToggleRect(local.get(),a).isEmpty()){std::cerr<<"FAIL unbound device unexpectedly has control\n";return 26;}
+  // Same local worker registration as main.cpp; no SSH/hardware endpoint.
+  pgn::ui::registerMiningSourceDevice(local.get(),a);pgn::ui::registerMiningSourceDevice(local.get(),b);paint();
+  for(const auto& device:{a,b}){
+   const auto rect=pgn::ui::miningToggleRect(local.get(),device);if(rect.isEmpty()){std::cerr<<"FAIL registered local GPU has an inert OFF pill\n";return 27;}
+   QMouseEvent press(QEvent::MouseButtonPress,rect.center(),local->mapToGlobal(rect.center().toPoint()),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(local.get(),&press);
+  }
+  if(delivered!=QStringList{a,b}){std::cerr<<"FAIL local GPU clicks did not reach the matching controllers\n";return 28;}
  }
  std::unique_ptr<QWidget> canvas(pgn::ui::createMiningCanvas());canvas->resize(1380,900);
  const QString id="GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac";
