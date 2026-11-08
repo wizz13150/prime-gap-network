@@ -718,6 +718,8 @@ if(WIN32)
     target_compile_features(pgn-native-frame-icon-test PRIVATE cxx_std_20)
     add_dependencies(pgn-native-frame-icon-test pgn-windows-icon)
     add_test(NAME native-frame-icon COMMAND pgn-native-frame-icon-test)
+    # This test checks real hidden HWNDs; Qt's offscreen plugin has no native icons.
+    set_tests_properties(native-frame-icon PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows")
     add_test(NAME windows-icon-resource COMMAND pgn-package-windows-icon --verify $<TARGET_FILE:PGN-Horizon> "${CMAKE_CURRENT_SOURCE_DIR}/assets/pgn-mark.png")
 endif()
 set(PGN_UI_OUTPUT_NAME "PGN-Horizon" CACHE STRING "Independent GUI staging filename")

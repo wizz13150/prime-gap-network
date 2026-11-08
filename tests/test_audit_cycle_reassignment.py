@@ -63,7 +63,7 @@ class ReassignmentTests(unittest.TestCase):
         running=threading.Event();running.set()
         worker=SimpleNamespace(root=self.root,rpc=self.rpc,source=SimpleNamespace(run_ticket=compute),network_lock=threading.RLock(),
                                args=SimpleNamespace(piece_limit=64000000000000),running=running,quitting=threading.Event(),address=lambda:'fixture',ledger=ledger)
-        self.flow=object.__new__(MiningFlow);self.flow.worker=worker;self.flow.cycles=self.cycles;self.flow.gpu=SimpleNamespace(wake=lambda:None)
+        self.flow=object.__new__(MiningFlow);self.flow.worker=worker;self.flow.cycles=self.cycles;self.flow.gpu=SimpleNamespace(wake=lambda:None);self.flow.recovered_report=None
         self.audits=NetworkAudits(worker,on_assigned=lambda a:self.flow.bind_audit_cycle(0,a),
             on_committed=lambda a,b:self.flow.audit_committed(0,a,b),before_commit=lambda a:self.flow.before_audit_commit(0,a),
             on_reassigned=lambda a,b:self.flow.reopen_audit_cycle(0,a,b),reassignment_needed=lambda a:self.flow.audit_reassignment_needed(0,a))

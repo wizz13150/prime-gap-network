@@ -105,7 +105,7 @@ class MaintenancePollTests(unittest.TestCase):
         def submit(*args,**kwargs):clock.value+=.25
         lock=Lock()
         flow.worker=SimpleNamespace(quitting=Stop(),audits=owner,network_lock=lock,network_notice=None,submit=submit)
-        flow.audit_lanes=[];flow.outbox=Outbox();flow.changed=Changed()
+        flow.audit_lanes=[];flow.outbox=Outbox();flow.changed=Changed();flow.recovered_report=None
         # Use a real empty cycle journal: these preserved outbox reports are
         # legacy work, while confirmation repair is still part of the publisher.
         with tempfile.TemporaryDirectory() as folder:
