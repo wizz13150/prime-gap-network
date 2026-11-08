@@ -7,6 +7,15 @@
 #include <iostream>
 int main(int argc,char** argv){
  QApplication app(argc,argv);pgn::ui::ComponentVersionsContext context;context.fetchOnOpen=false;
+ if(argc>=3&&QString::fromLocal8Bit(argv[1])=="--inspect-installed"){
+  const auto product=QString::fromLocal8Bit(argv[2]);
+  const auto resolved=pgn::ui::walletComponentVersionsContext(product,product+"/data/testnet/ui-runtime",true);
+  const auto value=pgn::ui::inspectLocalComponentVersions(resolved);
+  for(const auto& entry:value.value("components").toArray())if(entry.toObject().value("id")=="cpu"){
+   std::cout<<QJsonDocument(entry.toObject()).toJson(QJsonDocument::Compact).constData()<<"\n";return 0;
+  }
+  return 12;
+ }
  if(argc>=3&&QString::fromLocal8Bit(argv[1])=="--inspect"){
   const auto root=QString::fromLocal8Bit(argv[2]);context.manifestPath=root+"/components.json";
   context.codeRoots={{"ui",root},{"core",argc>3?QString::fromLocal8Bit(argv[3]):root+"/Core"},{"gpu",root+"/EngineRuntime"}};

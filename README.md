@@ -21,7 +21,7 @@ This is the current portable Windows preview for supervised tests on the PGN tes
 2. On the first launch, the wallet setup assistant opens automatically. Create a testnet wallet or select an existing Core data folder. Review the folder and confirm; cancellation does not create a wallet. Existing configured wallets reopen normally.
 3. Let the integrated encrypted connection synchronize. No VPN or public wallet RPC port is required.
 4. In Profile, copy your **public mining identity** and send it to the testnet coordinator for approval. A connected peer is not automatically an admitted miner/auditor. Never send wallet files, keys or RPC credentials.
-5. Turn your GPU on. The normal work cycle handles assigned audits, searches, report publication and validation. There is no separate audit-only product mode.
+5. Turn your GPU on. CPU mining can remain OFF. Network service may assign audits before a new search ticket; that work uses the GPU and is part of the same normal cycle. Starting Diagnostics recording is never required to turn mining on. Reports, audits and searches share the normal worker.
 
 ### What this preview provides
 
@@ -44,7 +44,7 @@ The test ledger includes coordination records without coin issuance. **Ledger he
 
 ## Recovery and diagnostic update
 
-The published Interface **2026.11.8.84** and GPU runtime **2026.11.8.25** repair cold startup with a full publication queue and replace obsolete coordination candidates using current Core templates while retaining the original candidate. Diagnostic captures retain bounded process failures from before recording starts. The real public signed update from UI82 to UI84/GPU25 has passed download, installation, restart, same-data recovery and a post-restart catalogue check. Update checks distinguish GitHub/server outages from local connection failures; an unsuccessful check does not mean the application is up to date.
+The published Interface **2026.11.8.85** and GPU runtime **2026.11.8.27** repair cold startup with a full publication queue and replace obsolete coordination candidates using current Core templates while retaining the original candidate. Diagnostic captures retain bounded process failures from before recording starts. The real public signed update from UI82 to UI84/GPU25 has passed download, installation, restart, same-data recovery and a post-restart catalogue check. The actual public GPU-only25→27 update has separately passed download/install/restart while preserving the same data, wallet and Core. Update checks distinguish GitHub/server outages from local connection failures; an unsuccessful check does not mean the application is up to date. Interface85 inventories the installed CPU runtime independently of remote execution profiles; changed local bytes remain unverified.
 
 The audit scene is still under visual revision. The native scene/Atlas trajectory integration and Robert's physical SM120 startup remain unqualified. Clean source CI builds every default target, runs the registered tests, and preserves the test log.
 

@@ -1,6 +1,6 @@
 # Current Windows testnet tester guide
 
-Download the current Windows portable archive from the release, extract the complete folder, and launch PGN-Horizon.exe. Do not launch a component-update ZIP as the application. Older alpha packages use an older testnet epoch.
+Download the current r69 Windows portable archive from the release, extract the complete folder, and launch PGN-Horizon.exe. Do not launch a component-update ZIP as the application. Older alpha packages use an older testnet epoch.
 
 1. With no wallet configuration, Horizon opens its setup assistant automatically. Choose a new testnet wallet or your existing Core data folder, review the path and confirm. Cancel leaves wallet creation unapplied. Already configured wallets reopen normally.
 2. Wait for synchronization through the integrated encrypted connection. No VPN or exposed wallet RPC port is required.
@@ -16,3 +16,11 @@ CPU/Huge pages and additional hardware remain wider qualification work. On Windo
 This supervised testnet uses play coins. Its ledger contains zero-issuance coordination records, so its height is not the Gold reward-block count. Final Gold-only chain architecture, economics, external independent operator testing and large-network load remain unfinished. Complementary pseudoprime recovery is deferred; this preview does not claim exhaustive scientific completeness against that case.
 
 Never send wallet.dat, private keys, authentication cookies, private audit answers or entire work folders as an ordinary diagnostic report. The coordinator can observe accepted network reports and peer protocol behavior, not remotely control a tester's computer.
+
+## Mining and startup status
+
+CPU mining may stay OFF while GPU mining is ON. Recording Diagnostics is optional and is never a prerequisite for starting either device. The network may allocate audit service before a new search ticket; audit computation is real GPU work in the same resident worker. Follow the device role and progress rather than the “Records to submit” comparison area, whose waiting message concerns external record checking.
+
+One connected peer can be enough for synchronization; the peer count is not a count of other miners. The current supervised pilot still requires coordinator admission of the public mining identity. This is separate from wallet synchronization and must not be confused with diagnostic recording. Permissionless participant admission remains development work.
+
+If a device returns from Starting to OFF, copy the status text and export a diagnostic ZIP. The current process diagnostics retain bounded launch failures, stderr and exit information from before recording started; do not send wallet files, private keys or authentication cookies. Physical SM120 startup remains subject to the tester's actual result.

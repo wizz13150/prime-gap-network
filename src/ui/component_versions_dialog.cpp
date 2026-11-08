@@ -16,7 +16,6 @@
 #include <QColor>
 #include <QPushButton>
 #include <QProgressBar>
-#include <QSysInfo>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -27,33 +26,23 @@ const QStringList ids{"ui","core","gpu","cpu"},names{"Interface","Core","GPU eng
 QString codeDirectory(const QString& path){const QFileInfo info(path);return info.isDir()?info.canonicalFilePath():QString{};}
 QLabel* label(const QString& text={}){auto* value=new QLabel(text);value->setTextFormat(Qt::PlainText);value->setWordWrap(true);return value;}
 QTableWidget* table(const QStringList& headers){auto* value=new QTableWidget(0,headers.size());value->setHorizontalHeaderLabels(headers);value->verticalHeader()->hide();value->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);value->horizontalHeader()->setStretchLastSection(true);value->horizontalHeader()->setFixedHeight(32);value->setEditTriggers(QAbstractItemView::NoEditTriggers);value->setSelectionBehavior(QAbstractItemView::SelectRows);value->setSelectionMode(QAbstractItemView::SingleSelection);return value;}
-void identifyConfiguredCpu(ComponentVersionsContext& context,const QString& productRoot,const QString& app){
- context.codeRoots.remove("cpu");context.primaryPrograms.remove("cpu");
- const auto admit=[&](const QString& program){const QFileInfo file(program);if(file.isAbsolute()&&file.isFile()&&file.isExecutable()){context.codeRoots.insert("cpu",file.canonicalPath());context.primaryPrograms.insert("cpu",file.canonicalFilePath());}};
- // This is the same bounded explicit endpoint profile consumed by main.cpp.
- // Its existence suppresses the fallback. Remote transports never identify
- // a local CPU engine, even if their ssh executable exists on this machine.
- QFile profile(pgn::app::mutableDataRoot(productRoot)+"/testnet/ui-runtime/cpu-controllers.json");
- if(profile.exists()){
-  if(!context.testnet||!profile.open(QIODevice::ReadOnly)||profile.size()>32768)return;
-  QJsonParseError error;const auto document=QJsonDocument::fromJson(profile.readAll(),&error);const auto object=document.object();const auto endpoints=object.value("endpoints").toArray();
-  if(error.error!=QJsonParseError::NoError||!document.isObject()||object.value("schema")!="PGN_CPU_CONTROL_ENDPOINTS_V1"||!object.value("endpoints").isArray()||endpoints.size()>8)return;
-  QSet<QString> programs;const auto machine=QSysInfo::machineHostName(),computer=qEnvironmentVariable("COMPUTERNAME");
-  for(const auto& value:endpoints){const auto entry=value.toObject();const auto host=entry.value("host").toString().trimmed();const bool local=!host.isEmpty()&&(host.compare(machine,Qt::CaseInsensitive)==0||(!computer.isEmpty()&&host.compare(computer,Qt::CaseInsensitive)==0)||host.compare("localhost",Qt::CaseInsensitive)==0||host=="127.0.0.1"||host=="::1");if(!local)continue;const QFileInfo file(entry.value("program").toString());if(file.isAbsolute()&&file.isFile()&&file.isExecutable())programs.insert(file.canonicalFilePath());}
-  if(programs.size()==1)admit(*programs.begin());
-  return;
- }
- auto fallback=QDir(app).filePath("EngineRuntime/cpu/horizon-cpu-controller");
+void identifyInstalledCpu(ComponentVersionsContext& context,const QString& app){
+ // This dialog inventories the installed local update components, just as for
+ // GPU/Core/UI. A remote worker profile describes execution, not local bytes.
+ const auto root=QDir(app).filePath("EngineRuntime/cpu");
+ context.codeRoots.insert("cpu",codeDirectory(root));
+ auto program=QDir(root).filePath("horizon-cpu-controller");
 #ifdef Q_OS_WIN
- fallback+=".exe";
+ program+=".exe";
 #endif
- admit(fallback);
+ const QFileInfo file(program);
+ if(file.isAbsolute()&&file.isFile()&&file.isExecutable())context.primaryPrograms.insert("cpu",file.canonicalFilePath());
 }
 }
 ComponentVersionsContext walletComponentVersionsContext(const QString& productRoot,const QString& runtimeDirectory,bool testnet){
  ComponentVersionsContext context;context.testnet=testnet;const auto app=QCoreApplication::applicationDirPath();context.manifestPath=QDir(app).filePath("components.json");context.codeRoots.insert("ui",codeDirectory(app));context.primaryPrograms.insert("ui",QCoreApplication::applicationFilePath());
  context.applicationRoot=pgn::app::cleanApplicationRoot(productRoot);context.mutableDataRoot=pgn::app::mutableDataRoot(productRoot);
- const auto engine=QDir(app).filePath("EngineRuntime");context.codeRoots.insert("gpu",codeDirectory(engine));identifyConfiguredCpu(context,productRoot,app);
+ const auto engine=QDir(app).filePath("EngineRuntime");context.codeRoots.insert("gpu",codeDirectory(engine));identifyInstalledCpu(context,app);
  // Read only the bounded owned configuration receipt. Never enumerate the
  // Core data directory or query remote workers for a guessed code version.
  QFile profile(QDir(runtimeDirectory).filePath("wallet-core.json"));
