@@ -11,6 +11,18 @@ Prime Gap Network (PGN) is a collaborative initiative conceived by **Rob Smith**
 
 **PGN Horizon** is the network client in this repository: an integrated wallet, optimized search engines, automatic work tickets, independent audits, and views of network evidence. It owns its engine runtime and does not require an installed Scout application.
 
+## Horizon in use
+
+<table>
+<tr><th>Mining</th><th>Tickets + Audits</th></tr>
+<tr>
+<td width="50%"><a href="docs/images/horizon-mining.png"><img src="docs/images/horizon-mining.png" alt="Horizon mining: live GPU activity, discoveries and ticket progress" width="960"></a></td>
+<td width="50%"><a href="docs/images/horizon-audits.png"><img src="docs/images/horizon-audits.png" alt="Horizon network work: animated audit entities, ticket Atlas and verified results" width="960"></a></td>
+</tr>
+</table>
+
+Select either image to view it at full resolution. These are captures of the current supervised testnet preview.
+
 ## Windows supervised testnet preview
 
 ### Whole-audit progress and integrated audit preview
