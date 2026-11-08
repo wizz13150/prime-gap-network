@@ -40,6 +40,19 @@ class PublisherTests(unittest.TestCase):
   self.receipt['manifest']['components'][0]['version']='9.0.0'
   with self.assertRaisesRegex(ValueError,'another archive'):publisher.publish(self.keys,self.archive,self.receipt,self.root/'public',2)
   self.assertFalse((self.root/'public').exists())
+ def test_memory_signing_uses_same_reference_tuf_verification_without_disk_archive(self):
+  output=self.root/'memory-public';archive=self.archive.read_bytes();result=publisher.publish_in_memory(self.keys,archive,self.receipt,output,2)
+  self.assertFalse(result['archive_included']);self.assertFalse(any((output/'targets').glob('*.zip')))
+  metadata='https://updates.invalid/metadata/';targets='https://updates.invalid/targets/';transport=Transport()
+  for file in(output/'metadata').iterdir():transport.files[metadata+file.name]=file.read_bytes()
+  for file in(output/'targets').iterdir():transport.files[targets+file.name]=file.read_bytes()
+  transport.files[targets+self.receipt['archive_sha256']+'.components-2.zip']=archive
+  client=AuthenticatedUpdates(self.root/'memory-client',self.bootstrap,digest(self.bootstrap),metadata,targets,self.fixture.context,self.fixture.context_sha,fetcher=transport)
+  prepared=client.prepare(['cpu']);self.assertTrue(prepared['publisher_authenticated'])
+ def test_memory_signing_rejects_tampering_before_reserving_a_sequence(self):
+  with self.assertRaisesRegex(ValueError,'size differs|fingerprint differs'):
+   publisher.publish_in_memory(self.keys,self.archive.read_bytes()+b'changed',self.receipt,self.root/'bad-memory-public',2)
+  self.assertFalse((self.root/'bad-memory-public').exists());self.assertFalse((self.keys/'publication-state.json').exists())
  def test_foreign_network_refused_before_any_public_output(self):
   self.receipt['manifest']['genesis_hash']='6'*64
   with self.assertRaisesRegex(ValueError,'chain differs'):publisher.publish(self.keys,self.archive,self.receipt,self.root/'public',2)

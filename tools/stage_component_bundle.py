@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import errno
 import hashlib
 import json
 import os
@@ -463,6 +464,7 @@ def stage_bundle(archive_path, expected_sha256, context, context_sha256, cache_p
     cache = _cache(cache_path, context)
     require(not source.is_relative_to(cache), 'Source bundle must be outside staging cache')
     pending = None
+    materializing = False
     with _lock(cache), source.open('rb') as stream:
         try:
             require(_file_digest(stream, cancelled) == expected_sha256, 'Archive SHA256 mismatch')
@@ -484,6 +486,7 @@ def stage_bundle(archive_path, expected_sha256, context, context_sha256, cache_p
                 _cancel(cancelled)
                 pending = cache / ('.pending-' + uuid.uuid4().hex[:24])
                 pending.mkdir(mode=0o700)
+                materializing = True
                 component_for={entry['path']:identity for identity,component in components.items()for entry in component['files']}
                 totals={identity:sum(entry['bytes']for entry in component['files'])for identity,component in components.items()}
                 completed={identity:0 for identity in components};all_total=sum(totals.values());all_done=0
@@ -525,9 +528,16 @@ def stage_bundle(archive_path, expected_sha256, context, context_sha256, cache_p
                         os.fsync(output.fileno())
             require(_file_digest(stream, cancelled) == expected_sha256, 'Source bundle changed during preparation')
             _cancel(cancelled)
+            materializing = False
             _publish_pending(pending, final, cancelled)
             pending = None
             return final, plan
+        except OSError as exc:
+            if not materializing:
+                raise
+            if exc.errno in (errno.ENOSPC, getattr(errno, 'EDQUOT', -1)) or getattr(exc, 'winerror', None) in (39, 112):
+                raise StageError('Insufficient staging disk space; free space and retry. Installed components were not changed') from exc
+            raise StageError('Update preparation could not be written; check folder access and retry. Installed components were not changed') from exc
         except (zipfile.BadZipFile, RuntimeError, EOFError) as exc:
             raise StageError('Invalid or damaged ZIP bundle') from exc
         finally:

@@ -8,11 +8,13 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path
 import ctypes
 import hashlib
+import io
 import json
 import os
 import shutil
 import uuid
 import zipfile
+from types import SimpleNamespace
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from securesystemslib.signer import CryptoSigner
 from tuf.api.metadata import Metadata,Root,Targets,Snapshot,Timestamp,MetaFile,TargetFile
@@ -86,6 +88,26 @@ def publish(directory,bundle,build_receipt,output,version,now=None):
         return _publish(directory,bundle,build_receipt,output,version,now)
 
 
+def publish_in_memory(directory,archive,build_receipt,output,version,now=None):
+    """Verify bounded archive bytes and prepare metadata without a disk copy.
+
+    The caller must upload the exact archive as a separate immutable target
+    before making this metadata public. No payload or private key is uploaded.
+    """
+    stage.require(type(archive)is bytes and 0<len(archive)<=stage.MAX_ARCHIVE,
+                  'Bounded immutable archive bytes required')
+    with stage.owned_lock(stage._plain_chain(directory)):
+        return _publish(directory,None,build_receipt,output,version,now,memory=archive)
+
+
+class _MemoryArchive:
+    def __init__(self,data):self.data=data
+    def stat(self):return SimpleNamespace(st_size=len(self.data))
+    def open(self,mode):
+        stage.require(mode=='rb','Read-only archive required')
+        return io.BytesIO(self.data)
+
+
 def _publication_state(path,value):
     temporary=path.with_name('.publication-'+uuid.uuid4().hex+'.pending')
     try:
@@ -95,8 +117,8 @@ def _publication_state(path,value):
     finally:temporary.unlink(missing_ok=True)
 
 
-def _publish(directory,bundle,build_receipt,output,version,now=None):
-    directory=stage._plain_chain(directory);bundle=stage._plain_chain(bundle);output=stage._plain_chain(output)
+def _publish(directory,bundle,build_receipt,output,version,now=None,*,memory=None):
+    directory=stage._plain_chain(directory);bundle=stage._plain_chain(bundle)if memory is None else _MemoryArchive(memory);output=stage._plain_chain(output)
     stage.require(not output.exists()and output.parent.is_dir(),'New publication output required')
     stage.require(not output.is_relative_to(directory)and not directory.is_relative_to(output),'Public output overlaps private key store')
     stage.require(type(version)is int and 1<=version<=2**31-1,'Bounded positive metadata version required')
@@ -108,7 +130,7 @@ def _publish(directory,bundle,build_receipt,output,version,now=None):
     with bundle.open('rb')as stream:actual=hashlib.file_digest(stream,'sha256').hexdigest()
     stage.require(actual==build_receipt['archive_sha256'],'Publication bundle fingerprint differs')
     with bundle.open('rb')as stream:stage._zip_preflight(stream)
-    with zipfile.ZipFile(bundle)as archive:
+    with bundle.open('rb')as archive_stream,zipfile.ZipFile(archive_stream)as archive:
         entry=archive.getinfo('component-bundle.json');stage.require(entry.file_size<=stage.MAX_MANIFEST,'Bundle manifest exceeds bound')
         stage.require(stage._json(archive.read(entry))==manifest,'Publication receipt describes another archive')
     counter=directory/'publication-state.json'
@@ -135,10 +157,11 @@ def _publish(directory,bundle,build_receipt,output,version,now=None):
         for name,raw in [('1.root.json',root),('root.json',root),('targets.json',traw),(str(version)+'.targets.json',traw),('snapshot.json',sraw),(str(version)+'.snapshot.json',sraw),('timestamp.json',tsraw)]:
             (metadata/name).write_bytes(raw)
         (assets/(stage.sha(catalog)+'.components.json')).write_bytes(catalog)
-        shutil.copyfile(bundle,assets/(actual+'.'+bundle_name))
+        if memory is None:shutil.copyfile(bundle,assets/(actual+'.'+bundle_name))
         stage._publish_pending(pending,output,lambda:False)
     finally:
         if pending.exists():stage._remove_pending(pending,output.parent)
     _publication_state(counter,dict(reservation,state='prepared'))
     return dict(schema='PGN_SIGNED_PUBLICATION_RECEIPT_V1',root_sha256=store['root_sha256'],metadata_version=version,
-        bundle_sha256=actual,files=9,private_key_files_exported=False,uploaded=False)
+        bundle_sha256=actual,files=9 if memory is None else 8,archive_included=memory is None,
+        private_key_files_exported=False,uploaded=False)

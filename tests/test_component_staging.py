@@ -366,6 +366,34 @@ class ComponentStageTests(unittest.TestCase):
         with patch.object(stage.shutil,'disk_usage',return_value=usage):
             self.reject_clean('disk space')
 
+    def assert_interrupted_write_recovers(self, error, message):
+        self.make_zip()
+        original_open = Path.open
+        class Interrupted:
+            def __init__(self, file): self.file = file
+            def __getattr__(self, name): return getattr(self.file, name)
+            def write(self, data):
+                self.file.write(data[:7])
+                raise error
+        def open_file(path, mode='r', *args, **kwargs):
+            file = original_open(path, mode, *args, **kwargs)
+            if mode == 'xb' and path.name == 'controller.exe' and any(part.startswith('.pending-') for part in path.parts):
+                return Interrupted(file)
+            return file
+        with patch.object(Path, 'open', open_file):
+            self.reject_clean(message)
+        self.assertFalse(any(p.name.startswith('.pending-') for p in self.cache.iterdir()))
+        folder, plan = self.prepare()
+        stage.verify_stage(folder, plan['manifest_sha256'], self.context, self.context_hash)
+
+    def test_disk_fills_after_admission_retains_no_partial_stage_and_retries(self):
+        import errno
+        self.assert_interrupted_write_recovers(OSError(errno.ENOSPC, 'Injected disk full after first bytes'), 'Insufficient staging disk space')
+
+    def test_write_permission_loss_is_explicit_and_retryable(self):
+        import errno
+        self.assert_interrupted_write_recovers(PermissionError(errno.EACCES, 'Injected permission loss'), 'could not be written')
+
     def test_cache_initialization_cancel_removes_partial_marker(self):
         original_open=Path.open
         class InterruptedWriter:

@@ -36,6 +36,7 @@ public:
  void signAuditChallenge(const QString& address,const QString& challenge,std::function<void(QJsonValue,QString)>);
  void readLocalConnection(std::function<void(QJsonObject,QString)>);
  void readNetworkSnapshot(std::function<void(QJsonObject,QString)>);
+ void readPeerSnapshot(std::function<void(QJsonArray,QString)>);
  void readTicketPage(int offset,std::function<void(QJsonObject,QString)>);
  void readTicketDetails(const QString&,std::function<void(QJsonObject,QString)>);
  void readTicketAtlas(const QString& start,const QString& end,int bins,std::function<void(QJsonObject,QString)>);

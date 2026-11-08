@@ -335,6 +335,15 @@ void CoreRuntime::readLocalConnection(std::function<void(QJsonObject,QString)> c
   {"data_directory",profile_.dataDirectory},{"daemon_pid",QString::number(pid_)},
   {"daemon_birth",processBirth_},{"identity_generation",QString::number(identityGeneration_)}},{});
 }
+void CoreRuntime::readPeerSnapshot(std::function<void(QJsonArray,QString)> consume){
+ if(!connected_||!processAlive()){consume({},"Verified Core connection required");return;}
+ const auto owner=epoch();
+ rpc("getpeerinfo",{},[this,owner,consume=std::move(consume)](QJsonValue value,QString error){
+  if(!owner.matches(epoch())||!connected_||!processAlive()){consume({},"Core connection changed");return;}
+  if(!error.isEmpty()||!value.isArray()||value.toArray().size()>256){consume({},error.isEmpty()?QString("Invalid or oversized peer snapshot"):error);return;}
+  consume(value.toArray(),{});
+ });
+}
 void CoreRuntime::readNetworkSnapshot(std::function<void(QJsonObject,QString)> consume){
  if(!connected_||!processAlive()){consume({},"Verified Core connection required");return;}
  const auto owner=epoch();
