@@ -310,6 +310,15 @@ void MiningTicketProgress::present(const QJsonObject& frame){
 void MiningTicketProgress::paintEvent(QPaintEvent*){
  QPainter painter(this);painter.setRenderHint(QPainter::Antialiasing);
  const auto phase=frame_.value("phase").toString("Waiting for a ticket");const bool active=phase=="Searching",transition=phase=="Starting"||phase=="Stopping";
+ const auto role=frame_.value("work_role").toString();
+ const bool audit=role=="audit"||(role.isEmpty()&&frame_.value("audit_service").toObject().value("active_role")=="audit");
+ QString displayPhase=phase;
+ if(audit){
+  if(active)displayPhase="Auditing partition";
+  else if(phase=="Starting")displayPhase="Preparing audit";
+  else if(phase=="Report ready")displayPhase="Audit partition computed";
+  else if(phase=="Paused")displayPhase="Audit paused";
+ }
  const auto accent=transition?QColor("#ffbd69"):QColor("#69efc5");
  const double total=frame_.value("positions_total").toString().toDouble(),done=frame_.value("positions").toString().toDouble();
  const auto fraction=total>0?std::optional<double>(std::clamp(done/total,0.,1.)):std::nullopt;
@@ -344,19 +353,20 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
   painter.setPen(Qt::NoPen);painter.setBrush(accent);painter.drawEllipse(measured,2.,2.);
  }
  QFont titleFont("Consolas");titleFont.setPixelSize(15);titleFont.setBold(true);painter.setFont(titleFont);
- const QString title=frame_.contains("bits")?frame_.value("title").toString("Network ticket")+QString(" · %1 bits").arg(frame_.value("bits").toInt()):QString("Network work · awaiting assignment");
+ const QString title=frame_.contains("bits")?frame_.value("title").toString(audit?"Network audit":"Network ticket")+QString(" · %1 bits").arg(frame_.value("bits").toInt()):audit?QString("Network audit"):QString("Network work · awaiting assignment");
  const double rate=frame_.value("eta_rate").toDouble();const auto eta=active&&rate>0&&std::isfinite(rate)&&total>0?std::optional<double>(std::max(0.,total-done)/rate):std::nullopt;
- const QString status=phase+(fraction?QString(" · %1%").arg(100* *fraction,0,'f',2):QString{});
+ const QString status=displayPhase+(fraction?QString(" · ≈ %1%").arg(100* *fraction,0,'f',2):QString{});
  const int rightWidth=std::min(360,std::max(180,width()*35/100)),leftWidth=std::max(1,width()-rightWidth-56);
  painter.setPen(QColor("#dffff5"));painter.drawText(QRectF(18,98,leftWidth,21),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(title,Qt::ElideRight,leftWidth));
  painter.setPen(accent);painter.drawText(QRectF(width()-rightWidth-18,98,rightWidth,21),Qt::AlignRight|Qt::AlignVCenter,painter.fontMetrics().elidedText(status,Qt::ElideRight,rightWidth));
  QFont detailFont("Consolas");detailFont.setPixelSize(width()<800?11:13);painter.setFont(detailFont);painter.setPen(QColor("#b8ded8"));
- const QString positions=frame_.contains("positions_total")?positionFormats(frame_.value("positions_total").toString()).inlineText()+" positions":QString{};
+ const QString positions=frame_.contains("positions_total")?(audit?QString("Current audit partition · "):QString{})+positionFormats(frame_.value("positions_total").toString()).inlineText()+" positions":QString{};
  painter.drawText(QRectF(18,123,std::max(1,width()-200),19),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(positions,Qt::ElideRight,std::max(1,width()-200)));
  QString remaining;
- if(eta&&std::isfinite(*eta)&&*eta<365.*86400){const auto value=qint64(std::ceil(*eta));remaining=QString("ETA %1:%2:%3").arg(value/3600,2,10,QChar('0')).arg(value/60%60,2,10,QChar('0')).arg(value%60,2,10,QChar('0'));}
+ if(eta&&std::isfinite(*eta)&&*eta<365.*86400){const auto value=qint64(std::ceil(*eta));remaining=QString("ETA ≈ %1:%2:%3").arg(value/3600,2,10,QChar('0')).arg(value/60%60,2,10,QChar('0')).arg(value%60,2,10,QChar('0'));}
  titleFont.setPixelSize(14);painter.setFont(titleFont);painter.setPen(QColor("#effffb"));painter.drawText(QRectF(width()-182,122,164,21),Qt::AlignRight|Qt::AlignVCenter,remaining);
  setProperty("pgn_ticket_eta_seconds",eta?QVariant(*eta):QVariant{});setProperty("pgn_ticket_progress_fraction",fraction?QVariant(*fraction):QVariant{});
+ setProperty("pgn_ticket_work_presentation",QJsonObject{{"role",audit?"audit":role},{"phase",displayPhase},{"title",title},{"status",status},{"quantity",positions},{"remaining",remaining}});
  setProperty("pgn_ticket_animation_active",flow_.moving());setProperty("pgn_ticket_animation_phase",flow_.moving()?QVariant(std::fmod(clock_.elapsed()/1000.,1.)):QVariant{});
  if(overlay_)overlay_->synchronize();
 }

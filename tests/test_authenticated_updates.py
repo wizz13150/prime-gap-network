@@ -42,6 +42,40 @@ class UpdateTests(unittest.TestCase):
    with self.assertRaisesRegex(stage.StageError,'Insufficient download disk space'):client.prepare(['cpu'])
   self.assertEqual(self.sentinel.read_bytes(),b'PRIVATE SENTINEL NOT READ BY UPDATER')
   self.assertFalse(any(client.targets.glob('*-components.zip')))
+ def test_same_volume_download_admits_both_copies_before_fetch(self):
+  from types import SimpleNamespace
+  from unittest.mock import patch
+  client=self.client();updater=client._updater();updater.refresh();target=updater.get_targetinfo('components.zip')
+  free=16*1024*1024+target.length+target.length//2
+  with patch('shutil.disk_usage',return_value=SimpleNamespace(free=free)):
+   with self.assertRaisesRegex(stage.StageError,'Insufficient download disk space'):
+    client._download(updater,'components.zip',32*1024*1024)
+  self.assertFalse(any(client.targets.glob('*-components.zip')))
+ def test_failed_copy_never_publishes_a_partial_cache_target(self):
+  from unittest.mock import patch
+  import errno
+  client=self.client();updater=client._updater();updater.refresh()
+  def interrupted(target,filepath):
+   Path(filepath).write_bytes(b'INTERRUPTED TRANSFER')
+   raise OSError(errno.ENOSPC,'Injected destination-full failure')
+  with patch.object(updater,'download_target',side_effect=interrupted):
+   with self.assertRaisesRegex(stage.StageError,'Insufficient download disk space'):
+    client._download(updater,'components.zip',32*1024*1024)
+  self.assertFalse(any(client.targets.glob('*-components.zip')))
+  self.assertFalse(any(client.targets.glob('.pending-*')))
+  result=client.prepare(['cpu']);self.assertTrue(result['publisher_authenticated'])
+ def test_permission_failure_retains_no_partial_download(self):
+  from unittest.mock import patch
+  import errno
+  client=self.client();updater=client._updater();updater.refresh()
+  def refused(target,filepath):
+   Path(filepath).write_bytes(b'PARTIAL')
+   raise PermissionError(errno.EACCES,'Injected permission failure')
+  with patch.object(updater,'download_target',side_effect=refused):
+   with self.assertRaisesRegex(stage.StageError,'could not be written'):
+    client._download(updater,'components.zip',32*1024*1024)
+  self.assertFalse(any(client.targets.glob('*-components.zip')))
+  self.assertFalse(any(client.targets.glob('.pending-*')))
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.install=self.root/'installation';self.install.mkdir();self.sentinel=self.install/'wallet.dat';self.sentinel.write_bytes(b'PRIVATE SENTINEL NOT READ BY UPDATER')
   c=dict(schema='PGN_COMPONENT_STAGE_CONTEXT_V1',network='testnet',genesis_hash='5'*64,platform='windows-x86_64',compatibility_set='qa.cohort',minimum_sequence=1,installed=[],protected_roots=[str(self.install)])

@@ -5,6 +5,7 @@ or accesses wallet files. Activation remains a separate lifecycle transaction.
 The caller supplies the build-pinned bootstrap root, not a downloaded trust key.
 """
 import hashlib
+import errno
 import json
 import os
 import uuid
@@ -129,12 +130,39 @@ class AuthenticatedUpdates:
                 self.cache_repairs.append(name)
         if not destination.exists():
             import shutil,tempfile
-            for folder in (self.targets,Path(tempfile.gettempdir())):
-                stage.require(shutil.disk_usage(folder).free>=target.length+16*1024*1024,'Insufficient download disk space; free space and retry')
+            # TUF first downloads into its temporary volume, verifies that
+            # file, then copies it into the cache. Two folders on one volume
+            # therefore consume two target lengths at the peak, not one.
+            volumes = {}
+            for folder in (self.targets, Path(tempfile.gettempdir())):
+                key = folder.stat().st_dev
+                entry = volumes.setdefault(key, [0, shutil.disk_usage(folder).free])
+                entry[0] += target.length
+                entry[1] = min(entry[1], shutil.disk_usage(folder).free)
+            for required, free in volumes.values():
+                stage.require(free >= required + 16*1024*1024,
+                              'Insufficient download disk space; free space and retry')
             if name.endswith('.zip'):progress.report('download',completed=0,total=target.length,force=True)
             self.fetcher.target_length=target.length if name.endswith('.zip')else 0
-            try:updater.download_target(target, filepath=str(destination))
-            finally:self.fetcher.target_length=0
+            pending = self.targets / ('.pending-download-' + uuid.uuid4().hex)
+            stage._plain_chain(pending)
+            try:
+                updater.download_target(target, filepath=str(pending))
+                stage._plain_chain(pending)
+                with pending.open('rb') as stream:
+                    target.verify_length_and_hashes(stream)
+                # Reuse the existing atomic, no-copy publication path. This
+                # also works on update volumes without hardlink support.
+                stage._publish_pending(pending, destination, lambda: False)
+            except OSError as error:
+                if error.errno in (errno.ENOSPC, getattr(errno, 'EDQUOT', -1)) or getattr(error, 'winerror', None) in (39,112):
+                    raise stage.StageError('Insufficient download disk space; free space and retry') from error
+                raise stage.StageError('Update download could not be written; check free space and folder access') from error
+            finally:
+                self.fetcher.target_length=0
+                if pending.exists():
+                    stage._plain_chain(pending)
+                    pending.unlink()
         stage._plain_chain(destination)
         with destination.open('rb') as stream:
             target.verify_length_and_hashes(stream)
