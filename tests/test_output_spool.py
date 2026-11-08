@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import sys
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/engine/runtime_host/pgn_output_spool.py"
@@ -16,6 +17,28 @@ TOKEN = "a" * 32
 
 
 class SpoolContracts(unittest.TestCase):
+    def _check_transient_ack_read(self, error):
+        writer = self.writer()
+        for line in self.lines(4):
+            writer.append(line)
+        writer.finish()
+        spool.acknowledge(self.root, TOKEN, 64)
+        before_index = (self.root / "index.json").read_bytes()
+        before_logs = {p.name: p.read_bytes() for p in self.root.glob("*.log")}
+        with patch.object(spool, "_json", side_effect=error):
+            writer.collect()
+        self.assertEqual((self.root / "index.json").read_bytes(), before_index)
+        self.assertEqual({p.name: p.read_bytes() for p in self.root.glob("*.log")}, before_logs)
+        writer.collect()
+        self.assertEqual(spool._json(self.root / "index.json")["base_offset"], 64)
+        self.assertFalse((self.root / spool._name(0)).exists())
+
+    def test_ack_sharing_violation_defers_collection_without_losing_bytes(self):
+        self._check_transient_ack_read(PermissionError("atomic ACK replacement"))
+
+    def test_ack_disappearing_during_collection_preserves_bytes(self):
+        self._check_transient_ack_read(FileNotFoundError("atomic ACK replacement"))
+
     def test_done_observation_rereads_last_tail(self):
         writer = self.writer()
         done = False

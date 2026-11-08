@@ -281,7 +281,13 @@ class Writer:
         ack = self.root / "ack.json"
         if not ack.exists():
             return
-        value = _json(ack)
+        try:
+            value = _json(ack)
+        except (PermissionError, FileNotFoundError):
+            # Windows can briefly deny a read while the consumer atomically
+            # replaces this hint. Keep every unacknowledged byte and collect
+            # on the next pass; no wait belongs in the GPU output path.
+            return
         if value.get("schema") != SCHEMA or value.get("token") != self.token:
             raise SpoolError("Output acknowledgement identity mismatch")
         end = value.get("end_offset")
