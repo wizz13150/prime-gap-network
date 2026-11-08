@@ -1,4 +1,5 @@
 #include "ui/mining_ticket_progress.h"
+#include "ui/mining_cycle_progress.h"
 #include "ui/gap_flow_motion.h"
 #include "ui/position_formats.h"
 #include "ui/ticket_flow_evidence.h"
@@ -278,7 +279,7 @@ private:
  QPointer<MiningTicketProgress> rail_;QVector<Port> ports_;QHash<QRgb,QImage> glows_;
 };
 MiningTicketProgress::MiningTicketProgress(QWidget* parent):QWidget(parent){
- setObjectName("pgn-ticket-progress-rail");setFixedHeight(148);setMouseTracking(true);clock_.start();timer_.setInterval(33);
+ setObjectName("pgn-ticket-progress-rail");setFixedHeight(120);setMouseTracking(true);clock_.start();timer_.setInterval(33);
  connect(&timer_,&QTimer::timeout,this,[this]{if(!isVisible())return;const bool wasMoving=flow_.moving();flow_.expire(clock_.elapsed());pollLandings();if(results_)flow_.setVisibleBest(results_->property("pgn_visible_best").toJsonObject(),clock_.elapsed());setProperty("pgn_ticket_collection_size",flow_.collected().size());setProperty("pgn_ticket_collection_departing",flow_.departing().size());
   if(wasMoving!=flow_.moving()||flow_.moving()||workMarksActive(clock_.elapsed())||!flow_.events().isEmpty()||!flow_.collected().isEmpty()||!flow_.departing().isEmpty()||frame_.value("phase")=="Starting"||frame_.value("phase")=="Stopping"){
    update();ensureOverlay();if(overlay_){overlay_->synchronize();overlay_->update();}
@@ -302,6 +303,7 @@ void MiningTicketProgress::present(const QJsonObject& frame){
  };
  if(frame_.value("ticket_id")!=frame.value("ticket_id"))remember(frame_);
  if(frame.value("phase")=="Report ready")remember(frame);
+ cycleHistory_.observe(frame);
  frame_=frame;flow_.observe(frame,canvas_?canvas_->property("pgn_managed_source_device").toString():QString{},clock_.elapsed());
  setToolTip({});
  setProperty("pgn_ticket_flow_received",QVariant::fromValue(flow_.received()));setProperty("pgn_ticket_flow_coalesced",QVariant::fromValue(flow_.coalesced()));
@@ -321,7 +323,8 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  }
  const auto accent=transition?QColor("#ffbd69"):QColor("#69efc5");
  const double total=frame_.value("positions_total").toString().toDouble(),done=frame_.value("positions").toString().toDouble();
- const auto fraction=total>0?std::optional<double>(std::clamp(done/total,0.,1.)):std::nullopt;
+ const auto cycle=miningCycleProgress(frame_,cycleHistory_.audits());const auto fraction=cycle.known?std::optional<double>(cycle.fraction):total>0?std::optional<double>(std::clamp(done/total,0.,1.)):std::nullopt;
+ if(cycle.known)displayPhase=cycle.phase;
  const auto field=bar();const double seconds=flow_.moving()?clock_.elapsed()/1000.:0.;
  double pressure=0.;
  for(const auto& event:flow_.events()){
@@ -347,24 +350,34 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  // above is event presentation and can never advance this measurement.
  const double trackY=84.;const QPointF trackStart(field.left(),trackY),trackEnd(field.right(),trackY);
  painter.setPen(QPen(QColor("#17383e"),1));painter.drawLine(trackStart,trackEnd);
+ if(cycle.known){double offset=0;int auditIndex=0;for(const auto& slice:cycle.slices){const auto color=slice.role=="search"?QColor("#69efc5"):slice.role=="catch_up"?QColor("#f0b761"):auditIndex++==0?QColor("#b791ee"):QColor("#7aa9e8");const double left=std::lerp(field.left(),field.right(),offset),right=std::lerp(field.left(),field.right(),offset+slice.weight);const QRectF background(left,trackY-3,std::max(0.,right-left-2),6);if(slice.skipped){painter.fillRect(background,QBrush(faded(color,160),Qt::BDiagPattern));painter.setPen(QPen(faded(color,180),.8));painter.drawRect(background);}else{painter.fillRect(background,faded(color,45));if(slice.fraction>0)painter.fillRect(QRectF(left,trackY-3,background.width()*slice.fraction,6),faded(color,250));}offset+=slice.weight;}setProperty("pgn_ticket_cycle_fraction",cycle.fraction);setProperty("pgn_ticket_cycle_eta_seconds",cycle.cycleEta?QVariant(*cycle.cycleEta):QVariant{});}else setProperty("pgn_ticket_cycle_fraction",QVariant{});
  if(fraction){const QPointF measured(std::lerp(trackStart.x(),trackEnd.x(),*fraction),trackY);
-  painter.setPen(QPen(faded(accent,70),4));painter.drawLine(trackStart,measured);
-  painter.setPen(QPen(accent,1.2));painter.drawLine(trackStart,measured);
+  if(!cycle.known){painter.setPen(QPen(faded(accent,70),4));painter.drawLine(trackStart,measured);painter.setPen(QPen(accent,1.2));painter.drawLine(trackStart,measured);}
   painter.setPen(Qt::NoPen);painter.setBrush(accent);painter.drawEllipse(measured,2.,2.);
  }
- QFont titleFont("Consolas");titleFont.setPixelSize(15);titleFont.setBold(true);painter.setFont(titleFont);
- const QString title=frame_.contains("bits")?frame_.value("title").toString(audit?"Network audit":"Network ticket")+QString(" · %1 bits").arg(frame_.value("bits").toInt()):audit?QString("Network audit"):QString("Network work · awaiting assignment");
+ QFont titleFont("Segoe UI");titleFont.setPixelSize(13);titleFont.setWeight(QFont::DemiBold);painter.setFont(titleFont);
+ const QString title=frame_.contains("bits")?(cycle.known?cycle.title:frame_.value("title").toString(audit?"Network audit":"Network ticket"))+QString(" · %1 bits").arg(frame_.value("bits").toInt()):audit?QString("Network audit"):QString("Network work · awaiting assignment");
  const double rate=frame_.value("eta_rate").toDouble();const auto eta=active&&rate>0&&std::isfinite(rate)&&total>0?std::optional<double>(std::max(0.,total-done)/rate):std::nullopt;
  const QString status=displayPhase+(fraction?QString(" · ≈ %1%").arg(100* *fraction,0,'f',2):QString{});
- const int rightWidth=std::min(360,std::max(180,width()*35/100)),leftWidth=std::max(1,width()-rightWidth-56);
- painter.setPen(QColor("#dffff5"));painter.drawText(QRectF(18,98,leftWidth,21),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(title,Qt::ElideRight,leftWidth));
- painter.setPen(accent);painter.drawText(QRectF(width()-rightWidth-18,98,rightWidth,21),Qt::AlignRight|Qt::AlignVCenter,painter.fontMetrics().elidedText(status,Qt::ElideRight,rightWidth));
- QFont detailFont("Consolas");detailFont.setPixelSize(width()<800?11:13);painter.setFont(detailFont);painter.setPen(QColor("#b8ded8"));
  const QString positions=frame_.contains("positions_total")?(audit?QString("Complete audit · "):QString{})+positionFormats(frame_.value("positions_total").toString()).inlineText()+" positions":QString{};
- painter.drawText(QRectF(18,123,std::max(1,width()-200),19),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(positions,Qt::ElideRight,std::max(1,width()-200)));
  QString remaining;
  if(eta&&std::isfinite(*eta)&&*eta<365.*86400){const auto value=qint64(std::ceil(*eta));remaining=QString("ETA ≈ %1:%2:%3").arg(value/3600,2,10,QChar('0')).arg(value/60%60,2,10,QChar('0')).arg(value%60,2,10,QChar('0'));}
- titleFont.setPixelSize(14);painter.setFont(titleFont);painter.setPen(QColor("#effffb"));painter.drawText(QRectF(width()-182,122,164,21),Qt::AlignRight|Qt::AlignVCenter,remaining);
+ if(cycle.known){const auto format=[](std::optional<double> seconds){if(!seconds||!std::isfinite(*seconds)||*seconds>=365.*86400)return QString("—");const auto n=qint64(std::ceil(*seconds));return QString("≈ %1:%2:%3").arg(n/3600,2,10,QChar('0')).arg(n/60%60,2,10,QChar('0')).arg(n%60,2,10,QChar('0'));};remaining="Cycle ETA "+format(cycle.cycleEta)+" · "+(audit?QString("audit "):QString("search "))+format(cycle.taskEta);}
+ // One measured row keeps the tables close to the live track. Reserve the
+ // changing state/ETA first, then elide metadata instead of resizing fonts.
+ constexpr double rowY=94.,rowHeight=22.,gap=16.;
+ const int available=std::max(1,width()-36);
+ QFont metricFont("Consolas");metricFont.setPixelSize(12);
+ const QFontMetrics metricMetrics(metricFont);
+ const QString activity=status+(remaining.isEmpty()?QString{}:QString("  ·  ")+remaining);
+ const int activityWidth=std::min(available*3/5,metricMetrics.horizontalAdvance(activity)+2);
+ const int titleWidth=std::min(std::max(1,available-activityWidth-int(gap)),painter.fontMetrics().horizontalAdvance(title)+2);
+ painter.setPen(QColor("#e1f6f0"));painter.drawText(QRectF(18,rowY,titleWidth,rowHeight),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(title,Qt::ElideRight,titleWidth));
+ QFont detailFont("Segoe UI");detailFont.setPixelSize(12);painter.setFont(detailFont);painter.setPen(QColor("#9cbdbb"));
+ const int detailLeft=18+titleWidth+int(gap),detailWidth=std::max(0,width()-18-activityWidth-int(gap)-detailLeft);
+ if(detailWidth>0)painter.drawText(QRectF(detailLeft,rowY,detailWidth,rowHeight),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(positions,Qt::ElideRight,detailWidth));
+ painter.setFont(metricFont);painter.setPen(accent);painter.drawText(QRectF(width()-18-activityWidth,rowY,activityWidth,rowHeight),Qt::AlignRight|Qt::AlignVCenter,metricMetrics.elidedText(activity,Qt::ElideRight,activityWidth));
+ setProperty("pgn_ticket_header_rows",1);setProperty("pgn_ticket_header_height",120);
  setProperty("pgn_ticket_eta_seconds",eta?QVariant(*eta):QVariant{});setProperty("pgn_ticket_progress_fraction",fraction?QVariant(*fraction):QVariant{});
  setProperty("pgn_ticket_work_presentation",QJsonObject{{"role",audit?"audit":role},{"phase",displayPhase},{"title",title},{"status",status},{"quantity",positions},{"remaining",remaining}});
  setProperty("pgn_ticket_animation_active",flow_.moving());setProperty("pgn_ticket_animation_phase",flow_.moving()?QVariant(std::fmod(clock_.elapsed()/1000.,1.)):QVariant{});

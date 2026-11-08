@@ -13,7 +13,26 @@ int main(int argc,char** argv){
  if(argc>1&&QString::fromLocal8Bit(argv[1])=="--process-failure"){
   std::cerr<<"Traceback: C:/Users/example/private-folder/engine.py\nModuleNotFoundError: missing_runtime_module\npassword=INERT-SENSITIVE\n";return 7;
  }
- QApplication app(argc,argv);if(argc!=2)return 2;QTemporaryDir folder;if(!folder.isValid())return 3;
+ QApplication app(argc,argv);
+ if(argc==5&&QString::fromLocal8Bit(argv[1])=="--packaged-startup-probe"){
+  const QString host=QString::fromLocal8Bit(argv[2]),bundle=QString::fromLocal8Bit(argv[3]),output=QString::fromLocal8Bit(argv[4]);
+  QTemporaryDir state;if(!state.isValid())return 20;QWidget canvas;QProcess process;
+  pgn::ui::MiningProcessDiagnostics diagnostic(&canvas,&process,"GPU-ISOLATED-FAILURE");QByteArray pending;
+  QObject::connect(&process,&QProcess::readyReadStandardOutput,&process,[&]{pending+=process.readAllStandardOutput();while(pending.contains('\n')){const int end=pending.indexOf('\n');const auto packet=QJsonDocument::fromJson(pending.left(end)).object();pending.remove(0,end+1);diagnostic.packet(packet);}});
+  QObject::connect(&process,&QProcess::readyReadStandardError,&process,[&]{diagnostic.standardError(process.readAllStandardError());});
+  process.setProgram(host);process.setArguments({"--network","--bundle",bundle,"--state-root",state.path(),"--gpu","GPU-11111111-1111-1111-1111-111111111111","--architecture","86","--rpc-port","1","--cookie",state.filePath("absent-core-cookie"),"--genesis",QString(64,'a'),"--wallet","diagnostic-fixture","--reward","0014"+QString(40,'1')});
+  diagnostic.intent(true);diagnostic.launching("network");QElapsedTimer elapsed;elapsed.start();process.start();
+  while((process.state()!=QProcess::NotRunning||!canvas.property("pgn_worker_process_state").toJsonObject().contains("exit_code"))&&elapsed.elapsed()<15000){app.processEvents();QThread::msleep(2);}
+  const auto captured=pgn::ui::diagnosticMiningStartup(&canvas),worker=captured["process"].toObject(),fault=worker["failure_context"].toObject();
+  if(worker["exit_code"]!=1||fault["schema"]!="PGN_RUNTIME_FAILURE_V1"||fault["step"]!="verifying_core"||!fault["causes"].toArray().first().toObject()["resource"].toString().endsWith("/absent-core-cookie"))return 21;
+  // Begin recording after the failed process is gone, as the tester may do.
+  auto* view=pgn::ui::createDiagnosticCaptureView(host,[captured]{return QJsonObject{{"mining_control",captured}};});
+  view->findChild<QPushButton*>("pgn-diagnostics-start")->click();view->findChild<QPushButton*>("pgn-diagnostics-stop")->click();pgn::ui::saveDiagnosticCapture(view,output);
+  QElapsedTimer wait;wait.start();while(!view->property("pgn_capture_saved").isValid()&&wait.elapsed()<15000){app.processEvents();QThread::msleep(3);}
+  const bool saved=view->property("pgn_capture_saved").toBool();delete view;if(!saved)return 22;
+  QFile proof(output+".json");if(!proof.open(QIODevice::WriteOnly))return 23;proof.write(QJsonDocument(QJsonObject{{"PASS",true},{"actual_packaged_network_startup",true},{"capture_started_after_process_exit",true},{"GPU_started",false},{"elapsed_to_exit_ms",elapsed.elapsed()},{"captured",captured}}).toJson());return 0;
+ }
+ if(argc!=2)return 2;QTemporaryDir folder;if(!folder.isValid())return 3;
  QWidget canvas;QLabel startup;
  pgn::ui::presentMiningStartup(&canvas,&startup,"prepare_failed","Missing module: C:/Users/example/private-folder/worker.exe");
  canvas.setProperty("pgn_local_gpu_profiles",0);canvas.setProperty("pgn_worker_stream_error","password=INERT-SENSITIVE");canvas.setProperty("private_key","INERT-NOT-EXPORTED");

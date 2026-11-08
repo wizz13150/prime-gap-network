@@ -10,8 +10,8 @@
 #include <functional>
 
 namespace pgn::ui {
-// React to work-area/DPI/monitor changes, not just the first show. No scaling,
-// scrolling or mining control: retain native logical-pixel content/layout.
+// Recover from work-area/DPI/monitor changes. Ordinary user moves and resizes
+// are not recovery events: a window may deliberately straddle a screen edge.
 class WindowScreenFit final : public QObject {
     QWidget& window_;
     std::function<int()> chrome_;
@@ -30,7 +30,7 @@ class WindowScreenFit final : public QObject {
     }
     bool eventFilter(QObject* object,QEvent* event) override {
         if(object==&window_&&!fitting_&&
-           (event->type()==QEvent::Show||event->type()==QEvent::Resize||event->type()==QEvent::Move||
+           (event->type()==QEvent::Show||
             event->type()==QEvent::WindowStateChange||event->type()==QEvent::WinIdChange)){
             bindWindow();requestFit();
         }

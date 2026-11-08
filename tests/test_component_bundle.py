@@ -51,4 +51,12 @@ class ComponentBundleTests(unittest.TestCase):
     stage._code_path(f'payload/gpu/EngineRuntime/bin/prime-gap-worker-sm{arch}-k{profile}.exe.module.json','gpu')
   for name in ('prime-gap-worker-sm86-k128.exe.module.json','prime-gap-worker-sm99-k64.exe.module.json','private.json'):
    with self.assertRaises(stage.StageError):stage._code_path('payload/gpu/EngineRuntime/bin/'+name,'gpu')
+ def test_managed_network_host_requires_its_matching_bootstrap(self):
+  context=json.loads(self.context.read_bytes());host=builder.PRIMARY['gpu'];paths={host}
+  with self.assertRaisesRegex(ValueError,'missing bootstrap.json'):builder.validate_network_bootstrap(self.code,paths,context)
+  name='EngineRuntime/network/bootstrap.json';file=self.code/name;file.parent.mkdir(parents=True);paths.add(name)
+  file.write_text(json.dumps(dict(schema='PGN_TESTNET_BOOTSTRAP_V1',genesis='6'*64)))
+  with self.assertRaisesRegex(ValueError,'different network'):builder.validate_network_bootstrap(self.code,paths,context)
+  file.write_text(json.dumps(dict(schema='PGN_TESTNET_BOOTSTRAP_V1',genesis=context['genesis_hash'])))
+  builder.validate_network_bootstrap(self.code,paths,context)
 if __name__=='__main__':unittest.main()

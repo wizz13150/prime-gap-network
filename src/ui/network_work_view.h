@@ -27,6 +27,7 @@
 #include <QSignalBlocker>
 #include <QScrollBar>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QResizeEvent>
 #include <QHash>
 #include <functional>
@@ -40,7 +41,7 @@ public:
     std::function<void()> onOpenAudits;
     std::function<void()> onAtlasProjectionChanged;
 private:
-    PageReader pageReader_;DetailReader detailReader_;QTableWidget* table_;QTreeWidget* details_;QLabel *status_,*summary_;QLineEdit* search_;QComboBox* filter_;QPushButton *previous_,*next_,*openBlock_,*copy_;QTimer timer_;QJsonObject snapshot_,selected_;QString selectedId_,block_;int offset_{},renderedOffset_{-1};bool busy_{};QHash<QString,QJsonObject> detailCache_;
+    PageReader pageReader_;DetailReader detailReader_;QTableWidget* table_;QTreeWidget* details_;QLabel *status_,*summary_;QStackedWidget* statusSlot_{};QLineEdit* search_;QComboBox* filter_;QPushButton *previous_,*next_,*openBlock_,*copy_;QTimer timer_;QJsonObject snapshot_,selected_;QString selectedId_,block_;int offset_{},renderedOffset_{-1};bool busy_{};QHash<QString,QJsonObject> detailCache_;
     QStringList prefetch_;bool prefetchBusy_{};quint64 prefetchGeneration_{};
     TicketAtlasView* atlas_{};
     QSplitter *content_{},*workspace_{};
@@ -49,20 +50,20 @@ private:
         rowLayoutPending_=false;
         if(!table_||!table_->rowCount())return;
         const auto metrics=table_->fontMetrics();
-        int intervalWidth=metrics.horizontalAdvance(table_->horizontalHeaderItem(1)->text())+20;
+        int intervalWidth=metrics.horizontalAdvance(table_->horizontalHeaderItem(1)->text())+12;
         int inlineWidth=0,wrappedWidth=0,otherWidth=0;
         for(int col:{0,3,4,5}){
-            int width=metrics.horizontalAdvance(table_->horizontalHeaderItem(col)->text())+20;
+            int width=metrics.horizontalAdvance(table_->horizontalHeaderItem(col)->text())+12;
             for(int row=0;row<table_->rowCount();++row)
                 width=std::max(width,table_->sizeHintForIndex(table_->model()->index(row,col)).width()+2);
-            table_->setColumnWidth(col,width);otherWidth+=width;
+            table_->setColumnWidth(col,width);otherWidth+=table_->columnWidth(col);
         }
         for(int row=0;row<table_->rowCount();++row){
             intervalWidth=std::max(intervalWidth,table_->sizeHintForIndex(table_->model()->index(row,1)).width()+2);
             const auto* item=table_->item(row,2);const auto parts=item->data(Qt::UserRole+1).toStringList();
             if(parts.size()!=3)continue;
             int currentTextWidth=0;for(const auto& line:item->text().split('\n'))currentTextWidth=std::max(currentTextWidth,metrics.horizontalAdvance(line));
-            const int chrome=std::max(16,table_->sizeHintForIndex(table_->model()->index(row,2)).width()-currentTextWidth+2);
+            const int chrome=std::max(10,table_->sizeHintForIndex(table_->model()->index(row,2)).width()-currentTextWidth+2);
             inlineWidth=std::max(inlineWidth,metrics.horizontalAdvance(parts.join(" · "))+chrome);
             wrappedWidth=std::max(wrappedWidth,std::max(metrics.horizontalAdvance(parts[0]+" · "+parts[1]),metrics.horizontalAdvance(parts[2]))+chrome);
         }
@@ -156,10 +157,12 @@ protected:
     }
     void resizeEvent(QResizeEvent* event)override{QWidget::resizeEvent(event);if(!content_)return;const auto orientation=width()>=1050?Qt::Horizontal:Qt::Vertical;if(content_->orientation()!=orientation){content_->setOrientation(orientation);content_->setSizes(orientation==Qt::Horizontal?QList<int>{850,420}:QList<int>{320,220});}}
     void showEvent(QShowEvent* event)override{QWidget::showEvent(event);QTimer::singleShot(0,this,[this]{refresh();});}
-void presentStatus(const QString& text,bool error=false){status_->setText(text);status_->setVisible(error);status_->setToolTip(text);if(table_)table_->setToolTip(text);}
+void presentStatus(const QString& text,bool error=false){status_->setText(status_->fontMetrics().elidedText(text,Qt::ElideRight,statusSlot_->width()));status_->setToolTip(text);statusSlot_->setCurrentWidget(summary_);if(table_)table_->setToolTip(text);}
 public:
+    void prepareStartupMap(){if(atlas_)atlas_->prepareStartup();}
     QJsonObject auditProjection(const QJsonArray& audits,QWidget* surface)const{return atlas_?atlas_->auditProjection(audits,surface):QJsonObject{};}
-    void atlasCommand(const QJsonObject& command){if(atlas_)atlas_->embeddedCommand(command);}
+    void resetAuditLayout(){if(!workspace_||workspace_->count()<2)return;QList<int> sizes;for(int i=0;i<workspace_->count();++i)sizes.append(0);sizes[0]=290;sizes.last()=std::max(1,workspace_->height()-290-(workspace_->count()-1)*workspace_->handleWidth());workspace_->setSizes(sizes);}
+    void atlasCommand(const QJsonObject& command){if(command.value("action")=="reset_layout"){resetAuditLayout();return;}if(atlas_)atlas_->embeddedCommand(command);}
     void setAuditAnimation(QWidget* view){if(!view)return;workspace_->insertWidget(0,view);
 #ifdef Q_OS_WIN
         if(atlas_)atlas_->embed();workspace_->setStretchFactor(0,0);workspace_->setStretchFactor(workspace_->count()-1,1);workspace_->setSizes({290,0,600});
@@ -172,7 +175,7 @@ public:
         workspace_=new QSplitter(Qt::Vertical);workspace_->setObjectName("pgn-network-map-split");workspace_->setChildrenCollapsible(false);workspace_->setHandleWidth(6);
         if(atlas){atlas_=new TicketAtlasView(std::move(atlas));atlas_->inspect=[this](const QString& id){inspect(id);};atlas_->onViewportChanged=[this]{if(onAtlasProjectionChanged)onAtlasProjectionChanged();};workspace_->addWidget(atlas_);}
         content_=new QSplitter(Qt::Horizontal);content_->setObjectName("pgn-network-evidence-split");content_->setChildrenCollapsible(false);content_->setHandleWidth(6);workspace_->addWidget(content_);box->addWidget(workspace_,1);
-        table_=new QTableWidget(0,6);table_->setObjectName("pgn-network-ticket-table");table_->setHorizontalHeaderLabels({"Ticket","Owned interval","Positions","Stage","Issued","Compute lease"});table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);table_->verticalHeader()->setMinimumSectionSize(22);table_->verticalHeader()->hide();table_->setWordWrap(false);table_->viewport()->installEventFilter(this);table_->setSelectionBehavior(QAbstractItemView::SelectRows);table_->setSelectionMode(QAbstractItemView::SingleSelection);table_->setStyleSheet("QTableWidget#pgn-network-ticket-table{font:12px 'Segoe UI';selection-background-color:#245f68;selection-color:#ffffff;} QTableWidget#pgn-network-ticket-table::item{padding:0px 6px;} QTableWidget#pgn-network-ticket-table::item:selected,QTableWidget#pgn-network-ticket-table::item:selected:!active{background-color:#245f68;color:#ffffff;border-top:1px solid #5be3cc;border-bottom:1px solid #5be3cc;}");table_->setEditTriggers(QAbstractItemView::NoEditTriggers);table_->setMinimumSize(300,160);auto* tablePanel=new QWidget;tablePanel->setObjectName("pgn-network-table-panel");auto* tableBox=new QVBoxLayout(tablePanel);tableBox->setContentsMargins(0,0,0,0);tableBox->setSpacing(4);top->addWidget(summary_);tableBox->addLayout(top);tableBox->addWidget(status_);tableBox->addWidget(table_,1);content_->addWidget(tablePanel);
+        table_=new QTableWidget(0,6);table_->setObjectName("pgn-network-ticket-table");table_->setHorizontalHeaderLabels({"Ticket","Owned interval","Positions","Stage","Issued","Compute lease"});table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);table_->verticalHeader()->setMinimumSectionSize(22);table_->verticalHeader()->hide();table_->setWordWrap(false);table_->viewport()->installEventFilter(this);table_->setSelectionBehavior(QAbstractItemView::SelectRows);table_->setSelectionMode(QAbstractItemView::SingleSelection);table_->setStyleSheet("QTableWidget#pgn-network-ticket-table{font:12px 'Segoe UI';selection-background-color:#245f68;selection-color:#ffffff;} QTableWidget#pgn-network-ticket-table::item{padding:0px 3px;} QTableWidget#pgn-network-ticket-table::item:selected,QTableWidget#pgn-network-ticket-table::item:selected:!active{background-color:#245f68;color:#ffffff;border-top:1px solid #5be3cc;border-bottom:1px solid #5be3cc;}");table_->setEditTriggers(QAbstractItemView::NoEditTriggers);table_->setMinimumSize(300,256);auto* tablePanel=new QWidget;tablePanel->setObjectName("pgn-network-table-panel");auto* tableBox=new QVBoxLayout(tablePanel);tableBox->setContentsMargins(0,0,0,0);tableBox->setSpacing(4);statusSlot_=new QStackedWidget;statusSlot_->setObjectName("pgn-network-status-slot");statusSlot_->setFixedSize(190,30);status_->setObjectName("pgn-network-work-status");status_->setWordWrap(false);statusSlot_->addWidget(summary_);statusSlot_->addWidget(status_);top->addWidget(statusSlot_);tableBox->addLayout(top);auto* legend=new QLabel(R"LEGEND(<span style="color:#70badb">●</span> Assigned &nbsp; <span style="color:#e6bd64">●</span> Awaiting audits &nbsp; <span style="color:#ba9aee">●</span> Auditing &nbsp; <span style="color:#63dfb3">●</span> Passed &nbsp; <span style="color:#f37b7e">●</span> Failed)LEGEND");legend->setObjectName("pgn-network-state-legend");legend->setTextFormat(Qt::RichText);legend->setWordWrap(false);legend->setStyleSheet("font:11px 'Segoe UI';color:#a9c6ca;");legend->setMaximumHeight(17);tableBox->addWidget(legend);tableBox->addWidget(table_,1);content_->addWidget(tablePanel);
         details_=new QTreeWidget;details_->setObjectName("pgn-network-ticket-evidence");details_->setHeaderLabels({"Evidence","Value"});details_->setColumnWidth(0,175);details_->setWordWrap(true);details_->setMinimumSize(280,140);details_->setStyleSheet("QTreeWidget{font:12px 'Segoe UI';} QTreeWidget::item{padding:3px 1px;}");content_->addWidget(details_);content_->setStretchFactor(0,2);content_->setStretchFactor(1,1);content_->setSizes({850,420});if(atlas_){workspace_->setStretchFactor(0,0);workspace_->setStretchFactor(1,1);workspace_->setSizes({200,650});}
         auto* actions=new QHBoxLayout;previous_=new QPushButton("Previous page");next_=new QPushButton("Next page");openBlock_=new QPushButton("Open block");openBlock_->setToolTip("Open the selected report's confirming block");copy_=new QPushButton("Copy evidence");auto* audits=new QPushButton("Audit explorer");for(auto* b:{previous_,next_,openBlock_,copy_,audits})actions->addWidget(b);box->addLayout(actions);previous_->setEnabled(false);next_->setEnabled(false);openBlock_->setEnabled(false);copy_->setEnabled(false);
         connect(table_->verticalScrollBar(),&QScrollBar::valueChanged,this,[this]{prefetchVisible();});

@@ -16,6 +16,7 @@ int main(int argc,char** argv){
  };
  QJsonObject frame{{"phase","Searching"},{"title","Ticket 42"},{"bits",68},{"positions","1000000000000"},{"positions_total","2000000000000"},{"eta_rate",10000000000.}};
  auto view=render(frame);
+ require(rail.height()==120&&rail.property("pgn_ticket_header_rows").toInt()==1,"Compact header no longer frees the second metadata row");
  require(view.value("phase")=="Searching"&&view.value("remaining").toString().startsWith("ETA ≈ "),"Search phase or estimated ETA changed scope");
  frame.insert("work_role","audit");frame.insert("title","Ticket 42 · Audit 1/2");view=render(frame);
  require(view.value("phase")=="Auditing"&&view.value("quantity").toString().startsWith("Complete audit"),"Audit quantity is not identified as a whole audit");

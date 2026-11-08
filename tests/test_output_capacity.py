@@ -53,6 +53,17 @@ class OutputCapacityTests(unittest.TestCase):
         self.assertFalse(output.exists())
         self.assertEqual({str(p):p.read_bytes() for p in self.root.rglob('*.log')}, before)
 
+    def test_closed_small_owners_preserve_logs_without_reserving_future_growth(self):
+        for index in range(1,18):
+            writer=self.writer(index);writer.append(b'closed result\n');writer.finish()
+        before={str(p):p.read_bytes() for p in self.root.rglob('*.log')}
+        self.assertEqual(capacity._reserved_bytes(self.root/'tickets'),17*len(b'closed result\n'))
+        active=self.writer(18)
+        self.assertEqual(capacity._reserved_bytes(self.root/'tickets'),capacity.OWNER_CAPACITY+17*len(b'closed result\n'))
+        self.assertEqual({str(p):p.read_bytes()for p in self.root.rglob('*.log')if str(p)in before},before)
+        with self.assertRaises((ValueError,RuntimeError,OSError)):
+            self.writers[0].append(b'cannot grow a sealed spool\n')
+
     def test_finish_and_read_without_ack_do_not_release_capacity(self):
         first = self.writer(1); self.writer(2)
         first.append(b'retained\n');first.finish()
@@ -143,11 +154,17 @@ while not Path(barrier).exists():time.sleep(.005)
 deadline=time.monotonic()+4
 while True:
  try:
-  w=Writer(output,token,64,128);w.append(b"retained\\n");w.finish();sys.exit(0)
+  w=Writer(output,token,64,128);w.append(b"retained\\n")
+  Path(barrier).with_name('claim-'+token).touch()
+  while len(list(Path(barrier).parent.glob('claim-*')))<3:
+   if time.monotonic()>deadline:raise RuntimeError('Admission barrier timed out')
+   time.sleep(.005)
+  w.finish();sys.exit(0)
  except c.OutputCapacityBusy:
   if time.monotonic()>deadline:raise
   time.sleep(.01)
- except c.OutputCapacityExceeded:sys.exit(3)
+ except c.OutputCapacityExceeded:
+  Path(barrier).with_name('claim-'+token).touch();sys.exit(3)
 '''
         children=[]
         try:
@@ -162,7 +179,7 @@ while True:
                 self.assertIn(child.returncode,(0,3),stderr.decode(errors='replace'))
                 codes.append(child.returncode)
             self.assertEqual(sorted(codes),[0,0,3])
-            self.assertEqual(capacity._reserved_bytes(self.root/'tickets'),2*capacity.OWNER_CAPACITY)
+            self.assertEqual(capacity._reserved_bytes(self.root/'tickets'),2*len(b'retained\n'))
         finally:
             for child in children:
                 if child.poll() is None:child.kill()

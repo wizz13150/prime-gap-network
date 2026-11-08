@@ -125,7 +125,7 @@ window.pgnCreateAuditController=function(scene,entity,prototype){
    if(clear>=.018){place(candidate);state.u=nextU;state.blocked=0;metrics.minFlightClearance=Math.min(metrics.minFlightClearance,clear)}
    else{state.blocked+=dt;metrics.deniedSteps++;if(state.blocked>.5){state.pathStart=center.clone();state.u=0;state.bulge=Math.min(1.8,(state.bulge||.3)+.1);state.blocked=0}}
    if(phase==='approach'&&world(packet).distanceTo(hold)<.035){transition('capture')}
-   if(phase==='depart'&&state.u>=1){transition('complete');packet.scale.setScalar(0);metrics.complete=true;}
+   if(phase==='depart'&&state.u>=1){transition('complete');metrics.complete=true;}
   }else if(phase==='capture'){
    if(maxError<.045&&sweepClear(center,hold)>.018){place(hold);metrics.maxCaptureError=maxError;transition('examine')}
   }else if(phase==='examine'){
@@ -141,7 +141,8 @@ window.pgnCreateAuditController=function(scene,entity,prototype){
   if(state.phase==='examine'&&dots.length){const choice=Math.min(dots.length-1,Math.floor((state.age%6)/({michael:.9,helel:.48,boshel:.5,kitabel:.65}[entity])));look=world(dots[choice].node)}gaze(look,dt);
   for(let i=0;i<dots.length;i++){const d=dots[i],t=state.elapsed;d.node.position.copy(d.rest).add(v(Math.sin(t*(.75+i*.11)+i*2.4)*.026,Math.cos(t*(.61+i*.09)+i)*.021,Math.sin(t*(.89+i*.07)+i*.7)*.024))}
   for(let i=0;i<arcs.length;i++){arcs[i].rotation.x=state.elapsed*.12+i*.4;arcs[i].rotation.y=state.elapsed*.08}
-  const arriving=state.phase==='approach'||['capture','examine','open','depart'].includes(state.phase);packet.visible=arriving;if(arriving)packet.scale.setScalar(Math.min(1,packet.scale.x+dt*3));
+  if(state.phase==='complete')place(anchor('#returnedReport'));
+  const arriving=state.phase==='approach'||['capture','examine','open','depart','complete'].includes(state.phase);packet.visible=arriving;if(arriving)packet.scale.setScalar(Math.min(1,packet.scale.x+dt*3));
 
   scene.queueRender();
  }
@@ -172,6 +173,7 @@ window.pgnCreateAuditController=function(scene,entity,prototype){
   if(changed){clear();terminal=false;reset(points.source?.x??.5);job={...value,identity};if(rebase){for(let n=0;n<1200&&state.phase!=='examine';n++)step(1/60);if(state.phase!=='examine')clear()}}
   if(job){job={...value,identity};terminal=value.expired||value.state==='passed'||value.state==='failed';palette(paletteMode)}
  }
- function relocate(delta){const d=v(...delta);for(const a of arms)a.restPalm.add(d);hold.add(d);if(['capture','examine','open'].includes(state.phase))place(world(packet).add(d));else if(['approach','depart'].includes(state.phase)){state.pathStart=world(packet);state.u=0}}
+ function relocate(delta,rotation=null,pivot=[0,0,0]){const d=v(...delta),origin=v(...pivot),q=packet.quaternion.clone();if(rotation)q.fromArray(rotation);else q.identity();const move=p=>p.sub(origin).applyQuaternion(q).add(origin).add(d);for(const a of arms)move(a.restPalm);move(hold);front.applyQuaternion(q);side.applyQuaternion(q);if(torsoProfile){torsoProfile.front.applyQuaternion(q);torsoProfile.side.applyQuaternion(q)}if(state.releaseBaseline)for(const before of state.releaseBaseline)move(before.hand);if(['capture','examine','open'].includes(state.phase))place(move(world(packet)));else if(['approach','depart'].includes(state.phase)){state.pathStart=world(packet);state.u=0}}
+
  return {entity,apply,clear,step,relocate,palette,pause:()=>{state.paused=true},resume:()=>{if(job)state.paused=false},setEndpoints:value=>{endpoints=value},inspect:()=>({entity,job,endpoints,packetRadius,phase:state.phase,age:state.age,elapsed:state.elapsed,metrics:JSON.parse(JSON.stringify(metrics)),hold:hold.toArray(),packet:world(packet).toArray(),clearance:clearance(world(packet)),nearest:volumes().map(c=>({label:c.label,clearance:distance(world(packet),c.a,c.b)-c.r-packetRadius})).sort((a,b)=>a.clearance-b.clearance).slice(0,2),visible:packet.visible})};
 };

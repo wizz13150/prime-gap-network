@@ -1,6 +1,7 @@
 #include "ui/gap_flow_model.h"
 #include "ui/gap_flow_motion.h"
 #include "ui/mining_ticket_progress.h"
+#include "ui/mining_cycle_progress.h"
 #include "ui/ticket_flow_evidence.h"
 #include <QApplication>
 #include <QVBoxLayout>
@@ -22,6 +23,25 @@ static QJsonObject frame(QJsonArray rows={}){return {{"schema","PGN_HORIZON_MINI
     {"positions_total","200000000000000"},{"positions","100000000000000"},{"speed_rate",1e12},{"eta_rate",1e12}};}
 int main(int argc,char** argv){
  QApplication app(argc,argv);GapFlowModel model;auto old=row(1,29.);auto gold=row(2,30.);
+ QJsonObject cycleMeta{{"schema","PGN_MINING_CYCLE_VIEW_V1"},{"request_id",QString(64,'f')},{"ticket_number","857"},{"search_positions","1800"},{"active_index",0},{"audits",QJsonArray{QJsonObject{{"state","assigned"},{"positions","100"}},QJsonObject{{"state","assigned"},{"positions","100"}}}}};
+ auto cycleFrame=frame();cycleFrame.insert("work_role","audit");cycleFrame.insert("positions_total","100");cycleFrame.insert("positions","50");cycleFrame.insert("eta_rate",10);cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});auto firstCycle=miningCycleProgress(cycleFrame);
+ require(firstCycle.known&&std::abs(firstCycle.fraction-.025)<1e-12&&firstCycle.taskEta==5&&firstCycle.cycleEta==195,"First audit uses first5percent and complete measured ETA");
+ auto auditStates=cycleMeta["audits"].toArray();auto firstState=auditStates[0].toObject();firstState.insert("state","committed");auditStates[0]=firstState;cycleMeta.insert("audits",auditStates);cycleMeta.insert("active_index",1);cycleFrame.insert("positions","0");cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});require(std::abs(miningCycleProgress(cycleFrame).fraction-.05)<1e-12,"Second audit starts at5percent without reset");
+ auto secondState=auditStates[1].toObject();secondState.insert("state","committed");auditStates[1]=secondState;cycleMeta.insert("audits",auditStates);cycleMeta.insert("active_index",2);cycleFrame.insert("positions_total","1800");cycleFrame.insert("positions","900");cycleFrame.insert("work_role","search");cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});const auto searchCycle=miningCycleProgress(cycleFrame);require(std::abs(searchCycle.fraction-.55)<1e-12&&searchCycle.cycleEta==90,"Search occupies last90percent, preserves completed audit slices");
+ // Laboratory catch-up work must occupy the first two real audit slots,
+ // even when the server waived its independent-service credit stages.
+ cycleMeta.insert("catch_up",true);cycleMeta.insert("audits",QJsonArray{QJsonObject{{"state","unavailable"}},QJsonObject{{"state","unavailable"}}});
+ cycleFrame.insert("work_role","audit");cycleFrame.insert("positions_total","100");cycleFrame.insert("positions","50");cycleFrame.insert("ticket_id","actual-audit-one");cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});
+ MiningCycleHistory history;history.observe(cycleFrame);auto physical=miningCycleProgress(cycleFrame,history.audits());
+ require(physical.slices.size()==3&&physical.slices[0].fraction==.5&&physical.slices[1].fraction==0&&std::abs(physical.fraction-.025)<1e-12,"Actual first audit fills first slot despite waived server credits");
+ cycleFrame.insert("positions","100");history.observe(cycleFrame);cycleFrame.insert("ticket_id","actual-audit-two");cycleFrame.insert("positions","50");history.observe(cycleFrame);physical=miningCycleProgress(cycleFrame,history.audits());
+ require(physical.slices.size()==3&&physical.slices[0].fraction==1&&physical.slices[1].fraction==.5&&std::abs(physical.fraction-.075)<1e-12,"Actual second audit fills second slot instead of a transient orange slot");
+ cycleFrame.insert("positions","100");history.observe(cycleFrame);cycleFrame.insert("ticket_id","actual-audit-extra");cycleFrame.insert("positions","50");history.observe(cycleFrame);physical=miningCycleProgress(cycleFrame,history.audits());
+ require(physical.slices.size()==4&&physical.slices[2].role=="catch_up"&&physical.slices[2].fraction==.5,"Only third actual audit becomes an extra orange slot");
+ history.observe(cycleFrame);require(history.audits().size()==3,"Repeated physical frame duplicated an audit slot");
+ cycleFrame.insert("positions","100");history.observe(cycleFrame);cycleMeta.insert("catch_up",false);cycleMeta.insert("active_index",2);cycleFrame.insert("work_role","search");cycleFrame.insert("positions_total","1800");cycleFrame.insert("positions","900");cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});history.observe(cycleFrame);const auto retained=miningCycleProgress(cycleFrame,history.audits());
+ require(retained.slices.size()==4&&retained.slices[0].fraction==1&&retained.slices[1].fraction==1&&retained.slices[2].fraction==1&&retained.slices[2].role=="catch_up","All three completed physical audit slots remain visible throughout search");
+ cycleMeta.insert("request_id",QString(64,'e'));cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});history.observe(cycleFrame);require(history.audits().isEmpty(),"A new cycle inherited old audit work");
  const QPointF entrance(100,10),destination(400,80);
  require(livingFlowPoint(entrance,destination,0,.2,1,40)==entrance&&livingFlowPoint(entrance,destination,1,.2,1,40)==destination,"Living motion lost its destination");
  require(QLineF(livingFlowPoint(entrance,destination,.5,.2,1,40),livingFlowPoint(entrance,destination,.5,.7,1,40)).length()>1,"All entities follow the same route");

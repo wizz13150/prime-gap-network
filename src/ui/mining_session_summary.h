@@ -92,7 +92,9 @@ protected:
         const double offset=scroll_->value(),left=8.,usable=std::max(1,width()-16-(needsScroll?12:0));
         const QRectF viewport(0,top,width()-(needsScroll?12:0),std::max(0,height()-int(top)));
         p.setClipRect(viewport);p.translate(0,-offset);
-        QFont font("Consolas");font.setPixelSize(width()>=260?13:12);QFont detail=font;detail.setPixelSize(std::max(11,font.pixelSize()-1));
+        // Live values can move a splitter by a pixel. Crossing a width threshold
+        // must not toggle the entire summary between two font sizes.
+        QFont font("Consolas");font.setPixelSize(13);QFont detail=font;detail.setPixelSize(12);
         setProperty("pgn_summary_font_px",font.pixelSize());setProperty("pgn_summary_detail_font_px",detail.pixelSize());setProperty("pgn_summary_scrollable",needsScroll);
         QJsonArray regions;double y=top;
         auto region=[&](const QString& label,const QString& text,const QRectF& rect,int pixels){const auto visible=rect.translated(0,-offset).intersected(viewport);regions.append(QJsonObject{{"label",label},{"text",text},{"x",rect.x()},{"y",rect.y()-offset},{"width",rect.width()},{"height",rect.height()},{"font_px",pixels},{"visible",!visible.isEmpty()}});};

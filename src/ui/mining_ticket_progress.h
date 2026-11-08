@@ -1,5 +1,6 @@
 #pragma once
 #include "ui/gap_flow_model.h"
+#include "ui/mining_cycle_progress.h"
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QTimer>
@@ -26,6 +27,7 @@ protected:
 private:
  friend class GapFlowOverlay;
  QJsonObject frame_;GapFlowModel flow_;QTimer timer_;QElapsedTimer clock_;
+ MiningCycleHistory cycleHistory_;
  QPointer<QWidget> canvas_,results_;QPointer<GapFlowOverlay> overlay_;
  struct Hit {QString pair;QPointF point;};
  QVector<Hit> hits_;QString hovered_,pulsed_;QPointF pointer_;qint64 pulsedAt_{};

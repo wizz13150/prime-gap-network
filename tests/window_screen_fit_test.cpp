@@ -22,12 +22,24 @@ int main(int argc,char** argv) {
     check(window.minimumHeight()<=workArea.height(),"old larger minimum cannot lock window outside new screen");
     const auto stable=window.frameGeometry();fit.fitNow();fit.fitNow();
     check(window.frameGeometry()==stable,"repeat fit is stable, no resize loop or animation");
+    window.setMinimumSize(0,0);window.resize(900,650);settle();
+    for(const QPoint position:{QPoint{-250,70},QPoint{1400,70},QPoint{120,-180},QPoint{120,650}}){
+        window.move(position);const auto requested=window.pos();settle();
+        // The offscreen Qt plugin adjusts negative native-frame origins by its
+        // two-pixel decoration. A policy snap to the work area is far larger.
+        const auto decoration=window.frameGeometry().size()-window.size();
+        const auto delta=window.pos()-requested;
+        check(std::abs(delta.x())<=decoration.width()&&std::abs(delta.y())<=decoration.height()&&
+              !workArea.contains(window.frameGeometry()),"ordinary user move may cross each screen edge without being clamped");
+    }
+    window.resize(920,660);const auto userGeometry=window.geometry();settle();
+    check(window.geometry()==userGeometry,"ordinary resize does not reposition a partially offscreen window");
     for(const QRect area:{QRect{0,0,1280,720},QRect{-1600,20,1600,900},QRect{1920,0,1024,768},QRect{0,0,800,480},QRect{0,0,640,360}}){
         workArea=area;window.setMinimumSize(1500,1200);window.resize(1700,1300);window.move(area.topLeft()-QPoint(100,100));
         fit.fitNow();settle();
         check(area.contains(window.frameGeometry()),"large old minimum and offscreen origin repaired at changed work area");
         check(window.minimumHeight()<=window.height(),"readable-height preference never exceeds actual screen budget");
-        const auto once=window.frameGeometry();fit.fitNow();
+        fit.fitNow();settle();const auto once=window.frameGeometry();fit.fitNow();settle();
         if(window.frameGeometry()!=once){const auto twice=window.frameGeometry();std::fprintf(stderr,"UNSTABLE area=%d,%d %dx%d once=%d,%d %dx%d twice=%d,%d %dx%d min=%dx%d\n",area.x(),area.y(),area.width(),area.height(),once.x(),once.y(),once.width(),once.height(),twice.x(),twice.y(),twice.width(),twice.height(),window.minimumWidth(),window.minimumHeight());}
         check(window.frameGeometry()==once,"all work-area layouts reach fixed point");
     }

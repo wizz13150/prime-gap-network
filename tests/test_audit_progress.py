@@ -6,7 +6,7 @@ import sys, unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'src/engine/runtime_host'), str(ROOT/'src/protocol')]
-from horizon_audit_progress import presentation, whole_audit_frame
+from horizon_audit_progress import presentation, whole_audit_frame, WholeAuditPresentation
 from horizon_network_worker import NetworkWorker
 
 
@@ -91,6 +91,52 @@ class AuditProgressTests(unittest.TestCase):
         item=self.item(0)
         for change in [dict(start='1'),dict(end='1'),dict(positions='101'),dict(positions='-1')]:
             with self.assertRaises(ValueError):whole_audit_frame(item,dict(self.sample(item,10),**change))
+
+    def result_sample(self, item, count):
+        rows=[dict(gap=100+i,lower_prime=str(int(item['part_start'])+i*2),
+                   upper_prime=str(int(item['part_start'])+i*2+100+i),merit=str(22+i)) for i in range(count)]
+        return dict(self.sample(item,min(count*10,int(item['part_end'])-int(item['part_start']))),
+                    bits=67,minimum_gap=100,target_merit=25,
+                    scopes=dict(ticket=dict(statistics=dict(count_total=count,at_or_above_target=0,
+                        threshold_counts={'100':count},merit_band_counts={'22':count},statistics_target=25),
+                        best=list(reversed(rows)),recent=list(reversed(rows)))))
+
+    def test_results_survive_empty_partition_boundary_and_accumulate_once(self):
+        audit=WholeAuditPresentation();one,two=self.item(0),self.item(1)
+        first=self.result_sample(one,2);audit.frame(one,first)
+        boundary=audit.frame(two)
+        self.assertEqual(boundary['scopes']['ticket']['statistics']['count_total'],2)
+        self.assertEqual(len(boundary['scopes']['ticket']['best']),2)
+        self.assertEqual(boundary['target_merit'],25)
+        self.assertIsNone(boundary['eta_rate'])
+        audit.frame(two,self.result_sample(two,1))
+        for unused in range(4):latest=audit.frame(two,self.result_sample(two,3))
+        scope=latest['scopes']['ticket']
+        self.assertEqual(scope['statistics']['count_total'],5)
+        self.assertEqual(scope['statistics']['threshold_counts'],{'100':5})
+        self.assertEqual(len(scope['best']),5)
+        self.assertEqual(int(scope['recent'][0]['lower_prime']),int(two['part_start'])+4)
+        self.assertNotIn('target_merit',first['scopes']['ticket']['best'][0])
+
+    def test_new_audit_resets_result_views_and_pause_does_not_clear_them(self):
+        audit=WholeAuditPresentation();one=self.item(0);audit.frame(one,self.result_sample(one,2))
+        paused=audit.frame(self.item(1),paused=True)
+        self.assertEqual(len(paused['scopes']['ticket']['recent']),2)
+        self.assertEqual(paused['phase'],'Paused')
+        other=self.item(0,dict(self.audit,slot=1));fresh=audit.frame(other)
+        self.assertNotIn('scopes',fresh)
+        self.assertNotIn('target_merit',fresh)
+
+    def test_worker_keeps_result_views_across_actual_progress_callback_boundaries(self):
+        worker=NetworkWorker.__new__(NetworkWorker);worker.sequence=42;frames=[];worker.emit=frames.append
+        worker.audits=SimpleNamespace(presentation=self.item(0))
+        with patch('horizon_network_worker.ticket_frame',return_value=self.result_sample(self.item(0),2)):
+            worker._present_progress(dict(phase='COMPUTED'))
+        worker.audits.presentation=self.item(1)
+        with patch('horizon_network_worker.ticket_frame',side_effect=FileNotFoundError):
+            worker._present_progress(dict(phase='STARTING'))
+        self.assertEqual(frames[-1]['scopes']['ticket']['statistics']['count_total'],2)
+        self.assertEqual(len(frames[-1]['scopes']['ticket']['best']),2)
 
 
 if __name__=='__main__':unittest.main()

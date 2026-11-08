@@ -152,6 +152,7 @@ class MiningFlow:
             proxy.audit = audit
             self.audit_lanes.append(audit)
         self.audit_pressure_notice = None
+        self.cycle_audit_positions = {}
         self.controlled_lab_audit_actors = lab_actors is not None
         worker.audit_service_snapshot = self.audit_service_snapshot
         self.pressure_thread = threading.Thread(target=self.refresh_audit_pressure, name="audit-service-policy", daemon=True)
@@ -199,6 +200,9 @@ class MiningFlow:
             # permission grant can clear only a recognized permission hold.
             self.cycles.attach(cycle, position, dict(stage="assigned", request=audit["request_id"], slot=audit["slot"], attempt=audit["attempt"]), permission_verified=True)
         audit["work_cycle"] = cycle
+        if not hasattr(self, 'cycle_audit_positions'):self.cycle_audit_positions = {}
+        self.cycle_audit_positions[(cycle, position)] = sum(int(r['end'])-int(r['start']) for r in audit['ranges'])
+        while len(self.cycle_audit_positions)>8:self.cycle_audit_positions.pop(next(iter(self.cycle_audit_positions)))
         save(self.audit_lanes[position].folder / "current.json", audit)
 
     def before_audit_commit(self, position, audit):
@@ -506,6 +510,29 @@ class MiningFlow:
 
     def audit_service_snapshot(self):
         value = self.gpu.audit_service_view()
+        # Read-only presentation binding. It does not combine jobs, confer an
+        # audit credit, or change the resident queue's execution decisions.
+        with self.gpu.condition:
+            active = self.gpu.active
+            context = dict(active.context) if active else {}
+            cycle = context.get('work_cycle')
+            catch_up = context.get('role') == 'audit' and not cycle
+            if catch_up:
+                cycle = next((job.context.get('work_cycle') for job in self.gpu.search
+                              if job.context.get('work_cycle')), None)
+        if cycle:
+            try:state = self.cycles.snapshot(cycle)
+            except (KeyError, ValueError):
+                value['cycle_notice'] = 'Work cycle presentation changed; awaiting next frame'
+                cycle = None
+        if cycle:
+            totals = getattr(self, 'cycle_audit_positions', {})
+            value['cycle'] = dict(schema='PGN_MINING_CYCLE_VIEW_V1', request_id=cycle,
+                ticket_number=state['work']['ticket_number'], search_positions=state['work']['length'],
+                active_index=2 if context.get('role') == 'search' else context.get('audit_position', 0),
+                catch_up=catch_up, audits=[dict(state=(task or {}).get('stage', 'pending'),
+                    positions=str(totals[(cycle, i)]) if (cycle, i) in totals else None)
+                    for i, task in enumerate(state['audits'])])
         value["measurement_notice"] = self.audit_pressure_notice
         controlled = getattr(self, 'controlled_lab_audit_actors', False)
         value["controlled_lab_identities"] = controlled

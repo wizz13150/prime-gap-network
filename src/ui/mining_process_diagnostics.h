@@ -1,6 +1,7 @@
 #pragma once
 #include "ui/mining_startup_status.h"
 #include <QDateTime>
+#include <QFileInfo>
 #include <QProcess>
 #include <functional>
 
@@ -31,6 +32,7 @@ public:
    canvas_->setProperty("pgn_worker_stream_error",reason);if(failure)failure(reason);
   });
   connect(process_,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),this,[this](int code,QProcess::ExitStatus status){
+   const auto finalError=process_->readAllStandardError();if(!finalError.isEmpty())standardError(finalError);
    state_.insert("running",false);state_.insert("exit_code",code);state_.insert("exit_kind",status==QProcess::NormalExit?"normal":"crash");
    event("exited",QString("Exit %1 (%2)").arg(code).arg(status==QProcess::NormalExit?"normal":"crash"));
    if(role_=="network"&&(code!=0||status!=QProcess::NormalExit)){
@@ -39,7 +41,7 @@ public:
    }
   });
  }
- void launching(const QString& role){role_=role;stderr_.clear();for(const auto* key:{"exit_code","exit_kind","process_error","phase","notice","pid"})state_.remove(key);state_.insert("attempt",state_.value("attempt").toInt()+1);state_.insert("running",false);state_.insert("stderr_tail",QString{});event("launch_requested");}
+ void launching(const QString& role){role_=role;stderr_.clear();for(const auto* key:{"exit_code","exit_kind","process_error","phase","notice","pid"})state_.remove(key);state_.insert("attempt",state_.value("attempt").toInt()+1);state_.insert("running",false);state_.insert("entry_program",QFileInfo(process_->program()).fileName());state_.insert("entry_present",QFileInfo::exists(process_->program()));state_.insert("stderr_tail",QString{});event("launch_requested");}
  void intent(bool on){event(on?"on_requested":"off_requested");}
  void standardError(const QByteArray& bytes){
   // Sanitize before retaining. Keep enough context for Python/import, loader,
@@ -51,6 +53,15 @@ public:
  }
  void packet(const QJsonObject& packet){
   const auto phase=packet.value("phase").toString();if(phase.isEmpty())return;
+  const auto fault=packet.value("failure").toObject();
+  if(fault.value("schema")=="PGN_RUNTIME_FAILURE_V1"){
+   QJsonObject safe{{"schema","PGN_RUNTIME_FAILURE_V1"},{"at_utc",diagnosticStatusText(fault.value("at_utc").toString())},{"step",diagnosticStatusText(fault.value("step").toString())}};QJsonArray causes;
+   for(const auto& entry:fault.value("causes").toArray()){
+    if(causes.size()>=3)break;const auto cause=entry.toObject();QJsonObject item;for(const auto* key:{"error_type","resource","module","summary"})item.insert(key,diagnosticStatusText(cause.value(key).toString()));
+    for(const auto* key:{"os_code","os_win_code"})if(cause.value(key).isDouble())item.insert(key,cause.value(key));QJsonArray frames;
+    for(const auto& f:cause.value("frames").toArray()){if(frames.size()>=6)break;const auto frame=f.toObject();frames.append(QJsonObject{{"file",diagnosticStatusText(frame.value("file").toString())},{"line",frame.value("line").toInt()},{"function",diagnosticStatusText(frame.value("function").toString())}});}item.insert("frames",frames);causes.append(item);
+   }safe.insert("causes",causes);state_.insert("failure_context",safe);
+  }
   const auto message=diagnosticStatusText(packet.value("message").toString());
   if(phase!=state_.value("phase").toString())event("phase",phase+": "+message);
   state_.insert("phase",phase);state_.insert("notice",message);

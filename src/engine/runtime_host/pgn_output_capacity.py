@@ -1,6 +1,7 @@
 """Coarse shared admission for modern native-output spools, never an ACK.
 
-One live or retained owner is charged its complete 128 MiB possible output.
+An unfinished owner is charged its complete 128 MiB possible output. A sealed
+owner cannot append again and is charged its actual retained log bytes.
 The directory itself is the durable reservation. No PID expiry, timer or absent
 controller can release it. This is a per-state-root spool pool, not a quota for
 wallets, archives, old stdout.log files, or the whole machine.
@@ -48,7 +49,7 @@ def scope(output, token):
 
 def _reserved_bytes(tickets):
     entries = 0
-    count = 0
+    reserved = 0
 
     def bounded(directory):
         nonlocal entries
@@ -82,21 +83,19 @@ def _reserved_bytes(tickets):
                         or value.get('token') != owner.name[len('native-owner-'):]):
                     raise ValueError('Native output capacity identity changed')
                 finished = value.get('finished') is True
-            # A missing initial index is still a durable pessimistic reservation.
-            # Metadata-only sealed owners have no remaining spool bytes. Never
-            # infer this from an ACK alone: Windows may still hold a log open.
-            has_files = False
+            # A missing initial index still reserves maximum future growth.
+            # A finished Writer has closed its stream before publishing this
+            # seal and refuses further append. Charge every retained byte,
+            # including unacknowledged data or files Windows could not unlink.
             retained = 0
             for path in bounded(output):
                 if path.name.endswith('.log'):
                     _plain(path)
-                    has_files = True
                     retained += path.stat().st_size
                     if retained > OWNER_CAPACITY:
                         raise OutputCapacityExceeded('Existing native output exceeds its owner capacity; preserve it for recovery')
-            if not finished or has_files:
-                count += 1
-    return count * OWNER_CAPACITY
+            reserved += retained if finished else OWNER_CAPACITY
+    return reserved
 
 
 @contextmanager

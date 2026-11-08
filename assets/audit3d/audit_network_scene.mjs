@@ -1,19 +1,36 @@
-import{AuditActivityModel}from'./audit_activity_model.mjs';
+import{AuditActivityModel,canCompleteLanding}from'./audit_activity_model.mjs';
 const entities=['michael','helel','boshel','kitabel'],model=new AuditActivityModel(),actor=document.querySelector('#actor');
 let scene,controllers=new Map(),ready=false,shown=false,last=0,lastRender=0,preview=false,latest=null,projection={};
-const targetHeights={michael:3.2,helel:3.17,boshel:1.84,kitabel:2.90},nameAnchors=new Map();let homeCamera;
-function meshBounds(root){let box=null;root.traverse(n=>{if(!n.isMesh)return;if(n.isSkinnedMesh)n.computeBoundingBox();else n.geometry.computeBoundingBox();const local=n.isSkinnedMesh?n.boundingBox:n.geometry.boundingBox;if(local){const bounds=local.clone().applyMatrix4(n.matrixWorld);box=box?box.union(bounds):bounds}});return box}
+const targetHeights={michael:3.2,helel:3.17,boshel:1.84,kitabel:2.90},nameAnchors=new Map();let homeCamera,homeRotation;const restLayouts=new Map();let layoutQueued=false;
+let revealGeneration=0;
+async function revealTogether(){
+ const generation=++revealGeneration;
+ if(!ready||!shown||!window.pgnAuditRailReady||document.body.classList.contains('audit-ready'))return;
+ await actor.updateComplete;actor.jumpCameraToGoal();scene.queueRender();
+ await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+ if(generation!==revealGeneration||!shown||!window.pgnAuditRailReady)return;
+ names();document.body.classList.add('audit-ready');native({event:'presented'});
+}
+function meshBounds(root){scene.updateMatrixWorld(true);let box=null;root.traverse(n=>{if(!n.isMesh)return;if(n.isSkinnedMesh)n.computeBoundingBox();else n.geometry.computeBoundingBox();const local=n.isSkinnedMesh?n.boundingBox:n.geometry.boundingBox;if(local){const bounds=local.clone().applyMatrix4(n.matrixWorld);box=box?box.union(bounds):bounds}});return box}
 function normalizeActors(){const heights={},floor=-Math.max(...Object.values(targetHeights))/2+1.10;for(const entity of entities){const root=scene.getObjectByName('Actor'+entity[0].toUpperCase()+entity.slice(1));let bounds=meshBounds(root);if(!bounds)throw Error('Actor geometry missing '+entity);const original=bounds.max.y-bounds.min.y;root.scale.multiplyScalar(targetHeights[entity]/original);root.updateWorldMatrix(false,true);bounds=meshBounds(root);const position=root.getWorldPosition(root.position.clone());position.y+=floor-bounds.min.y;root.position.copy(root.parent.worldToLocal(position));root.updateWorldMatrix(false,true);bounds=meshBounds(root);heights[entity]={original_height:original,display_height:bounds.max.y-bounds.min.y};}window.__auditNetwork.worldHeights=heights}
 function native(value){window.chrome?.webview?.postMessage(JSON.stringify(value))}
 function names(){if(!scene)return;const camera=scene.getCamera();camera.updateWorldMatrix(true,false);const visible=[];
  for(const label of document.querySelectorAll('[data-entity-name]')){const entity=label.dataset.entityName,root=scene.getObjectByName('Actor'+entity[0].toUpperCase()+entity.slice(1)),anchor=nameAnchors.get(entity);if(!root||!anchor)continue;const point=root.localToWorld(anchor.clone()),v=point.clone().project(camera),x=(v.x+1)/2*actor.clientWidth,y=(1-v.y)/2*actor.clientHeight+1;label.style.visibility='hidden';if(v.z<-1||v.z>1||x<0||x>actor.clientWidth||y<0||y>document.body.clientHeight-20)continue;visible.push({label,x,y,distance:point.distanceTo(camera.getWorldPosition(point.clone()))})}
- visible.sort((a,b)=>a.x-b.x);for(let i=0;i<visible.length;i++){const entry=visible[i],gap=Math.min(i?entry.x-visible[i-1].x:Infinity,i+1<visible.length?visible[i+1].x-entry.x:Infinity),width=Math.min(120,gap*.88);if(width<64)continue;entry.label.style.width=width+'px';entry.label.style.left=entry.x+'px';entry.label.style.top=entry.y+'px';entry.label.style.visibility='visible'}
+ visible.sort((a,b)=>a.x-b.x);for(let i=0;i<visible.length;i++){const entry=visible[i],gap=Math.min(i?entry.x-visible[i-1].x:Infinity,i+1<visible.length?visible[i+1].x-entry.x:Infinity),width=Math.min(120,gap*.88);if(width<64)continue;entry.label.style.width=width+'px';entry.label.style.left=entry.x+'px';entry.label.style.top=Math.min(entry.y,document.body.clientHeight-88)+'px';entry.label.style.visibility='visible';const state=controllers.get(entry.label.dataset.entityName)?.inspect(),working=String(!!state?.job&&!state.metrics.complete);if(entry.label.dataset.working!==working)entry.label.dataset.working=working}
 }
-function staging(){if(!scene)return;const camera=scene.getCamera();camera.updateWorldMatrix(true,false);homeCamera??=camera.getWorldPosition(camera.position.clone());const radius=Math.hypot(homeCamera.x,homeCamera.z),angles=[-.56,-.185,.185,.56],alignment={};
- for(let i=0;i<entities.length;i++){const n=entities[i],root=scene.getObjectByName('Actor'+n[0].toUpperCase()+n.slice(1)),old=root.getWorldPosition(root.position.clone()),next=old.clone();next.x=homeCamera.x+radius*Math.sin(angles[i]);next.z=homeCamera.z-radius*Math.cos(angles[i]);const delta=next.clone().sub(old);root.position.copy(root.parent.worldToLocal(next));root.updateWorldMatrix(false,true);
-  if(!controllers.size){let head,face;root.traverse(node=>{if(node.isBone&&node.name.endsWith('Head'))head=node;if(node.isBone&&node.name.endsWith('headfront'))face=node});if(!head||!face)throw Error('Facing calibration missing '+n);const front=face.getWorldPosition(next.clone()).sub(head.getWorldPosition(next.clone()));front.y=0;const toward=homeCamera.clone().sub(root.getWorldPosition(next.clone()));toward.y=0;if(front.length()<1e-5||toward.length()<1e-5)throw Error('Invalid facing basis '+n);const yaw=Math.atan2(toward.x,toward.z)-Math.atan2(front.x,front.z),turn=root.quaternion.clone().setFromAxisAngle(next.clone().set(0,1,0),yaw),world=root.getWorldQuaternion(root.quaternion.clone());root.quaternion.copy(root.parent.getWorldQuaternion(root.quaternion.clone()).invert().multiply(turn.multiply(world)));root.updateWorldMatrix(false,true);const facing=face.getWorldPosition(next.clone()).sub(head.getWorldPosition(next.clone()));facing.y=0;alignment[n]=facing.normalize().dot(toward.normalize());if(alignment[n]<.99999)throw Error('Facing calibration failed '+n)}
-  const bounds=meshBounds(root),foot=root.getWorldPosition(root.position.clone());foot.y=bounds.min.y;nameAnchors.set(n,root.worldToLocal(foot));controllers.get(n)?.relocate(delta.toArray())}
- if(Object.keys(alignment).length)window.__auditNetwork.facingAlignment=alignment;scene.queueRender();names()}
+function staging(){if(!scene)return;const camera=scene.getCamera();camera.updateWorldMatrix(true,false);homeCamera??=camera.getWorldPosition(camera.position.clone());homeRotation??=camera.getWorldQuaternion(camera.quaternion.clone());
+ const v=(x=0,y=0,z=0)=>camera.position.clone().set(x,y,z),right=v(1,0,0).applyQuaternion(homeRotation),up=v(0,1,0).applyQuaternion(homeRotation),forward=v(0,0,-1).applyQuaternion(homeRotation),depth=13;
+ // Decode the rest shape once. A pane resize must not CPU-skin every vertex.
+ for(const n of entities){if(restLayouts.has(n))continue;const root=scene.getObjectByName('Actor'+n[0].toUpperCase()+n.slice(1));let head,face;root.traverse(node=>{if(node.isBone&&node.name.endsWith('Head'))head=node;if(node.isBone&&node.name.endsWith('headfront'))face=node});if(!head||!face)throw Error('Facing calibration missing '+n);const front=face.getWorldPosition(v()).sub(head.getWorldPosition(v()));front.y=0;front.normalize();const localFront=front.clone().applyQuaternion(root.getWorldQuaternion(root.quaternion.clone()).invert()),toward=forward.clone().negate();toward.y=0;const yaw=Math.atan2(toward.x,toward.z)-Math.atan2(front.x,front.z),turn=root.quaternion.clone().setFromAxisAngle(v(0,1,0),yaw),world=root.getWorldQuaternion(root.quaternion.clone());root.quaternion.copy(root.parent.getWorldQuaternion(root.quaternion.clone()).invert().multiply(turn.multiply(world)));root.updateWorldMatrix(false,true);const bounds=meshBounds(root),foot=bounds.min.clone().add(bounds.max).multiplyScalar(.5);foot.y=bounds.min.y;nameAnchors.set(n,root.worldToLocal(foot));restLayouts.set(n,{width:bounds.max.x-bounds.min.x,front:localFront});window.__auditNetwork.layoutMeshScans=(window.__auditNetwork.layoutMeshScans??0)+1;}
+ const width=actor.clientWidth,height=actor.clientHeight,bodyHeight=document.body.clientHeight,aspect=width/Math.max(1,height),footPixel=Math.max(70,bodyHeight-96),desiredHeight=Math.max(50,footPixel-18),totalWidth=[...restLayouts.values()].reduce((n,r)=>n+r.width,0),gap=.24;
+ const tanFov=Math.max(3.2*1.06*height/(2*depth*desiredHeight),(totalWidth+gap*5)/(2*depth*aspect)),fov=2*Math.atan(tanFov)*180/Math.PI;
+ actor.minFieldOfView='5deg';actor.maxFieldOfView='60deg';actor.fieldOfView=fov+'deg';const viewWidth=2*depth*tanFov*aspect,space=Math.max(gap,(viewWidth-totalWidth)/5);let cursor=-viewWidth/2+space;
+ const plane=homeCamera.clone().addScaledVector(forward,depth),vertical=(1-2*footPixel/height)*depth*tanFov,alignment={};
+ for(const n of entities){const root=scene.getObjectByName('Actor'+n[0].toUpperCase()+n.slice(1)),rest=restLayouts.get(n),old=root.getWorldPosition(v()),oldQ=root.getWorldQuaternion(root.quaternion.clone()),goal=plane.clone().addScaledVector(right,cursor+rest.width/2).addScaledVector(up,vertical);cursor+=rest.width+space;
+  const current=rest.front.clone().applyQuaternion(oldQ),toward=homeCamera.clone().sub(goal);current.y=0;toward.y=0;const yaw=Math.atan2(toward.x,toward.z)-Math.atan2(current.x,current.z),turn=root.quaternion.clone().setFromAxisAngle(v(0,1,0),yaw);root.quaternion.copy(root.parent.getWorldQuaternion(root.quaternion.clone()).invert().multiply(turn.clone().multiply(oldQ)));root.updateWorldMatrix(false,true);const anchor=root.localToWorld(nameAnchors.get(n).clone()),next=old.clone().add(goal.clone().sub(anchor)),delta=next.clone().sub(old);root.position.copy(root.parent.worldToLocal(next));root.updateWorldMatrix(false,true);scene.updateMatrixWorld(true);controllers.get(n)?.relocate(delta.toArray(),turn.toArray(),old.toArray());alignment[n]=rest.front.clone().applyQuaternion(root.getWorldQuaternion(root.quaternion.clone())).normalize().dot(toward.normalize());}
+ window.__auditNetwork.facingAlignment=alignment;window.__auditNetwork.layout={width,height,bodyHeight,fov,desiredHeight,depth};actor.updateComplete.then(()=>{actor.jumpCameraToGoal();scene.queueRender();names()});
+}
+function requestLayout(){if(layoutQueued)return;layoutQueued=true;requestAnimationFrame(()=>{layoutQueued=false;staging()})}
 
 function points(job){return projection[job.request]||{source:{x:entities.indexOf(job.entity)/4+.125,y:1.08},target:{x:entities.indexOf(job.entity)/4+.125,y:1.08},outside:true}}
 function display(snapshot){
@@ -38,18 +55,19 @@ function display(snapshot){
  }
  if(!preview)native({event:'watched',requests:[...new Set([...controllers.values()].map(c=>c.inspect().job?.request).filter(Boolean))]});
  window.__auditNetwork.observation=observed;
+ revealTogether();
 }
 async function initialize(){
- actor.pause();await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+ actor.pause();await actor.updateComplete;
  for(let p=actor;p;p=Object.getPrototypeOf(p))for(const symbol of Object.getOwnPropertySymbols(p))if(symbol.description==='scene'&&actor[symbol]?.getObjectByName)scene=actor[symbol];
  if(!scene)throw Error('3D scene unavailable');scene.mixer.stopAllAction();actor.minimumRenderScale=1;normalizeActors();
- staging();
+ staging();await actor.updateComplete;actor.jumpCameraToGoal();
  const prototype=scene.getObjectByName('ReportFromMining');if(!prototype)throw Error('Report geometry unavailable');prototype.visible=false;prototype.scale.setScalar(1);
  for(const entity of entities)controllers.set(entity,window.pgnCreateAuditController(scene,entity,prototype));
- ready=true;scene.queueRender();names();new ResizeObserver(()=>staging()).observe(actor);native({event:'ready'});if(latest)display(latest);
+ ready=true;scene.queueRender();names();new ResizeObserver(()=>requestLayout()).observe(actor);native({event:'ready'});if(latest)display(latest);
 }
 window.pgnAuditApply=value=>{latest=value;if(ready)display(value)};
-window.pgnAuditProject=value=>{projection=value;for(const c of controllers.values()){const job=c.inspect().job;if(job)c.setEndpoints(points(job))}};
+window.pgnAuditProject=value=>{projection=value;for(const c of controllers.values()){const job=c.inspect().job;if(job)c.setEndpoints(points(job))}revealTogether()};
 window.pgnAuditSuspend=()=>{shown=false;preview=false;model.suspend();for(const controller of controllers.values())controller.clear();scene?.queueRender()};
 const id=n=>n.toString(16).padStart(64,'0');
 function fixture(height,jobs,rebase=false){return{schema:'PGN_AUDIT_ACTIVITY_V1',state:{genesis:id(1),bestblockhash:id(height+100),height},scope:'global_counts_with_bounded_public_job_rows',rebase,truncated:false,totals:{active_reports:4,active_jobs:4,recent_reports:0,passed_audits_since_height:0,selected_active_reports:4,selected_recent_reports:0},audits:jobs.map((job,i)=>({request_id:id(i+1),audited:false,jobs:[job]}))}}
@@ -88,9 +106,9 @@ window.pgnAuditTrajectoryProbe=async()=>{
 let dragging=false,home={theta:0,phi:84*Math.PI/180,radius:13};actor.addEventListener('pointerdown',()=>{dragging=true});for(const e of['pointerup','pointercancel','lostpointercapture'])actor.addEventListener(e,()=>{dragging=false});
 actor.addEventListener('camera-change',()=>names());
 function tick(now){let dt=Math.min(.06,(now-last)/1000||0);last=now;
- if(ready&&shown&&!document.hidden&&now-lastRender>=1000/30){dt=Math.min(.1,(now-lastRender)/1000);lastRender=now;
+ if(ready&&shown&&!document.hidden){dt=Math.min(.1,(now-lastRender)/1000);lastRender=now;
   if(preview&&now-window.__auditNetwork.previewStarted>14000){for(const c of controllers.values()){const j=c.inspect().job;if(j&&!['passed','failed'].includes(j.state))c.apply({...j,state:'passed'},points(j))}}
-  for(const c of controllers.values()){let rest=dt;while(rest>1e-6){const step=Math.min(rest,1/60);c.step(step);rest-=step}if(c.inspect().metrics.complete)c.clear()}
+  for(const c of controllers.values()){let rest=dt;while(rest>1e-6){const step=Math.min(rest,1/60);c.step(step);rest-=step}const state=c.inspect();if(state.metrics.complete&&canCompleteLanding(state.job,window.pgnAuditLandingMarker?.(state.job),state.age,preview))c.clear()}
   if(!dragging){const orbit=actor.getCameraOrbit(),k=1-Math.exp(-dt*4),theta=orbit.theta+(home.theta-orbit.theta)*k,phi=orbit.phi+(home.phi-orbit.phi)*k;actor.cameraOrbit=`${theta}rad ${phi}rad ${home.radius}m`}
   names();
  }requestAnimationFrame(tick)}requestAnimationFrame(tick);

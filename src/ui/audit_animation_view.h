@@ -14,6 +14,7 @@ public:
  ~AuditAnimationView()override;
  void preview();
  void reproject();
+ void prepareForStartup(std::function<void()> finished);
  std::function<void(const QJsonObject&)> onAtlasCommand;
 protected:
  void showEvent(QShowEvent*)override;
@@ -21,6 +22,7 @@ protected:
  void resizeEvent(QResizeEvent*)override;
 private:
  struct Impl;std::unique_ptr<Impl> impl_;
+ void prepareRenderer();
  void refresh();
 };
 }

@@ -34,6 +34,18 @@ class MiningFlowCycleTests(unittest.TestCase):
         flow.audit_lanes[0].current_audit=None;flow.audit_lanes[1].current_audit=None
         flow.waiting();self.assertEqual(messages[-1],(flow.prefetch.error,'Waiting for next ticket'))
 
+    def test_readonly_visual_cycle_carries_two_audits_and_search_without_mutating_state(self):
+        from collections import deque
+        state=dict(work=dict(ticket_number='42',length='200000000000000'),audits=[dict(stage='committed'),dict(stage='assigned')])
+        original=copy.deepcopy(state)
+        flow=object.__new__(MiningFlow);flow.gpu=SimpleNamespace(condition=threading.Condition(),active=SimpleNamespace(context=dict(role='audit',work_cycle='a'*64,audit_position=1)),search=deque(),audit_service_view=lambda:dict(active_role='audit'))
+        flow.cycles=SimpleNamespace(snapshot=lambda request:copy.deepcopy(state));flow.cycle_audit_positions={('a'*64,0):10**13,('a'*64,1):10**13};flow.audit_pressure_notice=None
+        view=flow.audit_service_snapshot()['cycle'];self.assertEqual(view['active_index'],1);self.assertEqual(view['ticket_number'],'42');self.assertEqual(view['audits'][1]['positions'],'10000000000000');self.assertEqual(state,original)
+        flow.gpu.active.context=dict(role='audit',audit_position=0);flow.gpu.search.append(SimpleNamespace(context=dict(work_cycle='a'*64)))
+        self.assertTrue(flow.audit_service_snapshot()['cycle']['catch_up']);self.assertEqual(state,original)
+        def retired(request):raise ValueError('No retained cycle')
+        flow.cycles.snapshot=retired;self.assertNotIn('cycle',flow.audit_service_snapshot())
+
     def test_real_empty_queue_acknowledges_pause_before_first_gpu_job(self):
         from horizon_gpu_queue import ResidentGpuQueue
         stopped=threading.Event();enabled=threading.Event();ack=threading.Event();events=[]

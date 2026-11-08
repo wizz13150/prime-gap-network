@@ -37,10 +37,10 @@ public:
 };
 class Surface final:public QWidget{
  ICoreWebView2Environment* environment_{};ICoreWebView2Controller* controller_{};ICoreWebView2* web_{};
- QLibrary loader_;QString error_,profile_,assets_,resourceFile_,resourcePrefix_,entry_{"animation.html"};QJsonObject latest_;bool loaded_{},coinit_{};
+ QLibrary loader_;QString error_,profile_,assets_,resourceFile_,resourcePrefix_,entry_{"animation.html"};QJsonObject latest_;bool loaded_{},coinit_{},prewarming_{};
  using Create=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
  void fail(const QString& text){error_=text;setProperty("pgn_audit3d_error",text);update();if(onError)onError(text);}
- void fit(){if(controller_){RECT r{0,0,LONG(width()*devicePixelRatioF()),LONG(height()*devicePixelRatioF())};controller_->put_Bounds(r);controller_->put_IsVisible(isVisible());}}
+ void fit(){if(controller_){RECT r{0,0,LONG(width()*devicePixelRatioF()),LONG(height()*devicePixelRatioF())};controller_->put_Bounds(r);controller_->put_IsVisible(isVisible()||prewarming_);}}
  HRESULT resourceResponse(ICoreWebView2WebResourceRequestedEventArgs* args,const QString& text){
   setProperty("pgn_audit3d_resource_requests",property("pgn_audit3d_resource_requests").toInt()+1);setProperty("pgn_audit3d_last_resource",text);
   const QUrl url(text);static const QSet<QString> names{"audit_native_rail.mjs","audit_mesh_clearance.mjs","network-animation.html","audit_network_controller.js","audit_network_scene.mjs","audit_activity_model.mjs","four-audit-entities.glb","assets.json","WEBVIEW2-LICENSE.txt"};
@@ -52,6 +52,10 @@ class Surface final:public QWidget{
   auto hr=environment_->CreateWebResourceResponse(stream,200,L"OK",headers.c_str(),&response);stream->Release();if(SUCCEEDED(hr)){hr=args->put_Response(response);response->Release();}return hr;
  }
  void configure(){
+  ICoreWebView2Controller2* background{};
+  if(SUCCEEDED(controller_->QueryInterface(IID_ICoreWebView2Controller2,reinterpret_cast<void**>(&background)))){
+   background->put_DefaultBackgroundColor(COREWEBVIEW2_COLOR{255,3,20,27});background->Release();
+  }
   const QPointer<Surface> guard(this);web_->get_Settings(&settings_);
   if(settings_){settings_->put_AreDevToolsEnabled(FALSE);settings_->put_AreDefaultContextMenusEnabled(FALSE);settings_->put_IsStatusBarEnabled(FALSE);settings_->put_IsZoomControlEnabled(FALSE);settings_->put_AreHostObjectsAllowed(FALSE);}
   if(resourceFile_.isEmpty()){
@@ -83,7 +87,7 @@ class Surface final:public QWidget{
   auto message=new Callback<ICoreWebView2WebMessageReceivedEventHandler,ICoreWebView2*,ICoreWebView2WebMessageReceivedEventArgs*>([guard](auto*,auto* args){
    if(!guard)return S_OK;LPWSTR origin{};if(FAILED(args->get_Source(&origin)))return S_OK;const QString source=QString::fromWCharArray(origin);CoTaskMemFree(origin);if(!source.startsWith("https://pgn-audit.invalid/"))return S_OK;
    LPWSTR value{};if(FAILED(args->TryGetWebMessageAsString(&value)))return S_OK;const QString text=QString::fromWCharArray(value);CoTaskMemFree(value);if(text.size()>32768){guard->fail("A 3D animation message exceeded its size limit");return S_OK;}
-   const auto json=QJsonDocument::fromJson(text.toUtf8()).object();if(json.value("event")=="atlas"&&guard->onAtlas){guard->onAtlas(json);return S_OK;}if(json.value("event")=="ready"){guard->loaded_=true;guard->setProperty("pgn_audit3d_ready",true);if(!guard->latest_.isEmpty())guard->present(guard->latest_);if(guard->onReady)guard->onReady();}else if(json.value("event")=="watched"&&guard->onWatched){const auto rows=json.value("requests").toArray();QJsonArray safe;if(rows.size()<=4)for(const auto& row:rows){const auto id=row.toString();if(id.size()==64&&std::all_of(id.begin(),id.end(),[](QChar c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');}))safe.append(id);}guard->onWatched(safe);}else if(json.value("event")=="probe"&&guard->onProbe)guard->onProbe(json);else if(json.value("event")=="error")guard->fail(json.value("message").toString().left(500));return S_OK;
+   const auto json=QJsonDocument::fromJson(text.toUtf8()).object();if(json.value("event")=="preview"){if(guard->loaded_&&guard->onPreview)guard->onPreview();return S_OK;}if(json.value("event")=="presented"){guard->setProperty("pgn_audit3d_frame_ready",true);return S_OK;}if(json.value("event")=="atlas"&&guard->onAtlas){guard->onAtlas(json);return S_OK;}if(json.value("event")=="ready"){guard->loaded_=true;guard->setProperty("pgn_audit3d_ready",true);if(!guard->latest_.isEmpty())guard->present(guard->latest_);if(guard->onReady)guard->onReady();}else if(json.value("event")=="watched"&&guard->onWatched){const auto rows=json.value("requests").toArray();QJsonArray safe;if(rows.size()<=4)for(const auto& row:rows){const auto id=row.toString();if(id.size()==64&&std::all_of(id.begin(),id.end(),[](QChar c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');}))safe.append(id);}guard->onWatched(safe);}else if(json.value("event")=="probe"&&guard->onProbe)guard->onProbe(json);else if(json.value("event")=="error")guard->fail(json.value("message").toString().left(500));return S_OK;
   });web_->add_WebMessageReceived(message,&token);message->Release();fit();const auto uri=("https://pgn-audit.invalid/"+entry_).toStdWString();web_->Navigate(uri.c_str());
  }
  ICoreWebView2Settings* settings_{};
@@ -93,8 +97,8 @@ protected:
  void hideEvent(QHideEvent* e)override{QWidget::hideEvent(e);fit();suspend();}
  void paintEvent(QPaintEvent*)override{if(!loaded_){QPainter p(this);p.fillRect(rect(),QColor("#03131b"));if(!error_.isEmpty()){p.setPen(QColor("#e1bc7d"));p.drawText(rect().adjusted(18,8,-18,-8),Qt::AlignCenter|Qt::TextWordWrap,error_);}}}
 public:
- std::function<void()> onReady;std::function<void(QString)> onError;std::function<void(QJsonObject)> onProbe;std::function<void(QJsonArray)> onWatched;std::function<void(QJsonObject)> onAtlas;
- explicit Surface(QWidget* parent=nullptr):QWidget(parent){setAttribute(Qt::WA_NativeWindow);setMinimumHeight(180);}
+ std::function<void()> onReady,onPreview;std::function<void(QString)> onError;std::function<void(QJsonObject)> onProbe;std::function<void(QJsonArray)> onWatched;std::function<void(QJsonObject)> onAtlas;
+ explicit Surface(QWidget* parent=nullptr):QWidget(parent){setAttribute(Qt::WA_NativeWindow);setMinimumHeight(90);}
  ~Surface(){if(controller_){controller_->Close();controller_->Release();}if(settings_)settings_->Release();if(web_)web_->Release();if(environment_)environment_->Release();if(!resourceFile_.isEmpty())QResource::unregisterResource(resourceFile_,resourcePrefix_);if(coinit_)CoUninitialize();}
  void start(const QString& assets,const QString& profile,const QString& loader,const QString& entry="animation.html"){
   if(web_||environment_)return;
@@ -117,6 +121,7 @@ public:
   QTimer::singleShot(20000,this,[guard]{if(guard&&!guard->loaded_&&guard->error_.isEmpty())guard->fail("The 3D renderer did not become ready; network work remains available");});
  }
  void suspend(){latest_={};if(web_)web_->ExecuteScript(L"window.pgnAuditSuspend?.()",nullptr);}
+ void setPrewarming(bool value){prewarming_=value;fit();}
  void present(const QJsonObject& value){latest_=value;if(!loaded_||!web_)return;const auto script=(QString("window.pgnAuditApply?.(")+QString::fromUtf8(QJsonDocument(value).toJson(QJsonDocument::Compact))+QStringLiteral(");")).toStdWString();web_->ExecuteScript(script.c_str(),nullptr);}
  void preview(const QJsonObject& points={}){if(web_){const auto script=(QString("window.pgnAuditPreview?.(")+QString::fromUtf8(QJsonDocument(points).toJson(QJsonDocument::Compact))+QStringLiteral(");")).toStdWString();web_->ExecuteScript(script.c_str(),nullptr);}}
  void probe(){if(web_)web_->ExecuteScript(L"window.pgnAuditProbe?.()",nullptr);}

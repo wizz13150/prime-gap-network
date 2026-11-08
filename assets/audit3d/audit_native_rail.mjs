@@ -17,12 +17,13 @@ function redraw(){
  rail.replaceChildren();if(!atlas||!atlas.start||!atlas.end)return;
  const width=rail.clientWidth,svg=make('svg',{width:'100%',height:'100%',viewBox:`0 0 ${width} 58`},rail);
  for(const state of lanes())make('path',{d:`M0 ${y(state)}H${width}`,stroke:'#23424a','stroke-width':1},svg);
- // Bins describe coverage, not unique ticket identities. Hollow glyphs are
- // aggregate cells; solid glyphs below are exact detailed ticket identities.
+ // Bins describe coverage, not unique ticket identities. Their state color
+ // stays opaque across the whole rail; the detailed-page cutoff must never
+ // look like a disappearance or loss of validation. Bin clicks zoom in.
  if(atlas.details_truncated)for(let i=0;i<atlas.bins.length;i++){
   const bin=atlas.bins[i],x=unit((BigInt(bin.start)+BigInt(bin.end))/2n)*width;
   for(let s=0;s<states.length;s++)if(BigInt(bin.stages?.[states[s]]?.positions??0)>0n){
-   make('circle',{cx:x,cy:y(states[s]),r:2.2,fill:'none',stroke:colors[s],opacity:.45,'data-bin':i},svg);
+   const node=make('circle',{cx:x,cy:y(states[s]),r:2.5,fill:colors[s],'data-bin':i},svg);node.style.cursor='zoom-in';
   }
  }
  for(const item of atlas.details??[]){const x=unit((BigInt(item.start)+BigInt(item.end))/2n)*width;if(x<0||x>width)continue;
@@ -45,7 +46,7 @@ function redraw(){
  rail.dataset.detailCount=String(atlas.details?.length??0);rail.dataset.totalVisible=String(atlas.visible_assignments??0);
 }
 function endpoints(value){
- if(value?.__atlas){atlas=value.__atlas;redraw()}
+ if(value?.__atlas){atlas=value.__atlas;redraw();window.pgnAuditRailReady=!!atlas.start&&!!atlas.end}
  const result={...value};delete result.__atlas;if(!atlas)return result;
  const a=rail.getBoundingClientRect(),b=actor.getBoundingClientRect();
  for(const row of [...(atlas.details??[]).map(r=>({...r,request_id:r.request})),...jobs]){
@@ -57,6 +58,7 @@ function endpoints(value){
  return result;
 }
 const apply=window.pgnAuditApply,project=window.pgnAuditProject,oldPreview=window.pgnAuditPreview;
+window.pgnAuditLandingMarker=job=>atlas?.details?.find(row=>row.request===job?.request);
 window.pgnAuditApply=value=>{jobs=value.view?.audits??[];apply({...value,projection:endpoints(value.projection??{})})};
 window.pgnAuditProject=value=>project(endpoints(value));
 window.pgnAuditPreview=value=>{
@@ -82,4 +84,7 @@ rail.onpointerup=e=>{
  pressed=null;
 };
 rail.onpointercancel=()=>{pressed=null};rail.onwheel=e=>{e.preventDefault();const r=rail.getBoundingClientRect();send({action:'zoom',steps:e.deltaY<0?1:-1,x_ppm:Math.round((e.clientX-r.left)/r.width*1000000)})};
-for(const button of document.querySelectorAll('.atlas-tools button'))button.onclick=()=>send({action:button.dataset.action,steps:Number(button.dataset.steps??0)});
+for(const button of document.querySelectorAll('.atlas-tools button'))button.onclick=()=>{
+ if(button.dataset.action==='preview'){window.chrome?.webview?.postMessage(JSON.stringify({event:'preview'}));return}
+ send({action:button.dataset.action,steps:Number(button.dataset.steps??0)});
+};

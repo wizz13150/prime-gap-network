@@ -23,7 +23,7 @@ from horizon_network_audits import NetworkAudits
 from horizon_gold_proof import build as build_gap_proof, assemble as assemble_gold_proof
 from horizon_engine_host import EngineService
 from horizon_status_stream import ticket_frame
-from horizon_audit_progress import whole_audit_frame
+from horizon_audit_progress import WholeAuditPresentation
 from horizon_testnet_admission import AdmissionMonitor
 from pgn_native_contract import fields
 from pgn_session import atomic_bytes, SessionControllerBusy
@@ -177,6 +177,10 @@ class NetworkWorker:
         finally:
             cadence.observe_cost(time.monotonic_ns()-started)
 
+    def audit_frame(self, item, source=None, **options):
+        if not hasattr(self, "audit_presentation"):self.audit_presentation = WholeAuditPresentation()
+        return self.audit_presentation.frame(item, source, **options)
+
     def _present_progress(self, event):
         if getattr(self, 'cpu_only', False):
             current = self.source.current_frame
@@ -186,7 +190,7 @@ class NetworkWorker:
                     frame.update(phase='Paused',speed_rate=None,average_rate=None,compute_tests_rate=None,eta_rate=None)
                 if self.audits.presentation:
                     item = self.audits.presentation
-                    frame = whole_audit_frame(item, frame, paused=event.get('phase') == 'PAUSED_ACK')
+                    frame = self.audit_frame(item, frame, paused=event.get('phase') == 'PAUSED_ACK')
                 elif self.current:
                     frame.update(request_id=self.current['request_id'],title='Ticket '+str(self.current.get('ticket_number','')),work_role='search')
                 self.emit(frame)
@@ -195,12 +199,12 @@ class NetworkWorker:
             try:
                 item = self.audits.presentation
                 frame = ticket_frame(item["folder"], self.sequence)
-                frame = whole_audit_frame(item, frame, paused=event.get('phase') == 'PAUSED_ACK')
+                frame = self.audit_frame(item, frame, paused=event.get('phase') == 'PAUSED_ACK')
                 self.emit(frame)
             except (OSError, ValueError, KeyError) as error:
                 # A new internal input may not have its first session yet.
                 # Retain the audit's completed prefix instead of resetting it.
-                frame = whole_audit_frame(item, paused=event.get('phase') == 'PAUSED_ACK')
+                frame = self.audit_frame(item, paused=event.get('phase') == 'PAUSED_ACK')
                 frame['progress_notice'] = str(error)[:300]
                 self.emit(frame)
             return
@@ -653,6 +657,8 @@ def main():
         print(json.dumps(dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", phase="Waiting for controller", error_code=error.code, message=str(error)[:400])), flush=True)
         return 1
     except Exception as error:
-        print(json.dumps(dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", phase="Needs attention", message=str(error)[:400])), flush=True)
+        from horizon_failure_trace import failure_context,failure_message
+        context=failure_context(error,bundle=args.bundle,state_root=args.state_root,cookie=args.cookie)
+        print(json.dumps(dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", phase="Needs attention", message=failure_message(context),failure=context)), flush=True)
         return 1
     return 0

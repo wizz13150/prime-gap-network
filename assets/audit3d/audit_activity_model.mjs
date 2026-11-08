@@ -3,6 +3,13 @@
 // creates a reward, signs a message, or infers computation from elapsed time.
 const HASH=/^[0-9a-f]{64}$/,STATES=new Set(['assigned','committed','passed','failed']);
 const ENTITIES=['michael','helel','boshel','kitabel'];
+// The activity feed and Atlas are separate verified reads. Keep an arrived
+// constellation visible until its detailed marker can take over; never invent
+// a passed Atlas verdict to hide the read latency. Bound this visual hold.
+export function canCompleteLanding(job,marker,ageSeconds,preview=false){
+ if(preview||!marker||job?.state!=='passed'||job.reportAudited!==true)return true;
+ return marker.request===job.request&&marker.stage==='audits_passed'||ageSeconds>=8;
+}
 function require(value,message){if(!value)throw Error(message)}
 function actorEntity(script){let hash=2166136261;for(const c of script)hash=Math.imul(hash^c.charCodeAt(0),16777619)>>>0;return ENTITIES[hash%4]}
 export class AuditActivityModel{

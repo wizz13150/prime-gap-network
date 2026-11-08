@@ -28,10 +28,11 @@ int main(int argc,char** argv){
             scroll->setValue(0);render();
         }else require(bottom<=view.height());
     };
-    for(const auto& size:QList<QSize>{{147,260},{275,560}})for(int bits:{68,95}){
+    for(const auto& size:QList<QSize>{{147,260},{259,560},{260,560},{261,560},{275,560}})for(int bits:{68,95}){
         const auto start=bits==68?QString("150000000000000000000"):QString("30000000000000000000000000000"),end=bits==68?QString("150000200000000000000"):QString("30000000000000200000000000000");
         view.resize(size);view.present(scope,scope,QJsonObject{{"bits",bits},{"minimum_gap",bits==68?954:1350},{"start",start},{"end",end}});view.show();app.processEvents();QPixmap image(view.size());view.render(&image);
         require(view.property("pgn_summary_range_start")==start&&view.property("pgn_summary_range_end")==end);
+        require(view.property("pgn_summary_font_px").toInt()==13&&view.property("pgn_summary_detail_font_px").toInt()==12);
         const auto regions=view.property("pgn_summary_range_regions").toJsonArray();require(regions.size()==1&&regions.first().toObject().value("text").toString().contains(QString::number(bits)));verifyReadableLayout();
         if(argc>1){QDir().mkpath(QString::fromLocal8Bit(argv[1]));require(image.save(QDir(QString::fromLocal8Bit(argv[1])).filePath(QString("summary-%1x%2-%3bits.png").arg(size.width()).arg(size.height()).arg(bits))));}
     }

@@ -1,3 +1,4 @@
+#include "ui/render/network_status_label.h"
 #include "app/horizon_user_paths.h"
 #include "app/horizon_startup.h"
 #include "app/horizon_update_selector.h"
@@ -386,7 +387,7 @@ int main(int argc,char** argv) {
  auto* pgn=new MiningStatusButton("PGN\nPRIME GAP SEARCH");pgn->setFixedWidth(260);pgn->setCheckable(true);pgn->setChecked(true);
   pgn->setObjectName("pgn-primary-mining-tab");pgn->setFixedHeight(33);topBox->addWidget(pgn);
  auto* walletButton=new QPushButton("WALLET\nPGN CORE CLIENT",top);walletButton->setObjectName("pgn-primary-wallet-tab");walletButton->setCheckable(true);walletButton->setFixedWidth(210);walletButton->setCursor(Qt::PointingHandCursor);
-  auto* networkSummary=new QLabel("NETWORK · CONNECTING");networkSummary->setObjectName("pgn-global-network-status");networkSummary->setStyleSheet("font:9px monospace;color:#f6c566;padding:3px 12px;");
+  auto* networkSummary=new pgn::ui::NetworkStatusLabel("NETWORK · CONNECTING");networkSummary->setObjectName("pgn-global-network-status");networkSummary->setStyleSheet("font:9px monospace;color:#f6c566;padding:3px 12px;");
   auto networkObservation=std::make_shared<std::optional<pgn::wallet::ChainObservation>>();
   const auto displayNetwork=[walletButton,networkSummary,networkObservation,testnetMode,&inspectWallet]{
    const auto& anchor=*networkObservation;
@@ -401,13 +402,13 @@ int main(int argc,char** argv) {
    walletButton->setProperty("pgn_core_online",online);
    if(!online){
     using Condition=pgn::wallet::NetworkLinkCondition;
-    const auto caption=condition==Condition::Connecting?QString("◷ NETWORK · CONNECTING"):
-     condition==Condition::Disconnected?QString("● NETWORK · DISCONNECTED"):
-     condition==Condition::Unverified?QString("● CORE · IDENTITY NOT VERIFIED"):
-     condition==Condition::Unavailable?QString("◷ CORE READ UNAVAILABLE · RETRYING"):QString("◷ NETWORK STATUS · REFRESHING");
+    const auto caption=condition==Condition::Connecting?QString("NETWORK · CONNECTING"):
+     condition==Condition::Disconnected?QString("NETWORK · DISCONNECTED"):
+     condition==Condition::Unverified?QString("CORE · IDENTITY NOT VERIFIED"):
+     condition==Condition::Unavailable?QString("CORE READ UNAVAILABLE · RETRYING"):QString("NETWORK STATUS · REFRESHING");
     const bool stopped=condition==Condition::Disconnected||condition==Condition::Unverified;
     networkSummary->setStyleSheet(QString("QLabel{color:%1;font:12px Consolas;padding:3px 8px;}").arg(stopped?"#ff6474":"#8dccff"));
-    networkSummary->setText(caption);
+    networkSummary->setBusy(!stopped);networkSummary->setText(caption);
     networkSummary->setToolTip(inspectWallet?inspectWallet->property("pgn_core_link_detail").toString():QString("Waiting for the verified Core"));
     return;
    }
@@ -416,8 +417,10 @@ int main(int argc,char** argv) {
    const auto state=!anchor->synchronizing?QStringLiteral("SYNC UNKNOWN"):*anchor->synchronizing?QStringLiteral("SYNCING"):anchor->peers&&*anchor->peers==0?QStringLiteral("NO PEERS"):!anchor->peers?QStringLiteral("PEER STATUS UNAVAILABLE"):idleChain?QStringLiteral("CHAIN IDLE"):QStringLiteral("UP TO DATE");
    const auto networkStyle=QString("QLabel{color:%1;font:12px Consolas;padding:3px 8px;}").arg(idleChain?"#ffbd69":anchor->synchronizing&&*anchor->synchronizing?"#8dccff":"#69efc5");
    if(networkSummary->styleSheet()!=networkStyle)networkSummary->setStyleSheet(networkStyle);
-   networkSummary->setText(QString(testnetMode?"%4 TESTNET QA · TECHNICAL HEIGHT %1 · %2 PEERS · %3":"%4 NETWORK · HEIGHT %1 · %2 PEERS · %3").arg(anchor->height).arg(peers,state).arg(anchor->synchronizing&&*anchor->synchronizing?QStringList{"◴","◷","◶","◵"}.at((QDateTime::currentMSecsSinceEpoch()/500)%4):QString("●")));
-   if(testnetMode&&inspectWallet&&inspectWallet->property("pgn_network_gold_blocks").isValid())networkSummary->setText(QString("%5 TESTNET · GOLD BLOCKS %1 · LEDGER HEIGHT %2 · %3 PEERS · %4").arg(inspectWallet->property("pgn_network_gold_blocks").toLongLong()).arg(anchor->height).arg(peers,state).arg(anchor->synchronizing&&*anchor->synchronizing?QStringList{"◴","◷","◶","◵"}.at((QDateTime::currentMSecsSinceEpoch()/500)%4):QString("●")));
+   const auto peersLabel=peers+QString(anchor->peers&&*anchor->peers<=1?" PEER":" PEERS");
+   networkSummary->setBusy(anchor->synchronizing&&*anchor->synchronizing);
+   networkSummary->setText(QString(testnetMode?"TESTNET QA · TECHNICAL HEIGHT %1 · %2 · %3":"NETWORK · HEIGHT %1 · %2 · %3").arg(anchor->height).arg(peersLabel,state));
+   if(testnetMode&&inspectWallet&&inspectWallet->property("pgn_network_gold_blocks").isValid())networkSummary->setText(QString("TESTNET · GOLD BLOCKS %1 · LEDGER HEIGHT %2 · %3 · %4").arg(inspectWallet->property("pgn_network_gold_blocks").toLongLong()).arg(anchor->height).arg(peersLabel,state));
    networkSummary->setToolTip(QString("Verified Core observation: %1\nChain: %2\nTip: %3").arg(anchor->observedUtc.toUTC().toString(Qt::ISODateWithMs),anchor->genesis,anchor->tipHash));
   };
   auto* networkClock=new QTimer(&window);networkClock->setInterval(1000);QObject::connect(networkClock,&QTimer::timeout,&window,displayNetwork);networkClock->start();
@@ -445,10 +448,10 @@ int main(int argc,char** argv) {
  // TIME remains available explicitly without inventing dates for those gaps.
  pgn::ui::selectNativeGraphAxis(canvas,"length");
  QWidget* community=nullptr;QTableWidget* testnetTickets=nullptr;
- pgn::ui::NetworkWorkView* networkWork=nullptr;
+ pgn::ui::NetworkWorkView* networkWork=nullptr;pgn::ui::AuditAnimationView* auditAnimation=nullptr;
  if(testnetMode){networkWork=new pgn::ui::NetworkWorkView([&inspectWallet](int offset,auto consume){pgn::ui::readWalletTicketPage(inspectWallet,offset,std::move(consume));},[&inspectWallet](const QString& id,auto consume){pgn::ui::readWalletTicketDetails(inspectWallet,id,std::move(consume));},nullptr,[&inspectWallet](const QString& start,const QString& end,int bins,auto consume){pgn::ui::readWalletTicketAtlas(inspectWallet,start,end,bins,std::move(consume));});community=networkWork;}else community=pgn::ui::createCommunityView(bookings,nullptr,[canvas](const QString& id){return pgn::ui::miningDeviceAccent(canvas,id);});tabs->addTab(community,testnetMode?"Network work":"Community");
 #ifdef Q_OS_WIN
- if(networkWork){auto* animation=new pgn::ui::AuditAnimationView([&inspectWallet](qint64 height,const QString& hash,const QJsonArray& watched,auto done){pgn::ui::readWalletAuditActivity(inspectWallet,height,hash,watched,std::move(done));},[networkWork](const QJsonArray& rows,QWidget* surface){return networkWork->auditProjection(rows,surface);});networkWork->onAtlasProjectionChanged=[animation]{animation->reproject();};animation->onAtlasCommand=[networkWork](const QJsonObject& command){networkWork->atlasCommand(command);};networkWork->setAuditAnimation(animation);}
+ if(networkWork){auto* animation=new pgn::ui::AuditAnimationView([&inspectWallet](qint64 height,const QString& hash,const QJsonArray& watched,auto done){pgn::ui::readWalletAuditActivity(inspectWallet,height,hash,watched,std::move(done));},[networkWork](const QJsonArray& rows,QWidget* surface){return networkWork->auditProjection(rows,surface);});networkWork->onAtlasProjectionChanged=[animation]{animation->reproject();};animation->onAtlasCommand=[networkWork](const QJsonObject& command){networkWork->atlasCommand(command);};networkWork->setAuditAnimation(animation);auditAnimation=animation;}
 #endif
  bookings->onSelect=[tabs,community](const QString& id){tabs->setCurrentWidget(community);pgn::ui::selectCommunityBooking(community,id);};
   bookings->onMining=[tabs,miningPage]{tabs->setCurrentWidget(miningPage);};
@@ -759,7 +762,9 @@ int main(int argc,char** argv) {
  auto* footerBox=new QVBoxLayout(footer);footerBox->setContentsMargins(12,5,12,5);footerBox->setSpacing(3);
  auto* connectionRow=new QHBoxLayout;connectionRow->setSpacing(12);networkSummary->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);connectionRow->addWidget(networkSummary,1);
  auto* componentStatus=new pgn::ui::ComponentStatusStrip(pgn::ui::walletComponentVersionsContext(root,pgn::wallet::coreRuntimeDirectory(root,testnetMode),testnetMode),footer);connectionRow->addWidget(componentStatus);footerBox->addLayout(connectionRow);
- auto* detailsRow=new QHBoxLayout;detailsRow->addWidget(status,1);detailsRow->addWidget(hardwareNotice);footerBox->addLayout(detailsRow);box->addWidget(footer);window.setCentralWidget(shell);
+ // Connection internals remain available to diagnostic inspection; the public
+ // footer has a single stable row for network and component status.
+ status->setParent(footer);status->hide();hardwareNotice->setParent(footer);hardwareNotice->hide();box->addWidget(footer);window.setCentralWidget(shell);
  // A reversible graph-only safety switch. Source journals and control paths
  // belong to the engine/bridge, never to the expensive visualization consumer.
  QFile graphPolicy(pgn::app::mutableDataRoot(root)+"/runtime/graph-policy.json");
@@ -1337,6 +1342,10 @@ int main(int argc,char** argv) {
     ready->stop();ready->deleteLater();if(showWallet){major->setCurrentIndex(1);walletButton->setChecked(true);toolsButton->show();}else{pgn->setChecked(true);tabs->setCurrentWidget(community);}
    });ready->start();});
  }
- startupWindow.step(5,"Interface ready");QTimer::singleShot(0,&window,[&startupWindow]{startupWindow.finish();});
+ startupWindow.step(5,"Preparing the audit view");
+ QTimer::singleShot(0,&window,[&startupWindow,auditAnimation,networkWork]{
+  const auto ready=[&startupWindow]{startupWindow.step(6,"Interface ready");startupWindow.finish();};
+  if(networkWork)networkWork->prepareStartupMap();if(auditAnimation)auditAnimation->prepareForStartup(ready);else ready();
+ });
  return app.exec();
 }
