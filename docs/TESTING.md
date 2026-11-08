@@ -1,6 +1,6 @@
 # Current Windows testnet tester guide
 
-Download the current r69 Windows portable archive from the release, extract the complete folder, and launch PGN-Horizon.exe. Do not launch a component-update ZIP as the application. Older alpha packages use an older testnet epoch.
+Download the current Windows portable archive from the release, extract the complete folder, and launch PGN-Horizon.exe. Do not launch a component-update ZIP as the application. Older alpha packages use an older testnet epoch.
 
 1. With no wallet configuration, Horizon opens its setup assistant automatically. Choose a new testnet wallet or your existing Core data folder, review the path and confirm. Cancel leaves wallet creation unapplied. Already configured wallets reopen normally.
 2. Wait for synchronization through the integrated encrypted connection. No VPN or exposed wallet RPC port is required.

@@ -11,9 +11,9 @@ Prime Gap Network (PGN) is a collaborative initiative conceived by **Rob Smith**
 
 **PGN Horizon** is the network client in this repository: an integrated wallet, optimized search engines, automatic work tickets, independent audits, and views of network evidence. It owns its engine runtime and does not require an installed Scout application.
 
-## Windows network test — r69
+## Windows network test — UI 2026.11.8.76
 
-[Download Windows x64](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Windows-x64-r69.zip) · [Release and checksums](https://github.com/wizz13150/prime-gap-network/releases/tag/horizon-testnet-updates-epoch2) · [Tester guide](docs/TESTING.md)
+[Download Windows x64](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Windows-x64.zip) · [Release and checksums](https://github.com/wizz13150/prime-gap-network/releases/tag/horizon-testnet-updates-epoch2) · [Tester guide](docs/TESTING.md)
 
 This is the current portable Windows preview for supervised tests on the PGN testnet. Use this epoch's package when joining; older alpha packages belong to an older test network.
 
@@ -22,6 +22,8 @@ This is the current portable Windows preview for supervised tests on the PGN tes
 3. Let the integrated encrypted connection synchronize. No VPN or public wallet RPC port is required.
 4. In Profile, copy your **public mining identity** and send it to the testnet coordinator for approval. A connected peer is not automatically an admitted miner/auditor. Never send wallet files, keys or RPC credentials.
 5. Turn your GPU on. The normal work cycle handles assigned audits, searches, report publication and validation. There is no separate audit-only product mode.
+
+Existing r69 clients can update the Interface from **Software updates → Download selected → Restart and install**. The r69→76 update and Core reconnection have been tested on Windows; a successful update does not yet restore mining automatically in r76.
 
 ### What this preview provides
 
