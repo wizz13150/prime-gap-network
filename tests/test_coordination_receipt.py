@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src/protocol'))
 sys.path.insert(0, str(ROOT / 'src/engine/runtime_host'))
 from horizon_network_worker import NetworkWorker, save
+from horizon_coordination import native_header_hash
 
 
 class CoordinationReceiptTests(unittest.TestCase):
@@ -21,14 +22,17 @@ class CoordinationReceiptTests(unittest.TestCase):
         self.worker.root = Path(self.temp.name)
         self.worker.args = SimpleNamespace(pilot_coordination=True)
         self.calls = []
-        def call(method, params):
+        def call(method, params=None):
             self.calls.append(method)
+            if method=='getbestblockhash':return 'b'*64
             return dict(block=(b'\0' * 112 + b'\1').hex(), numeric_target='ff' * 32, parent='b' * 64)
         self.worker.rpc = SimpleNamespace(call=call)
+        active=patch('horizon_network_worker.active_candidate',return_value=False);active.start();self.addCleanup(active.stop)
 
     def retained(self, envelopes, confirmed=True):
         digest = hashlib.sha256(json.dumps(envelopes, separators=(',', ':')).encode()).hexdigest()
-        saved = dict(hash='a' * 64, parent='b' * 64, block='00' * 113,
+        block=bytearray(113);block[4:36]=bytes.fromhex('b'*64)[::-1];block[80]=2
+        saved = dict(hash=native_header_hash(block), parent='b' * 64, block=block.hex(),
                      operation_sha256=digest, confirmed=confirmed)
         save(self.worker.root / 'coordination-intent.json', saved)
         return saved
@@ -39,7 +43,7 @@ class CoordinationReceiptTests(unittest.TestCase):
             result = self.worker.ledger(['6a01'])
         self.assertEqual(result['block_hash'], original['hash'])
         self.assertEqual(confirm.call_count, 1)
-        self.assertEqual(self.calls, [])
+        self.assertEqual(self.calls, ['getbestblockhash'])
 
     def test_failed_revalidation_keeps_same_candidate_unconfirmed(self):
         original = self.retained(['6a01'])
@@ -49,7 +53,7 @@ class CoordinationReceiptTests(unittest.TestCase):
         self.assertEqual(retained['hash'], original['hash'])
         self.assertEqual(retained['block'], original['block'])
         self.assertFalse(retained['confirmed'])
-        self.assertEqual(self.calls, [])
+        self.assertEqual(self.calls, ['getbestblockhash'])
 
     def test_confirmed_empty_tick_still_advances_instead_of_reusing_forever(self):
         original = self.retained([])
@@ -63,7 +67,7 @@ class CoordinationReceiptTests(unittest.TestCase):
         with patch('horizon_network_worker.confirm_candidate'):
             result = self.worker.ledger([])
         self.assertEqual(result['block_hash'], original['hash'])
-        self.assertEqual(self.calls, [])
+        self.assertEqual(self.calls, ['getbestblockhash'])
 
     def test_new_operations_callback_never_adopts_another_retained_operation(self):
         previous = self.retained(['6a01'], confirmed=False)

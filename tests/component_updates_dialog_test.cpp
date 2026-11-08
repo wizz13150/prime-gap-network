@@ -35,6 +35,7 @@ int main(int argc,char** argv){
  dialog.presentLocal({{"manifest_state","valid"},{"components",newerLocal}});dialog.presentPublished({{"schema","PGN_AUTHENTICATED_COMPONENT_VIEW_V1"},{"publisher_authenticated",true},{"components",olderPublic}});
  check(!download->isEnabled()&&table->item(0,3)->text()=="Newer local build");check(dialog.findChild<QLabel*>("pgn-components-status")->text().contains("newer than the published"));
  dialog.presentPublished({{"schema","PGN_AUTHENTICATED_COMPONENT_VIEW_V1"},{"publisher_authenticated",true},{"components",newerLocal}});check(dialog.findChild<QLabel*>("pgn-components-status")->text()=="All components are up to date.");
+ dialog.presentUpdateFailure("HTTP error occurred with status 504");check(table->item(0,3)->text()=="Last check outdated"&&table->item(0,2)->text()=="3.0"&&!download->isEnabled());check(dialog.findChild<QLabel*>("pgn-components-status")->text().contains("GitHub update service")&&dialog.findChild<QLabel*>("pgn-components-status")->text().contains("Last successful check:"));
  dialog.presentLocal({{"manifest_state","valid"},{"components",installed}});dialog.presentPublished({{"schema","PGN_AUTHENTICATED_COMPONENT_VIEW_V1"},{"publisher_authenticated",true},{"components",available}});
  dialog.presentProgress({{"schema","PGN_UPDATE_PROGRESS_V1"},{"stage","verify"},{"component","ui"},{"completed",2048},{"total",4096}});
  auto* componentProgress=qobject_cast<QProgressBar*>(table->cellWidget(0,4));check(componentProgress&&componentProgress->value()==2048&&componentProgress->maximum()==4096);

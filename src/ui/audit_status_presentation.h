@@ -31,7 +31,7 @@ inline AuditStatusPresentation auditReportPresentation(const QJsonObject& report
     if(unknown)return auditStatusPresentation("unknown");
     if(report.value("audited")==true){auto result=auditStatusPresentation("passed");result.text="Both audits passed";return result;}
     if(committed)return auditStatusPresentation("committed");
-    if(assigned)return auditStatusPresentation("assigned");
+    if(assigned){auto result=auditStatusPresentation("assigned");result.text="Audits assigned";return result;}
     auto result=auditStatusPresentation("awaiting");result.text="Awaiting independent audits";return result;
 }
 

@@ -31,7 +31,12 @@ inline QJsonObject diagnosticMiningStartup(QWidget* canvas){
   {"stream_state",canvas->property("pgn_worker_stream_state").toInt()},
   {"stream_packets",canvas->property("pgn_worker_stream_packets").toLongLong()},
   {"stream_phase",canvas->property("pgn_worker_stream_phase").toString().left(80)},
-  {"stream_error",diagnosticStatusText(canvas->property("pgn_worker_stream_error").toString())}};
+  {"stream_error",diagnosticStatusText(canvas->property("pgn_worker_stream_error").toString())},
+  {"stream_notice",diagnosticStatusText(canvas->property("pgn_worker_stream_notice").toString())},
+  {"reconnect_attempts",canvas->property("pgn_worker_reconnect_count").toInt()},
+  {"reconnect_delay_ms",canvas->property("pgn_worker_reconnect_delay_ms").toInt()},
+  {"process",canvas->property("pgn_worker_process_state").toJsonObject()},
+  {"events",canvas->property("pgn_worker_process_events").toJsonArray()}};
  QJsonArray unsupported;
  for(const auto& item:canvas->property("pgn_local_runtime_unsupported").toJsonArray()){
   if(unsupported.size()>=32)break;

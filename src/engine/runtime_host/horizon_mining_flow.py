@@ -80,6 +80,7 @@ class MiningFlow:
         self.closed = False
         self.worker = worker
         self.outbox = ReportOutbox(worker.root, discoverer=getattr(worker, 'public_name', None))
+        self.recovered_report = None
         self.finalizer = finalize if finalize is not None else getattr(worker.source, 'finalize_report', None)
         if self.finalizer is not None and not callable(self.finalizer):
             raise ValueError('A callable scientific report finalizer is required')
@@ -134,6 +135,10 @@ class MiningFlow:
                               for i, audit in enumerate(self.audit_lanes)]
 
     def may_start_work(self, job):
+        if job.context['role'] == 'search' and getattr(self, 'recovered_report', None) is not None:
+            return False
+        if job.context['role'] == 'search' and self.finalizer is None and not self.outbox.capacity_available():
+            return False
         if (job.context['role'] == 'search' and self.finalizer is not None
                 and not self.preseal.capacity_available()):
             return False
@@ -354,6 +359,29 @@ class MiningFlow:
             return self.outbox.put(work, result)
         return self.preseal.put(work, result)
 
+    def drain_recovered_report(self):
+        """Resume a completed handoff without preventing the publisher starting.
+
+        A full bounded outbox is backpressure, not a fatal startup failure.
+        The completed session and sealed report remain immutable on disk.
+        Audit jobs remain eligible while publication frees a handoff slot.
+        """
+        pending = self.recovered_report
+        if pending is None:
+            return False
+        queue = self.preseal if self.finalizer is not None else self.outbox
+        if not queue.capacity_available():
+            return False
+        work, result = pending
+        try:
+            self.queue_report(work, result)
+        except BufferError:
+            return False
+        if self.cycles.contains(work['request_id']):
+            self.cycles.advance(work['request_id'], 'completed')
+        self.recovered_report = None
+        return True
+
     def finalize_reports(self):
         while not self.worker.quitting.is_set():
             try:
@@ -403,8 +431,12 @@ class MiningFlow:
         if pending:
             self.worker.message(' | '.join(pending), 'Completing audits')
             return
+        if not self.outbox.capacity_available():
+            detail = getattr(self.worker, 'network_notice', None) or 'Publishing retained completed reports'
+            self.worker.message(detail, 'Submitting reports')
+            return
         detail = ("Waiting for required audit submissions" if self.gpu.search_waiting_for_audits else
-                  self.prefetch.error or "Preparing the next signed network ticket")
+                  self.prefetch.error or getattr(self.worker, 'network_notice', None) or "Preparing the next signed network ticket")
         self.worker.message(detail, "Waiting for next ticket")
 
     def failed(self, error):
@@ -416,6 +448,7 @@ class MiningFlow:
         next_recheck = 0
         while not self.worker.quitting.is_set():
             try:
+                self.drain_recovered_report()
                 if time.monotonic() >= next_recheck:
                     next_recheck = time.monotonic() + 2
                     for cycle in self.cycles.reorg_held():
@@ -515,9 +548,9 @@ class MiningFlow:
                 if saved.get("state") == "COMPLETE" or saved.get("schema") == COMPLETED_TICKET_SCHEMA:
                     worker.current = work
                     result = worker.source.run_ticket(self.job(work), worker.args.piece_limit)
-                    self.queue_report(work, result)
-                    if self.cycles.contains(work["request_id"]):
-                        self.cycles.advance(work["request_id"], "completed")
+                    # Publication and audit lanes must start even when older
+                    # completed handoffs occupy every bounded outbox slot.
+                    self.recovered_report = (work, result)
                     work = None
                     resumed = False
         if work is not None:

@@ -23,16 +23,16 @@
       "sha256": "7ad89c232545348ebcc736feabba3e4f7cefcf6e59c6146ed6e430701e1a11e1"
     },
     "audit_network_scene.mjs": {
-      "bytes": 13828,
-      "sha256": "aa3f5d05a90d01f1904f2dc1314b42f1802522485344cb0b7de77a8411647eac"
+      "bytes": 15773,
+      "sha256": "fba234c8c7f9506edc80ad1bfc55388e4d7d63b37e6e5b4553c471a8c0b1792f"
     },
     "four-audit-entities.glb": {
       "bytes": 77552852,
       "sha256": "80032a7595d628ca1a04ca3410a5d7e5828b0d93e75f267efc46c1a755d71290"
     },
     "network-animation.html": {
-      "bytes": 1416513,
-      "sha256": "b403277a8fa5b02666f43c3823cbbbe9cdbd5bc2f93332a9e448e4244637e6e8"
+      "bytes": 1416526,
+      "sha256": "eea678172b7f1294dc11d27b05266c348b7913f2df09ff94eec3cf81b8fb8a67"
     },
     "WEBVIEW2-LICENSE.txt": {
       "bytes": 1487,

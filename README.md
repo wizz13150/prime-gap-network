@@ -11,11 +11,7 @@ Prime Gap Network (PGN) is a collaborative initiative conceived by **Rob Smith**
 
 **PGN Horizon** is the network client in this repository: an integrated wallet, optimized search engines, automatic work tickets, independent audits, and views of network evidence. It owns its engine runtime and does not require an installed Scout application.
 
-## Windows network test — UI 2026.11.8.80
-
-Wallet / Peers shows actual Core connections and exact byte counters. UI80 also handles update preparation write failures cleanly and fixes WebAssembly initialization in the audit renderer.
-
-UI80 also distinguishes audit preparation/current-partition computation from network acceptance, and makes interrupted update downloads atomic with a shared-volume temporary-space check.
+## Windows supervised testnet preview
 
 [Download Windows x64](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Windows-x64.zip) · [Release and checksums](https://github.com/wizz13150/prime-gap-network/releases/tag/horizon-testnet-updates-epoch2) · [Tester guide](docs/TESTING.md)
 
@@ -27,19 +23,13 @@ This is the current portable Windows preview for supervised tests on the PGN tes
 4. In Profile, copy your **public mining identity** and send it to the testnet coordinator for approval. A connected peer is not automatically an admitted miner/auditor. Never send wallet files, keys or RPC credentials.
 5. Turn your GPU on. The normal work cycle handles assigned audits, searches, report publication and validation. There is no separate audit-only product mode.
 
-Existing clients can update the Interface from **Software updates → Download selected → Restart and install**. The frozen r69 updater has been tested through a real signed download and installation of UI 2026.11.8.80 and its required Core 2026.11.8.4, followed by Core reconnection with the same wallet and data folder. Selecting the Interface update also includes this required Core reader; GPU and CPU engine versions are unchanged.
-
-**First upgrade from r69 or r76:** turn the GPU on again after this installation, because those older versions do not save active mining for the updater. **Subsequent updates started from r77:** the application records the active local devices for that update and restores them after its verified restart; a real GPU mining restart has been tested. An ordinary application launch does not silently start mining.
-
-Downloads show component and byte progress; installation shows its current stage. Free-space checks and error reporting are included. Updating remains optional. The Windows package includes four articulated audit couriers in **Network work**. Its **Preview animation** button runs a clearly labelled simulation. Normal activity follows the authenticated global audit stream, retains displayed job identities through completion, and rebases after tab changes instead of replaying historical events. Visual refinement remains ongoing. The browser renderer uses the installed Microsoft WebView2 Runtime; a missing runtime is reported without blocking the work table.
-
 ### What this preview provides
 
 - Optimized NVIDIA CUDA search images for SM86/SM120 and 67–95-bit intervals, with four memory profiles. The current network search domain begins inside the 68-bit band and ends at 2⁹⁵, exclusive.
 - Automatic tickets, durable audit commitments, report disclosure and independently assigned checks. Discovery, audit acceptance and payment are shown as separate states.
 - A real testnet wallet using **tPGN**, including available and immature balances, send/receive and wallet management. There is no conversion into mainnet PGN.
 - Best/Recent results, shared device cards, ticket/audit evidence, network history, and an Atlas with a graduation for every bit in its complete-domain view.
-- Optional signed updates for the interface, Core, GPU runtime and CPU runtime. The updater verifies payloads and preserves wallet data; updates are not forced. The hashed component archives are consumed by the updater; download the Windows portable archive to launch the application.
+- Optional signed updates for the interface, Core, GPU runtime and CPU runtime. The updater verifies payloads and preserves wallet data; updates are not forced. Component archives are fetched by the in-app updater; download the portable Windows archive to run Horizon.
 - Manual diagnostic ZIP export and scientific CSV export in **Number Lens → Native GPU observations → Export results (CSV)**. Exact gap endpoints, gap-size counts and provenance are retained for completed searches. Historical missing populations are disclosed, never invented.
 
 ### Qualification and remaining scope
@@ -50,7 +40,13 @@ CPU network operation/Huge pages and physical SM120 performance need wider quali
 
 The test ledger includes coordination records without coin issuance. **Ledger height is not Gold-block count.** Final Gold-only chain architecture, final economics and large-network load qualification remain development work. Complementary pseudoprime recovery is deferred in this preview; exhaustive scientific completeness against that case is not claimed. Ordinary network audits and exact Gold verification remain enabled.
 
-**Ubuntu source verification (2026-11-07):** [Download the complete Ubuntu source](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Ubuntu-source.zip). A clean Ubuntu 24.04 build of every Ninja target and all 245 CTest tests pass with Qt 6.4.2 and GCC 13.3. This is source to compile, not an Ubuntu binary. [Build instructions](docs/BUILDING.md).
+**Ubuntu source archive:** [Download the corrected complete source](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Ubuntu-source.zip). All default build targets compile successfully on Ubuntu 24.04 with GCC 13.3 and Qt 6.4.2. CTest: **236/245 tests pass; nine test failures remain under investigation**. This is not an all-tests-pass qualification. No new Ubuntu binary is included. Older Ubuntu alpha packages use an older network epoch. See [build instructions](docs/BUILDING.md).
+
+## Recovery and diagnostic update
+
+The next Windows component update repairs cold startup with a full publication queue and replaces obsolete coordination candidates using current Core templates while retaining the original candidate. Diagnostic captures retain bounded process failures from before recording starts. Update checks distinguish GitHub/server outages from local connection failures; an unsuccessful check does not mean the application is up to date.
+
+The audit scene is still under visual revision. The native scene/Atlas trajectory integration and Robert's physical SM120 startup remain unqualified. Ubuntu CI now builds every default target from a clean checkout and preserves the test log; a successful compile is reported separately from test failures.
 
 ## Search performance
 

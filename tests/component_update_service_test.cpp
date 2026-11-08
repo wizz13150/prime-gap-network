@@ -28,6 +28,10 @@ int main(int argc,char** argv){
  int checks=0;
  const auto require=[&](bool okay,const char* message){++checks;if(!okay)throw std::runtime_error(message);};
  try{
+  require(pgn::update::componentUpdateFailureMessage("HTTP error occurred with status 504").contains("GitHub update service"),"GitHub outage was not identified");
+  require(pgn::update::componentUpdateFailureMessage("HTTP 429").contains("429"),"Rate-limit detail lost");
+  require(pgn::update::componentUpdateFailureMessage("getaddrinfo failed").contains("Internet connection"),"Connection failure has no actionable message");
+  require(pgn::update::componentUpdateFailureMessage("Signature mismatch")=="Signature mismatch","Integrity error was relabelled as a network outage");
   QTemporaryDir temp;require(temp.isValid(),"Temporary directory unavailable");QDir().mkpath(temp.path()+"/UpdateRuntime");const auto helper=temp.path()+"/UpdateRuntime/horizon-updater.exe";require(QFile::copy(app.applicationFilePath(),helper),"Inert helper copy failed");QFile binary(helper);require(binary.open(QIODevice::ReadOnly),"Helper fixture unreadable");QCryptographicHash digest(QCryptographicHash::Sha256);require(digest.addData(&binary),"Fixture hash failed");binary.close();
   QJsonObject deployment{{"schema","PGN_UPDATE_DEPLOYMENT_V1"},{"network","testnet"},{"genesis_hash",QString(64,'5')},{"helper","UpdateRuntime/horizon-updater.exe"},{"sha256",QString::fromLatin1(digest.result().toHex())}};
   QFile descriptor(temp.path()+"/UpdateRuntime/deployment.json");require(descriptor.open(QIODevice::WriteOnly),"Descriptor fixture unavailable");descriptor.write(QJsonDocument(deployment).toJson());descriptor.close();

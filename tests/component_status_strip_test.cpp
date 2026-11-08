@@ -33,7 +33,8 @@ int main(int argc,char** argv){
  status->presentLocal({{"components",installed}});signedCatalog.insert("components",available);status->presentPublished(signedCatalog);if(updates->text()!="Updates · up to date")return 10;
  for(auto* button:status->findChildren<QToolButton*>())if(button!=updates&&(button->property("state")!="current"||!button->text().endsWith(" ✓")))return 11;
  status->presentUpdateChecking();if(updates->text()!="Updates · checking"||ui->property("state")!="checking"||ui->text().contains("✓"))return 12;
- status->presentUpdateFailure("Controlled offline check");if(updates->text()!="Updates · unavailable"||ui->property("state")!="stale"||!ui->text().endsWith(" ?"))return 13;
+ status->presentUpdateFailure("Controlled offline check");if(updates->text()!="Updates · check failed"||ui->property("state")!="stale"||!ui->text().endsWith(" ?"))return 13;
+ status->presentUpdateFailure("GitHub update service is temporarily unavailable (HTTP 504)");if(updates->text()!="Updates · GitHub unavailable"||ui->property("state")!="stale")return 17;
  status->presentPublished(signedCatalog);if(ui->property("state")!="current")return 14;
  // A local inventory refresh must keep a fresh signed comparison, while a
  // later failure must visibly withdraw it without changing installed versions.

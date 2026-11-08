@@ -43,7 +43,7 @@ private:
     static QColor color(size_t s){static const std::array<QColor,5> c{QColor("#70badb"),QColor("#e6bd64"),QColor("#ba9aee"),QColor("#63dfb3"),QColor("#f37b7e")};return c[s];}
     static QString stageTitle(size_t s){static const std::array<QString,5> names{"Assigned","Awaiting audits","Audits assigned","Audits passed","Audit failed"};return names[s];}
     QVector<size_t> visibleStages()const{QVector<size_t> result;const auto totals=snapshot_.value("totals").toObject();for(size_t s=0;s<5;++s)if(totals.value(pgn::wallet::AtlasStates[s]).toObject().value("tickets").toInteger()>0)result.append(s);if(result.isEmpty())result.append(0);return result;}
-    QRectF plot()const{return {14,76,qreal(std::max(1,width()-28)),qreal(std::max(50,height()-(bitScale_?230:136)))};}
+    QRectF plot()const{return {14,4,qreal(std::max(1,width()-28)),qreal(std::max(50,height()-(bitScale_?210:116)))};}
     Int first()const{return first_.isEmpty()?Int(0):Int(first_.toStdString());}
     Int last()const{return last_.isEmpty()?Int(1):Int(last_.toStdString());}
     static QString text(const Int& value){return QString::fromStdString(value.str());}
@@ -70,7 +70,7 @@ private:
         const bool entire=a==origin&&a+span==limit;
         const auto bits=[](const Int& n){return n>0?int(boost::multiprecision::msb(n))+1:1;};
         const int lowerBits=bits(a),upperBits=bits(Int(a+span-1));
-        bitScale_=upperBits-lowerBits>1;setProperty("pgn_ticket_atlas_bit_scale",bitScale_);setMinimumHeight(bitScale_?285:190);
+        bitScale_=upperBits-lowerBits>1;setProperty("pgn_ticket_atlas_bit_scale",bitScale_);setMinimumHeight(bitScale_?285:172);
         const auto bitLabel=lowerBits==upperBits?QString("%1 bits").arg(lowerBits):QString("%1–%2 bits").arg(lowerBits).arg(upperBits);
         domain_->setText(QString("%1 · %2 · %3").arg(entire?"Network domain":"Ticket area",bitLabel,bitScale_?"one band per bit":"linear scale"));
         domain_->setToolTip("Exact integer interval ["+text(a)+", "+text(a+span)+") · upper bound excluded. This is the network search domain, not detected hardware capacity.");
@@ -106,7 +106,7 @@ protected:
     void paintEvent(QPaintEvent*)override{
         QPainter p(this);p.setRenderHint(QPainter::Antialiasing);p.fillRect(rect(),QColor("#03141b"));const auto area=plot();
         p.setPen(QColor("#a8dbdf"));QFont f=font();f.setPixelSize(12);p.setFont(f);
-        const auto totals=snapshot_.value("totals").toObject();int lx=14,ly=50;
+        const auto totals=snapshot_.value("totals").toObject();int lx=14,ly=int(area.bottom())+(bitScale_?126:42);
         for(size_t s=0;s<5;++s){const QString label=stageTitle(s)+" "+QString::number(totals.value(pgn::wallet::AtlasStates[s]).toObject().value("tickets").toInteger());p.setPen(color(s));const int w=p.fontMetrics().horizontalAdvance(label)+22;if(lx+w>width()-10){lx=14;ly+=15;}p.drawEllipse(QPointF(lx+3,ly-3),3,3);p.drawText(lx+11,ly,label);lx+=w;}
         hits_.clear();p.save();p.setClipRect(area);const auto lanes=visibleStages();const qreal row=area.height()/lanes.size();std::array<int,5> lane{-1,-1,-1,-1,-1};
         for(qsizetype i=0;i<lanes.size();++i){lane[lanes[i]]=int(i);p.fillRect(QRectF(area.left(),area.top()+i*row,area.width(),row-2),QColor(9,33,42));}
@@ -183,13 +183,13 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* e)override{if(plot().contains(e->position()))zoom(2,e->position().x());}
 public:
     explicit TicketAtlasView(Reader reader,QWidget* parent=nullptr):QWidget(parent),reader_(std::move(reader)){
-        setObjectName("pgn-ticket-atlas");setMinimumHeight(190);setMaximumHeight(320);setCursor(Qt::OpenHandCursor);
+        setObjectName("pgn-ticket-atlas");setMinimumHeight(172);setMaximumHeight(320);setCursor(Qt::OpenHandCursor);
         setFont(QFont("Segoe UI",10));
         setStyleSheet("QWidget#pgn-ticket-atlas{background:#03141b;border:1px solid #27515d;border-radius:8px;} QPushButton{color:#bce8e7;background:#0b2e36;border:1px solid #386674;border-radius:5px;padding:3px 9px;font:12px 'Segoe UI';} QPushButton:hover{background:#174d54;border-color:#65d4c7;} QPushButton:pressed{background:#20645f;} QLabel{color:#a8cdd4;font-family:'Segoe UI';}");
         auto* controls=new QHBoxLayout;controls->setContentsMargins(12,7,12,0);auto* caption=new QLabel("TICKET ATLAS");caption->setStyleSheet("font-weight:600;color:#bfe6e7");controls->addWidget(caption);domain_=new QLabel("Network search domain");domain_->setStyleSheet("color:#a8cdd4");controls->addWidget(domain_,1);
         auto* active=new QPushButton("Active area"),*all=new QPushButton("Network domain"),*minus=new QPushButton("−"),*plus=new QPushButton("+");active->setObjectName("pgn-atlas-active");all->setObjectName("pgn-atlas-overview");
         for(auto* button:{active,all,minus,plus}){button->setMaximumHeight(26);controls->addWidget(button);}plus->setFixedWidth(30);minus->setFixedWidth(30);
-        auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,3);layout->addLayout(controls);layout->addStretch();status_=new QLabel("Reading the authenticated ticket map…");status_->setWordWrap(true);status_->setStyleSheet("color:#92bac6;font-size:12px");layout->addWidget(status_);layout->setStretch(1,1);
+        auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,3);layout->addStretch();layout->addLayout(controls);status_=new QLabel("Reading the authenticated ticket map…");status_->setWordWrap(true);status_->setStyleSheet("color:#92bac6;font-size:12px");layout->addWidget(status_);layout->setStretch(0,1);
         connect(active,&QPushButton::clicked,this,[this]{focusActive();});connect(all,&QPushButton::clicked,this,[this]{if(snapshot_.isEmpty())return;viewport(pgn::wallet::atlasInteger(snapshot_.value("range_origin")),pgn::wallet::atlasInteger(snapshot_.value("range_limit")));requestSoon();});
         connect(plus,&QPushButton::clicked,this,[this]{zoom(1,plot().center().x());});connect(minus,&QPushButton::clicked,this,[this]{zoom(-1,plot().center().x());});
         debounce_.setSingleShot(true);debounce_.setInterval(120);connect(&debounce_,&QTimer::timeout,this,[this]{fetch();});poll_.setInterval(5000);connect(&poll_,&QTimer::timeout,this,[this]{if(isVisible())fetch();});poll_.start();

@@ -9,6 +9,7 @@
 #include <QToolButton>
 #include <QStyle>
 #include <QTimer>
+#include <QDateTime>
 #include <QtConcurrent/QtConcurrentRun>
 #include <functional>
 #include <stdexcept>
@@ -58,7 +59,7 @@ public:
   setProperty("pgn_component_release_catalog",catalog);
   if(catalog.value("schema")=="PGN_AUTHENTICATED_COMPONENT_VIEW_V1"&&catalog.value("publisher_authenticated").toBool()){
    remoteFresh_=true;
-   setProperty("pgn_component_authenticated_catalog",catalog);QMap<QString,QString> available;
+   setProperty("pgn_component_authenticated_catalog",catalog);setProperty("pgn_component_last_checked_utc",catalog.value("checked_at_utc").toString());QMap<QString,QString> available;
    for(const auto& value:catalog.value("components").toArray()){const auto row=value.toObject();available.insert(row.value("id").toString(),row.value("version").toString());}
    int changes=0,unknown=0;const auto local=property("pgn_component_local_snapshot").toJsonObject().value("components").toArray();
    for(const auto& id:buttons_.keys()){
@@ -102,7 +103,7 @@ public:
    button->setToolTip("Installed files verified. The latest signed update check failed; current/update status is unconfirmed.\n"+error);
    button->style()->unpolish(button);button->style()->polish(button);
   }
-  updates_->setText("Updates · unavailable");updates_->setToolTip(error);
+  const auto checked=property("pgn_component_last_checked_utc").toString();updates_->setText(error.contains("GitHub update service")?"Updates · GitHub unavailable":error.contains("Internet connection")?"Updates · connection failed":"Updates · check failed");updates_->setToolTip(error+(checked.isEmpty()?QString("\nNo successful version check yet."):QString("\nLast successful check: ")+checked));
  }
  void checkSignedUpdates(){
   try{
@@ -123,6 +124,7 @@ public:
   const QPointer<ComponentStatusStrip> guard(this);
   dialog_->onLocalSnapshot=[guard](const QJsonObject& value){if(guard)guard->presentLocal(value);};
   dialog_->onPublishedCatalog=[guard](const QJsonObject& value){if(guard)guard->presentPublished(value);};
+  dialog_->onPublishedFailure=[guard](const QString& error){if(guard)guard->presentUpdateFailure(error);};
   dialog_->show();
  }
 private:

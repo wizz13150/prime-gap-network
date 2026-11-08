@@ -22,6 +22,7 @@ class MiningFlowCycleTests(unittest.TestCase):
         flow.worker=SimpleNamespace(message=lambda text,phase:messages.append((text,phase)))
         flow.gpu=SimpleNamespace(search_waiting_for_audits=False)
         flow.prefetch=SimpleNamespace(error='Required audit service before next range')
+        flow.outbox=SimpleNamespace(capacity_available=lambda:True)
         flow.audit_lanes=[SimpleNamespace(current_audit={'ranges':[{'index':12},{'index':30}], 'counts':[]}),
                           SimpleNamespace(current_audit={'ranges':[{'index':24},{'index':31}], 'counts':[7,8]})]
         flow.waiting();text,phase=messages[-1]

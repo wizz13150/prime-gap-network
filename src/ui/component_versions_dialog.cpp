@@ -2,6 +2,7 @@
 #include "ui/component_versions_dialog.h"
 #include "update/component_catalog.h"
 #include <QSignalBlocker>
+#include <QDateTime>
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
@@ -136,11 +137,11 @@ void ComponentVersionsDialog::presentLocal(const QJsonObject& snapshot){localSna
 void ComponentVersionsDialog::updateRows(){
  const auto chosen=selected();const QSignalBlocker guard(components_);components_->setRowCount(4);
  for(int index=0;index<ids.size();++index){QJsonObject local,available;for(const auto& entry:localSnapshot_.value("components").toArray())if(entry.toObject().value("id")==ids[index])local=entry.toObject();for(const auto& entry:published_.value("components").toArray())if(entry.toObject().value("id")==ids[index])available=entry.toObject();
-  const bool known=local.value("state")=="matched_local_manifest";const auto comparison=known?pgn::update::componentVersionComparison(local.value("version").toString(),available.value("version").toString()):std::optional<int>{};
+  const bool known=local.value("state")=="matched_local_manifest";const auto comparison=known&&publishedFresh_?pgn::update::componentVersionComparison(local.value("version").toString(),available.value("version").toString()):std::optional<int>{};
   auto* name=new QTableWidgetItem(names[index]);name->setData(Qt::UserRole,ids[index]);name->setFlags(Qt::ItemIsEnabled|Qt::ItemIsSelectable);const bool update=comparison&&*comparison<0;
   if(update){name->setFlags(name->flags()|Qt::ItemIsUserCheckable);name->setCheckState(chosen.isEmpty()||chosen.contains(ids[index])?Qt::Checked:Qt::Unchecked);}
   components_->setItem(index,0,name);components_->setItem(index,1,new QTableWidgetItem(known?local.value("version").toString():"Unverified"));components_->setItem(index,2,new QTableWidgetItem(available.value("version").toString("—")));
-  auto* state=new QTableWidgetItem(!known?"Local version unverified":!comparison?"Not verified":*comparison<0?"Update available":*comparison==0?"Up to date":"Newer local build");state->setForeground(update?QColor("#e5b96b"):comparison&&*comparison==0?QColor("#70d8bb"):QColor("#a0b7c0"));state->setToolTip(local.value("reason").toString());components_->setItem(index,3,state);
+  auto* state=new QTableWidgetItem(!known?"Local version unverified":!publishedFresh_&&!available.isEmpty()?"Last check outdated":!comparison?"Not checked":*comparison<0?"Update available":*comparison==0?"Up to date":"Newer local build");state->setForeground(update?QColor("#e5b96b"):comparison&&*comparison==0?QColor("#70d8bb"):QColor("#a0b7c0"));state->setToolTip(local.value("reason").toString()+"\nLast successful check: "+published_.value("checked_at_utc").toString("not available"));components_->setItem(index,3,state);
  }
  prepare_->setEnabled(!busy_&&!selected().isEmpty());
 }
@@ -152,21 +153,27 @@ bool ComponentVersionsDialog::ensureService(){
   if(!context_.genesisHash.isEmpty()&&context_.genesisHash!=deployment_.context.value("genesis_hash").toString())throw std::runtime_error("Update repository belongs to another Core epoch.");
   service_=new pgn::update::ComponentUpdateService(deployment_,this);service_->onStatus=[this](const QString& text){status_->setText(text);};
   service_->onProgress=[this](const QJsonObject& value){presentProgress(value);};
-  service_->onError=[this](const QString& error){setBusy(false);progress_->setValue(0);progress_->setFormat("Update stopped");status_->setText(error);updateRecovery();};
+  service_->onError=[this](const QString& error){presentUpdateFailure(error);};
   service_->onResult=[this](const QJsonObject& value){setBusy(false);if(value.value("schema")=="PGN_AUTHENTICATED_COMPONENT_VIEW_V1")presentPublished(value);else if(value.value("schema")=="PGN_UPDATE_INSTALL_PREPARATION_V1"){
    try{preparedRequest_=request("install",selected());preparedRequest_.insert("activation",pgn::update::currentUpdateActivation(context_.applicationRoot,context_.mutableDataRoot));prepare_->hide();install_->show();install_->setEnabled(true);status_->setText("Download verified. Restart when you are ready; mining will pause during installation. Wallets and results keep their current folders.");}
    catch(const std::exception& error){preparedRequest_={};status_->setText(QString::fromUtf8(error.what()));}
   }};return true;
- }catch(const std::exception& error){status_->setText(QString::fromUtf8(error.what()));return false;}
+ }catch(const std::exception& error){presentUpdateFailure(QString::fromUtf8(error.what()));return false;}
 }
-void ComponentVersionsDialog::refreshPublished(){if(localBusy_||busy_||installStarted_||!ensureService())return;preparedRequest_={};install_->hide();prepare_->show();setBusy(true);if(!service_->start(request("check",ids)))setBusy(false);}
+void ComponentVersionsDialog::presentUpdateFailure(const QString& detail){
+ publishedFresh_=false;setBusy(false);updateRows();progress_->setValue(0);progress_->setFormat("Update stopped");
+ const auto message=pgn::update::componentUpdateFailureMessage(detail);const auto checked=published_.value("checked_at_utc").toString();
+ status_->setText(message+(checked.isEmpty()?QString("\nNo successful version check yet."):QString("\nLast successful check: ")+checked));
+ if(onPublishedFailure)onPublishedFailure(message);updateRecovery();
+}
+void ComponentVersionsDialog::refreshPublished(){if(localBusy_||busy_||installStarted_||!ensureService())return;publishedFresh_=false;preparedRequest_={};install_->hide();prepare_->show();setBusy(true);updateRows();if(!service_->start(request("check",ids)))setBusy(false);}
 void ComponentVersionsDialog::presentPublished(const QJsonObject& value,const QString& status){
- if(value.value("schema")!="PGN_AUTHENTICATED_COMPONENT_VIEW_V1"||!value.value("publisher_authenticated").toBool()){status_->setText("Available component versions could not be authenticated.");return;}
- published_=value;if(onPublishedCatalog)onPublishedCatalog(value);updateRows();
+ if(value.value("schema")!="PGN_AUTHENTICATED_COMPONENT_VIEW_V1"||!value.value("publisher_authenticated").toBool()){presentUpdateFailure("Available component versions could not be authenticated.");return;}
+ published_=value;publishedFresh_=true;if(!published_.contains("checked_at_utc"))published_.insert("checked_at_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODate));if(onPublishedCatalog)onPublishedCatalog(published_);updateRows();
  QString summary=status;
  if(summary.isEmpty()){
   bool newer=false,unknown=false;
-  for(int row=0;row<components_->rowCount();++row){const auto text=components_->item(row,3)->text();newer|=text=="Newer local build";unknown|=text=="Local version unverified"||text=="Not verified";}
+  for(int row=0;row<components_->rowCount();++row){const auto text=components_->item(row,3)->text();newer|=text=="Newer local build";unknown|=text=="Local version unverified"||text=="Not checked"||text=="Last check outdated";}
   summary=!selected().isEmpty()?QString("Updates are available. Select components, download, then choose Restart and install.")
    :newer?QString("Your local build is newer than the published version. No downgrade will be installed.")
    :unknown?QString("No updates found for verified components. Some local versions could not be verified.")

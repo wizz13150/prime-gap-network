@@ -19,6 +19,7 @@ QJsonObject componentUpdateRequest(const ComponentUpdateDeployment&,const QJsonO
 std::optional<int> componentVersionComparison(QString installed,QString available);
 bool componentUpdateNeedsRecovery(const QString& genesis);
 bool validComponentUpdateProgress(const QJsonObject&);
+QString componentUpdateFailureMessage(const QString& detail);
 QJsonObject currentUpdateActivation(const QString& applicationRoot,const QString& mutableDataRoot);
 QString startDetachedComponentInstall(const ComponentUpdateDeployment&,const QJsonObject& request);
 

@@ -1,5 +1,6 @@
 #include "ui/diagnostic_capture_view.h"
 #include "ui/mining_startup_status.h"
+#include "ui/mining_process_diagnostics.h"
 #include <QApplication>
 #include <QTemporaryDir>
 #include <QPushButton>
@@ -9,6 +10,9 @@
 #include <QJsonDocument>
 #include <iostream>
 int main(int argc,char** argv){
+ if(argc>1&&QString::fromLocal8Bit(argv[1])=="--process-failure"){
+  std::cerr<<"Traceback: C:/Users/example/private-folder/engine.py\nModuleNotFoundError: missing_runtime_module\npassword=INERT-SENSITIVE\n";return 7;
+ }
  QApplication app(argc,argv);if(argc!=2)return 2;QTemporaryDir folder;if(!folder.isValid())return 3;
  QWidget canvas;QLabel startup;
  pgn::ui::presentMiningStartup(&canvas,&startup,"prepare_failed","Missing module: C:/Users/example/private-folder/worker.exe");
@@ -19,6 +23,21 @@ int main(int argc,char** argv){
  if(!startup.isHidden()||canvas.property("pgn_local_runtime_stage").toString()!="ready")return 14;
  pgn::ui::presentMiningStartup(&canvas,&startup,"gpu_unavailable","NVIDIA hardware query failed");
  if(startup.isHidden()||!startup.text().contains("NVIDIA hardware query failed"))return 15;
+  {
+   QProcess process;pgn::ui::MiningProcessDiagnostics diagnostic(&canvas,&process,"GPU-FIXTURE");
+   QObject::connect(&process,&QProcess::readyReadStandardError,&process,[&]{diagnostic.standardError(process.readAllStandardError());});
+   diagnostic.intent(true);diagnostic.launching("network");process.start(QCoreApplication::applicationFilePath(),{"--process-failure"});
+   QElapsedTimer until;until.start();while((process.state()!=QProcess::NotRunning||!canvas.property("pgn_worker_process_state").toJsonObject().contains("exit_code"))&&until.elapsed()<5000){app.processEvents();QThread::msleep(2);}
+   const auto captured=pgn::ui::diagnosticMiningStartup(&canvas);const auto state=captured["process"].toObject();const auto raw=QJsonDocument(captured).toJson();
+   if(state["exit_code"]!=7||state["exit_kind"]!="normal"||!state["stderr_tail"].toString().contains("missing_runtime_module")||raw.contains("private-folder")||raw.contains("INERT-SENSITIVE")||captured["events"].toArray().size()<4)return 16;
+   // A subsequent launch must not erase the preceding failure before a user
+   // can start recording. Event storage remains bounded under repeated retries.
+   for(int i=0;i<40;++i)diagnostic.intent(true);diagnostic.launching("network");
+   if(canvas.property("pgn_worker_process_events").toJsonArray().size()!=24||!canvas.property("pgn_worker_process_state").toJsonObject()["last_failure"].toString().contains("missing_runtime_module"))return 17;
+   process.setProgram(QCoreApplication::applicationFilePath()+".absent");process.setArguments({});process.start();until.restart();
+   while(!canvas.property("pgn_worker_process_state").toJsonObject().contains("process_error")&&until.elapsed()<5000){app.processEvents();QThread::msleep(2);}
+   if(canvas.property("pgn_worker_process_state").toJsonObject()["process_error"].toInt(-1)!=int(QProcess::FailedToStart))return 18;
+  }
  const QJsonObject inventory{{"schema","PGN_LOCAL_COMPONENT_VIEW_V1"},{"components",QJsonArray{
   QJsonObject{{"id","ui"},{"state","matched_local_manifest"},{"version","2026.11.7.45"},{"primary_bound",true},{"code_root","C:/Users/example/private-location"},{"private_key","INERT-DO-NOT-COPY"}},
   QJsonObject{{"id","cpu"},{"state","unidentified"},{"version","99.0"},{"reason","password=INERT-DO-NOT-COPY"}}}}};

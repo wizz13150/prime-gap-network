@@ -25,8 +25,10 @@ public:
  void presentLocal(const QJsonObject&);
  void presentPublished(const QJsonObject&,const QString& status={});
  void presentProgress(const QJsonObject&);
+ void presentUpdateFailure(const QString&);
  std::function<void(const QJsonObject&)> onLocalSnapshot;
  std::function<void(const QJsonObject&)> onPublishedCatalog;
+ std::function<void(const QString&)> onPublishedFailure;
 private:
  void updateRows();void prepareSelected();void installPrepared();void setBusy(bool);void updateRecovery();
  QStringList selected()const;QJsonObject request(const QString&,const QStringList&)const;bool ensureService();
@@ -36,6 +38,6 @@ private:
  QPointer<QFutureWatcher<QJsonObject>> localWatcher_;
  pgn::update::ComponentUpdateService* service_{};pgn::update::ComponentUpdateDeployment deployment_;
  QJsonObject localSnapshot_,published_,preparedRequest_;QTimer* resultPoll_{};
- bool localBusy_{},busy_{},closing_{},installStarted_{};
+ bool localBusy_{},busy_{},closing_{},installStarted_{},publishedFresh_{};
 };
 }

@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from horizon_core_rpc import CoreRpc
-from horizon_coordination import confirm_candidate
+from horizon_coordination import confirm_candidate, active_candidate, validate_intent
 from horizon_sync_guard import wait_for_network
 from horizon_compute_lease import computation_lease_active
 from horizon_ticket_request import signed_request_parameters
@@ -297,17 +297,33 @@ class NetworkWorker:
             previous=json.loads(journal.read_bytes())
             same_operation = previous.get("operation_sha256") == operation
             if not previous.get("confirmed") or (envelopes and same_operation):
-                # Resolve the retained exact candidate before creating another.
-                # An unresolved publication never disappears behind a new one.
-                previous["confirmed"] = False
-                save(journal, previous)
-                if on_intent is not None and same_operation:
-                    on_intent(previous)
-                confirm_candidate(self.rpc,previous)
-                previous["confirmed"]=True
-                save(journal,previous)
-                if same_operation:
-                    return dict(block_hash=previous["hash"], operation_sha256=operation)
+                validate_intent(previous)
+                accepted = active_candidate(self.rpc, previous)
+                tip = self.rpc.call('getbestblockhash')
+                if not accepted and tip != previous['parent']:
+                    # Preserve the exact old candidate; do not call an orphan
+                    # confirmed or retry its obsolete physical block forever.
+                    # The caller supplies a fresh Core-authorized operation;
+                    # the immutable report/audit identity is not rewritten.
+                    archive = self.root / 'coordination-history'
+                    archive.mkdir(exist_ok=True)
+                    retained = archive / (previous['hash'] + '.json')
+                    if retained.exists():
+                        if retained.stat().st_size > 262144 or json.loads(retained.read_bytes()) != previous:
+                            raise ValueError('Retained coordination candidate changed')
+                    else:
+                        save(retained, previous)
+                else:
+                    if not accepted:
+                        previous['confirmed'] = False
+                        save(journal, previous)
+                        if on_intent is not None and same_operation:
+                            on_intent(previous)
+                        confirm_candidate(self.rpc, previous)
+                    previous['confirmed'] = True
+                    save(journal, previous)
+                    if same_operation:
+                        return dict(block_hash=previous['hash'], operation_sha256=operation)
         template = self.rpc.call("getpgnbootstraptemplate", [envelopes])
         block = bytearray.fromhex(template["block"])
         target = int(template["numeric_target"], 16)

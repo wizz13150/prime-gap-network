@@ -15,6 +15,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QTimer>
+#include <QDateTime>
 #include <stdexcept>
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -51,6 +52,15 @@ std::optional<int> componentVersionComparison(QString installed,QString availabl
     if(!numeric.match(installed).hasMatch()||!numeric.match(available).hasMatch())return {};
     installed.replace('-','.');available.replace('-','.');
     return QVersionNumber::compare(QVersionNumber::fromString(installed).normalized(),QVersionNumber::fromString(available).normalized());
+}
+QString componentUpdateFailureMessage(const QString& detail){
+ const auto value=detail.left(512);
+ const auto http=QRegularExpression("\\b(?:status|HTTP)\\D{0,32}(5[0-9]{2}|429)\\b",QRegularExpression::CaseInsensitiveOption).match(value);
+ if(http.hasMatch())return "GitHub update service is temporarily unavailable (HTTP "+http.captured(1)+"). Version status could not be checked. Try again later.";
+ if(QRegularExpression("getaddrinfo|name.?resolution|connection.*(?:failed|refused|reset)|timed? ?out|network.*unreachable|WinError (?:10060|10061|11001)",QRegularExpression::CaseInsensitiveOption).match(value).hasMatch())
+  return "Cannot reach the update server. Check your Internet connection and try again. Version status is unconfirmed. Details: "+value;
+ if(value=="Update deployment is unavailable")return "Update setup is incomplete in this application folder. Download and extract the corrected complete Horizon package.";
+ return value;
 }
 bool validComponentUpdateProgress(const QJsonObject& value){
  const auto done=value.value("completed"),total=value.value("total");
@@ -184,7 +194,8 @@ void ComponentUpdateService::complete(){
     if(error.isEmpty()&&!result.value("publisher_authenticated").toBool())error="The update result has no verified publisher identity.";
     const auto expected=action_=="check"?QString("PGN_AUTHENTICATED_COMPONENT_VIEW_V1"):action_=="prepare"?QString("PGN_AUTHENTICATED_STAGE_RECEIPT_V1"):QString("PGN_UPDATE_INSTALL_PREPARATION_V1");
     if(error.isEmpty()&&result.value("schema").toString()!=expected)error="The update helper returned an unexpected result type.";
-    if(!error.isEmpty()){if(onError)onError(error);return;}
-    if(onResult)onResult(result);
+    if(!error.isEmpty()){if(onError)onError(componentUpdateFailureMessage(error));return;}
+    auto observed=result;if(action_=="check")observed.insert("checked_at_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    if(onResult)onResult(observed);
 }
 }
