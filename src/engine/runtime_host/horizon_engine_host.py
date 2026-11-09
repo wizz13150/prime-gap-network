@@ -338,7 +338,12 @@ class EngineService:
             raise RuntimeError("Optimized engine diagnostic failed")
         self.checked.add(image)
 
-    def run_ticket(self, ticket, maximum_piece=64 * 10**12):
+    def run_scheduled_ticket(self, ticket, maximum_piece, should_yield):
+        if not callable(should_yield):
+            raise ValueError("A local scheduler callback is required")
+        return self.run_ticket(ticket, maximum_piece, should_yield=should_yield)
+
+    def run_ticket(self, ticket, maximum_piece=64 * 10**12, *, should_yield=None):
         configuration = ticket_configuration(ticket)
         register = getattr(self, 'register_preparation', None)
         if callable(register):
@@ -353,12 +358,14 @@ class EngineService:
         folder = self.root / "tickets" / configuration["ticket_id"]
         folder.mkdir(parents=True, exist_ok=True)
         with self.archives.use_ticket(folder):
-            result = self._run_reserved_ticket(folder, configuration, maximum_piece)
-        if result.get("state") != "PAUSED":
+            result = (self._run_reserved_ticket(folder, configuration, maximum_piece)
+                      if should_yield is None else
+                      self._run_reserved_ticket(folder, configuration, maximum_piece, should_yield))
+        if result.get("state") not in ("PAUSED", "YIELDED"):
             self.archives.offer(folder)
         return result
 
-    def _run_reserved_ticket(self, folder, configuration, maximum_piece):
+    def _run_reserved_ticket(self, folder, configuration, maximum_piece, should_yield=None):
         controller = SessionControllerLock(folder)
         store = None
         try:
@@ -373,13 +380,14 @@ class EngineService:
                 folder, configuration, {"uuid": self.gpu_uuid, "model": "controller-observed GPU"})
             if store.meta["configuration"] != configuration:
                 raise ValueError("Ticket configuration changed")
-            return self._run(store, maximum_piece)
+            return (self._run(store, maximum_piece) if should_yield is None else
+                    self._run(store, maximum_piece, should_yield))
         finally:
             if store is not None:
                 store.close()
             controller.release()
 
-    def _run(self, store, maximum_piece):
+    def _run(self, store, maximum_piece, should_yield=None):
         from pgn_owner_recovery import recover
         cfg = store.meta["configuration"]
         pin, start, end = cfg["threshold_policy"], int(cfg["start"]), int(cfg["end"])
@@ -542,6 +550,9 @@ class EngineService:
                 if not complete:
                     self.publish(store, "PAUSED")
                     return {"state": "PAUSED", "ticket_id": cfg["ticket_id"]}
+                if (should_yield is not None and int(store.meta["positions"]) < end - start
+                        and not (self.root / "pause.request").exists() and should_yield()):
+                    return {"state": "YIELDED", "ticket_id": cfg["ticket_id"]}
             self.boundary(store, end)
             store.closed("COMPLETE", active, paused)
             records = [dict(gap=g, lower_prime=str(lo), upper_prime=str(lo + g))

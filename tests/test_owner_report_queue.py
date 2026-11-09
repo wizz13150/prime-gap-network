@@ -7,6 +7,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 
 P = Path(__file__).resolve().parents[1]
@@ -45,7 +46,7 @@ class OwnerReportQueueTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.rpc = OwnerRPC()
         self.sent = []
-        self.worker = SimpleNamespace(root=self.root, rpc=self.rpc,
+        self.worker = SimpleNamespace(root=self.root, rpc=self.rpc, network_lock=threading.RLock(),
                                       submit_gold=lambda request, sealed, details: self.sent.append(request) or 'no_gold')
         self.client = NetworkAudits(self.worker)
         self.queue = self.client.owner_reports

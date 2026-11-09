@@ -142,7 +142,7 @@ class BindingTests(unittest.TestCase):
 
 class NormalPauseTests(unittest.TestCase):
  """Actual SessionStore/EngineService; all native work is a CPU fake."""
- def make_paused(self):
+ def make_paused(self,range_length=4):
   import struct
   from pgn_session import SessionStore,read_session_metadata
   from pgn_native_contract import fields,magic
@@ -150,7 +150,7 @@ class NormalPauseTests(unittest.TestCase):
   temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
   base=Path(temporary.name);folder=base/'tickets'/('2'*64);folder.parent.mkdir()
   worker=base/'worker-k8.exe';worker.write_bytes(b'QA inert worker; never executable')
-  first=(1<<66)+1000;cfg=dict(start=str(first),end=str(first+4),ticket_id='2'*64,bins=1,report_top=10,**fields(first,first+4))
+  first=(1<<66)+1000;cfg=dict(start=str(first),end=str(first+range_length),ticket_id='2'*64,bins=1,report_top=10,**fields(first,first+range_length))
   store=SessionStore.create(folder,cfg,{'uuid':'CPU-QA-no-device'})
   self.addCleanup(store.close)
   image=hashlib.sha256(worker.read_bytes()).hexdigest().upper();source='12'*32

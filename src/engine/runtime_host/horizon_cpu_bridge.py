@@ -75,6 +75,14 @@ class LogicalMinerCpuResources:
     def run_ticket(self,*args):
         with self.control_lock:head=self.head
         return head.run_ticket(*args)
+    def run_scheduled_ticket(self,ticket,maximum_piece,should_yield):
+        with self.control_lock:
+            head=self.head
+            mixed=any(lane.enabled for lane in self.lanes.values())
+        # Existing CPU qualification owns a whole result boundary. Preserve
+        # that contract until mixed-resource handoffs are independently tested.
+        if mixed:return head.run_ticket(ticket,maximum_piece)
+        return self.gpu.run_scheduled_ticket(ticket,maximum_piece,should_yield)
     def close(self):self.head.close()
     def cancel_cpu_transport(self,reason):
         for lane in tuple(self.lanes.values()):lane.cpu.cancel(reason)

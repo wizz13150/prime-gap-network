@@ -289,7 +289,8 @@ class NetworkAudits:
                         continue
                     state = self.state(request)
                 if state.get("audited"):
-                    outcome = self.worker.submit_gold(request, sealed, state["details_root"])
+                    with self.worker.network_lock:
+                        outcome = self.worker.submit_gold(request, sealed, state["details_root"])
                     # A successful Gold publication advances the active chain.
                     # Confirm the terminal report on that new anchor, not the
                     # necessarily obsolete pre-publication tip.

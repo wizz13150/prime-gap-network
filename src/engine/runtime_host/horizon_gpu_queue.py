@@ -16,6 +16,9 @@ class GpuJob:
     view_sequence: int | None = None
 
 class ResidentGpuQueue:
+    minimum_service_ns = 1_000_000_000
+    maximum_scheduled_search_piece = 4 * 10**12
+
     def __init__(self, engine, enabled, stopping, on_start, on_result, on_paused, on_error, on_waiting=None, *, clock_ns=time.monotonic_ns, policy_clock=time.monotonic, may_start=None):
         self.engine = engine
         self.enabled, self.stopping = enabled, stopping
@@ -83,6 +86,17 @@ class ResidentGpuQueue:
             raise ValueError("Explicit local workflow admission required")
         return allowed
 
+    def should_yield(self, job, started):
+        with self.condition:
+            if self.stopping.is_set() or not self.enabled.is_set():
+                return False  # Explicit shutdown/pause owns the stop request.
+            elapsed = self.clock_ns() - started
+            if elapsed < self.minimum_service_ns:
+                return False  # Amortize checkpoint and context handoff costs.
+            other = self.audits if job.context["role"] == "search" else self.search
+            other_ready = any(self.admitted(candidate) for candidate in other)
+            return self.service.should_yield(job.context["role"], elapsed, other_ready)
+
     def _next(self):
         if self.resume_job is not None:
             if not self.admitted(self.resume_job):
@@ -139,10 +153,26 @@ class ResidentGpuQueue:
                 started = self.clock_ns()
                 if self.last_completed is not None:
                     self.timings.append(dict(previous=self.last_completed[0],current=job.ticket["ticket_id"],role=job.context["role"],dispatch_gap_ns=str(started-self.last_completed[1]),context_preparation_ns=str(started-preparation_started),measurement="Host handoff includes durable result publication; not a CUDA kernel trace"))
-                result = self.engine.run_ticket(job.ticket, job.maximum_piece)
+                scheduled = getattr(self.engine, "run_scheduled_ticket", None)
+                maximum_piece = (min(job.maximum_piece, self.maximum_scheduled_search_piece)
+                                 if job.context["role"] == "search" else job.maximum_piece)
+                result = (scheduled(job.ticket, maximum_piece,
+                                    lambda: self.should_yield(job, started))
+                          if callable(scheduled) else self.engine.run_ticket(job.ticket, job.maximum_piece))
                 finished = self.clock_ns()
                 with self.condition:
                     self.service.charge(job.context["role"], finished - started)
+                if result.get("state") == "YIELDED":
+                    if result.get("ticket_id") != job.ticket["ticket_id"]:
+                        raise ValueError("Scheduler checkpoint belongs to another ticket")
+                    # Retain the same job and Future. Its next presentation
+                    # needs a fresh monotonic sequence after another job's view;
+                    # otherwise consumers would discard the resumed frames.
+                    job.view_sequence = None
+                    with self.condition:
+                        (self.search if job.context["role"] == "search" else self.audits).appendleft(job)
+                    self.last_completed = None
+                    continue
                 if result.get("state") == "PAUSED":
                     # OFF/ON controls own the desired state. This older job's
                     # pause acknowledgement must not erase a newer ON.

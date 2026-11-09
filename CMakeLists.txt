@@ -1591,6 +1591,8 @@ add_test(NAME observed-ticket-productivity COMMAND pgn-observed-ticket-productiv
 if(Python3_Interpreter_FOUND)
     add_test(NAME gpu-control-resume COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_control_resume.py")
     add_test(NAME gpu-audit-service COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_audit_service.py")
+    add_test(NAME gpu-service-handoff COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_service_handoff.py")
+    add_test(NAME audit-network-handoff COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audit_network_handoff.py")
     add_test(NAME work-cycle-queue COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_work_cycle_queue.py")
     add_test(NAME native-work-duty-client COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_work_duty.py")
     set_tests_properties(native-work-duty-client PROPERTIES TIMEOUT 30 LABELS "audit;cycle;recovery;no-gpu" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")

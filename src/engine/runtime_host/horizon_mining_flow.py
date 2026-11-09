@@ -498,8 +498,10 @@ class MiningFlow:
                     if entry:
                         self.outbox.acknowledge(entry["work"]["request_id"], entry["report_root"])
                 if poller.due():
-                    with self.worker.network_lock:
-                        self.worker.network_notice = poller.poll()
+                    # Historical reads have their own tip/anchor checks. Only
+                    # each actual publication holds the mutation lane; a slow
+                    # sweep must not prevent preparing the next GPU audit.
+                    self.worker.network_notice = poller.poll()
                 if entry:
                     continue
             except Exception as error:
