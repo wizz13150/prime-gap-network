@@ -1,5 +1,6 @@
 #pragma once
 #include "wallet/core_profile.h"
+#include "wallet/managed_core_profile.h"
 #include "wallet/wallet_manager.h"
 #include "wallet/core_rpc.h"
 #include "wallet/chain_observation.h"
@@ -87,10 +88,11 @@ private:
   std::unique_ptr<PeerBootstrap> peerBootstrap_;
  quint64 identityGeneration_{};
  CoreEpoch epoch() const{return {pid_,processBirth_,identityGeneration_};}
- QTimer clock_;QFutureWatcher<QString> verifier_;
+ QTimer clock_;QFutureWatcher<CoreProfilePreparation> verifier_;
  CoreLinkState linkState_{CoreLinkState::Starting};
  QString linkDetail_;
  bool checking_{},connected_{},launching_{},stopping_{},allowNew_{},orphanedStart_{};
+ bool managedUpgradePending_{},restartAfterManagedUpgrade_{};
  bool walletChecking_{},walletReady_{};
  // UI/application network context is immutable; profiles cannot select it.
  const QString expectedChain_;

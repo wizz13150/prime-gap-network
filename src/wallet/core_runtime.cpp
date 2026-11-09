@@ -47,13 +47,40 @@ bool processIdentity(HANDLE handle,QString& birth,QString& image){
  image=QString::fromWCharArray(path,count);return true;
 }
 #elif defined(Q_OS_LINUX)
-bool processIdentity(qint64 pid,QString& birth,QString& image){
+bool processIdentity(qint64 pid,QString& birth,QString& image,bool* exited=nullptr){
+ if(exited)*exited=false;
  if(pid<=0||pid>std::numeric_limits<int>::max())return false;
- const auto root=QString("/proc/%1/").arg(pid);QFile stat(root+"stat");if(!stat.open(QIODevice::ReadOnly))return false;const auto bytes=stat.read(8193);if(bytes.size()>8192)return false;const auto end=bytes.lastIndexOf(')');if(end<0)return false;const auto fields=bytes.sliced(end+2).split(' ');if(fields.size()<=19||fields[0]=="Z"||fields[0]=="X")return false;bool valid=false;const auto ticks=fields[19].toULongLong(&valid);if(!valid||!ticks)return false;
+ const auto root=QString("/proc/%1/").arg(pid);QFile stat(root+"stat");if(!stat.open(QIODevice::ReadOnly))return false;const auto bytes=stat.read(8193);if(bytes.size()>8192)return false;const auto end=bytes.lastIndexOf(')');if(end<0)return false;const auto fields=bytes.sliced(end+2).split(' ');if(fields.size()<=19)return false;
+ if(fields[0]=="Z"||fields[0]=="X"){if(exited)*exited=true;return false;}
+ bool valid=false;const auto ticks=fields[19].toULongLong(&valid);if(!valid||!ticks)return false;
  QFile boot("/proc/sys/kernel/random/boot_id");if(!boot.open(QIODevice::ReadOnly))return false;const auto id=boot.read(128).trimmed();if(id.size()!=36)return false;image=QFileInfo(root+"exe").symLinkTarget();if(image.isEmpty()||!QFileInfo(image).isFile())return false;birth=QString::fromLatin1(id)+":"+QString::number(ticks);return true;
 }
 
 #endif
+CoreOwnerPresence coreOwnerPresence(const CoreProfile& profile,const QJsonObject& saved){
+ bool valid=false;const auto pid=saved.value("pid").toString().toLongLong(&valid);
+ const auto savedBirth=saved.value("birth").toString();
+ if(!valid||pid<=0||pid>0xffffffffLL||savedBirth.isEmpty()||
+    !verifyCoreOwnership(profile,saved,pid,savedBirth,profile.executable).isEmpty())return CoreOwnerPresence::Unknown;
+#ifdef Q_OS_WIN
+ HANDLE handle=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,static_cast<DWORD>(pid));
+ if(!handle)return GetLastError()==ERROR_INVALID_PARAMETER?CoreOwnerPresence::Absent:CoreOwnerPresence::Unknown;
+ if(WaitForSingleObject(handle,0)==WAIT_OBJECT_0){CloseHandle(handle);return CoreOwnerPresence::Absent;}
+ QString birth,image;const auto identified=processIdentity(handle,birth,image);CloseHandle(handle);
+ if(!identified)return CoreOwnerPresence::Unknown;
+#elif defined(Q_OS_LINUX)
+ if(pid>std::numeric_limits<int>::max())return CoreOwnerPresence::Unknown;
+ QString birth,image;
+ bool exited{};
+ if(!processIdentity(pid,birth,image,&exited))return exited||(::kill(pid_t(pid),0)<0&&errno==ESRCH)?CoreOwnerPresence::Absent:CoreOwnerPresence::Unknown;
+#else
+ return CoreOwnerPresence::Unknown;
+#endif
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+ if(birth!=savedBirth)return CoreOwnerPresence::Absent;
+ return verifyCoreOwnership(profile,saved,pid,birth,image).isEmpty()?CoreOwnerPresence::Live:CoreOwnerPresence::Unknown;
+#endif
+}
 }
 CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString directory):QObject(parent),root_(std::move(root)),runtimeDirectory_(directory.isEmpty()?root_+(testnet?"/data/testnet/ui-runtime":"/data/runtime"):std::move(directory)),expectedChain_(testnet?QStringLiteral("test"):QStringLiteral("main")){
  profile_.chain=expectedChain_;
@@ -67,8 +94,12 @@ CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString direc
  },this);
  // Redirect to preserved files rather than allowing an unread process pipe
  // to block the wallet. They contain no candidate stream from the GPU.
- connect(&verifier_,&QFutureWatcher<QString>::finished,this,[this]{
-  const QString digest=verifier_.result();
+ connect(&verifier_,&QFutureWatcher<CoreProfilePreparation>::finished,this,[this]{
+  const auto preparation=verifier_.result();
+  if(!preparation.error.isEmpty()){failStart(preparation.error);return;}
+  profile_=preparation.profile;if(!preparation.notice.isEmpty())report(preparation.notice);
+  managedUpgradePending_=preparation.ownedUpgradePending;
+  const QString digest=preparation.digest;
   if(digest.compare(profile_.executableSha256,Qt::CaseInsensitive)!=0){failStart("Core executable fingerprint mismatch; not launched");return;}
   // The intent survives a crash between detachment and durable ownership.
   // A valid live owner can settle it; an unknown child cannot justify retry.
@@ -128,6 +159,7 @@ CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString direc
  });
 }
 CoreRuntime::~CoreRuntime(){
+ verifier_.waitForFinished();
  clock_.stop();
  connected_=false;peerBootstrap_.reset();
  // Detached Core owns its lifetime/data. Closing the GUI does not kill it.
@@ -215,7 +247,12 @@ bool CoreRuntime::processAlive(){
   walletManager_->invalidate();setLinkState(CoreLinkState::Stopped,"The owned Core process exited");
   if(onObservation)onObservation(std::nullopt);
   if(ownershipLock_)ownershipLock_->unlock();
-  if(onStopped)onStopped();report("CORE PROCESS EXITED · wallet detached from this view");}
+  if(onStopped)onStopped();report("CORE PROCESS EXITED · wallet detached from this view");
+  if(restartAfterManagedUpgrade_){
+   restartAfterManagedUpgrade_=false;managedUpgradePending_=false;
+   QTimer::singleShot(0,this,[this]{begin(true);});
+  }
+ }
  return false;
 }
 void CoreRuntime::report(const QString& text){if(onStatus)onStatus(text);}
@@ -239,7 +276,7 @@ void CoreRuntime::begin(bool allowNew){
  QFile receipt(runtimeDirectory_+"/wallet-core.json");
  if(!receipt.open(QIODevice::ReadOnly)||receipt.size()>32768){failStart("No verified PGN Core build/deployment receipt; no wallet launched");return;}
  const auto configuredProfile=CoreProfile::fromJson(QJsonDocument::fromJson(receipt.readAll()).object());
- const QString invalid=configuredProfile.validate(root_);if(!invalid.isEmpty()){failStart(invalid);return;}
+ receipt.close();
  if(configuredProfile.chain!=expectedChain_){
   failStart(QString("This wallet is set to %1, but the saved Core profile is for %2. Open wallet setup to use a matching profile.")
       .arg(expectedChain_=="test"?QString("testnet"):QString("mainnet"),configuredProfile.chain=="test"?QString("testnet"):QString("mainnet")));return;
@@ -250,12 +287,9 @@ void CoreRuntime::begin(bool allowNew){
  if(!ownershipLock_->tryLock(0)){failStart("Another PGN GUI owns wallet lifecycle; no duplicate client launched");return;}
  allowNew_=allowNew;
  launching_=true;report("Checking pinned Core executable once, outside the GUI/mining loop");
- const QString executable=profile_.executable;
- verifier_.setFuture(QtConcurrent::run([executable]{
-  QFile file(executable);if(!file.open(QIODevice::ReadOnly))return QString{};
-  QCryptographicHash hash(QCryptographicHash::Sha256);
-  while(!file.atEnd()){const auto bytes=file.read(1048576);if(bytes.isEmpty()&&file.error()!=QFile::NoError)return QString{};hash.addData(bytes);}
-  return QString::fromLatin1(hash.result().toHex());
+ const auto root=root_,runtime=runtimeDirectory_,chain=expectedChain_;
+ verifier_.setFuture(QtConcurrent::run([root,runtime,chain,allowNew]{
+  return prepareManagedCoreProfile(root,runtime,chain,allowNew,coreOwnerPresence);
  }));
 }
 void CoreRuntime::rpc(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume,bool wallet,int timeoutMs,const QString& walletName){
@@ -567,6 +601,11 @@ void CoreRuntime::inspect(){
     if(!projected.observation){checking_=false;connected_=false;clock_.stop();setLinkState(CoreLinkState::Rejected,projected.error);if(onObservation)onObservation(std::nullopt);
     report(projected.error+" · refusing wallet integration/RPC mutations; client left intact");return;}
    if(!connected_)connected_=true;
+   if(managedUpgradePending_){
+    // Adopt a manually rebuilt portable Core through the same verified RPC
+    // shutdown path. No wallet/worker readiness is published for the old image.
+    checking_=false;restartAfterManagedUpgrade_=true;stop();return;
+   }
     if(!walletManager_->ready())walletManager_->activate(profile_.genesisHash,profile_.chain,profile_.dataDirectory,profile_.walletName,runtimeDirectory_+"/wallet-view.json");
     ensurePeerBootstrap();
    if(!walletReady_&&!walletChecking_)ensureWallet(ownerEpoch);
@@ -594,7 +633,10 @@ void CoreRuntime::stop(){
  const auto ownerEpoch=epoch();
  rpc("stop",{},[this,ownerEpoch](QJsonValue,QString error){
   if(!ownerEpoch.matches(epoch())||!processAlive())return;
-  if(!error.isEmpty()){stopping_=false;report("Graceful Core stop unavailable; client left intact");}
+  if(!error.isEmpty()){
+   stopping_=false;managedUpgradePending_=false;restartAfterManagedUpgrade_=false;
+   report("Graceful Core stop unavailable; client left intact");
+  }
   else report("CORE SHUTDOWN REQUESTED · waiting for actual process exit");
  });
 }
