@@ -117,5 +117,7 @@ Researchers, developers and volunteer testers are welcome. Introduce yourself in
 
 - **Rob Smith (robert44444uk)** — originator of PGN and its scientific and network design.
 - **Wizz** — software implementation and integration.
+- **Brian Kehrig** — original [prime-gaps-cuda](https://github.com/briankehrig/prime-gaps-cuda) work on which the CUDA prime-gap search engines used by Scout and Horizon build.
+- **Périg** — original modular arithmetic acknowledged by Brian's project, retained in the search-engine lineage.
 - The upstream Riecoin, Bitcoin, Gapcoin and mathematical software contributors whose work underpins the project. Existing component licence and copyright notices are retained in their respective source trees and distribution notices.
 
