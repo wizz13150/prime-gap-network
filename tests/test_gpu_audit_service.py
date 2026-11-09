@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import threading
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src/engine/runtime_host'))
@@ -11,6 +12,25 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src/protocol'))
 from horizon_mining_flow import MiningFlow
 
 class QueueServiceTests(unittest.TestCase):
+    def test_expensive_management_read_rests_without_resetting_pressure(self):
+        clock = [0.0]
+        waits = []
+        class Stop:
+            def is_set(self):return bool(waits)
+            def wait(self, seconds):waits.append(seconds)
+        class Rpc:
+            def call(self, method, parameters):
+                clock[0] += 12.0
+                return dict(schema='PGN_NETWORK_METRICS_V1',genesis='a'*64,audit_enabled_operators=3,
+                            audit_queue=dict(awaiting=100,assigned=2,oldest_compute_pending_age_seconds=3600))
+        flow=MiningFlow.__new__(MiningFlow)
+        flow.gpu=ResidentGpuQueue(None,threading.Event(),threading.Event(),None,None,None,None)
+        flow.worker=SimpleNamespace(rpc=Rpc(),args=SimpleNamespace(genesis='a'*64),quitting=Stop())
+        with patch('horizon_mining_flow.time.monotonic',lambda:clock[0]):
+            flow.refresh_audit_pressure()
+        self.assertEqual(waits,[36.0])
+        self.assertEqual(flow.gpu.audit_service_view()['target_audit_share'],.8)
+
     def test_public_queue_read_is_management_io_and_bad_data_retains_policy(self):
         class OneRound:
             stopped=False

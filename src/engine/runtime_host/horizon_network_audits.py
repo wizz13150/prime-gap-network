@@ -2,6 +2,7 @@
 from pathlib import Path
 import hashlib
 import json
+import math
 import secrets
 from pgn_native_contract import fields
 from pgn_session import atomic_bytes
@@ -292,6 +293,7 @@ class NetworkAudits:
         if isinstance(states, AnchoredAuditStates):
             anchor = states.anchor
         first_error = None
+        ready = []
         for request, item in list(pending.items()):
             stopping = getattr(self.worker, 'quitting', None)
             if stopping is not None and stopping.is_set():
@@ -310,6 +312,24 @@ class NetworkAudits:
                 if (sealed["report_root"] != item["report_root"] or not isinstance(sealed.get("body"), dict)
                         or hashlib.sha256(canonical_bytes(sealed["body"])).hexdigest() != item["report_root"]):
                     raise ValueError("Owner report differs from committed index")
+                # This score changes scheduling only. Current Core policies and
+                # the exact proof still decide whether a Gold can be accepted.
+                merit = max((int(record['gap']) / math.log(int(record['lower_prime']))
+                             for record in sealed['body']['computed']['best']), default=0.0)
+                ready.append((merit, request, item, sealed, state))
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        # Preserve the durable round-robin page: high-merit reports get the
+        # first publication within it, without starving later bounded pages.
+        for _, request, item, sealed, state in sorted(ready, key=lambda row: -row[0]):
+            stopping = getattr(self.worker, 'quitting', None)
+            if stopping is not None and stopping.is_set():
+                self.owner_reports.invalidate_sweep()
+                self.owner_poll_more = True
+                return
+            try:
+                jobs = state.get('jobs', [])
                 if not state.get("details_root") and len(jobs) == 2 and all(j["state"] != "assigned" for j in jobs):
                     proposal = self.apply("reveal_report", request, 0, 0, canonical_bytes(sealed["body"]).hex())
                     if not proposal.get("available"):

@@ -102,6 +102,19 @@ class OwnerReportQueueTests(unittest.TestCase):
             self.queue.register_batch({identity(2):self.item(2), identity(1):bad})
         self.assertEqual(self.count(), 1)
 
+    def test_highest_merit_ready_report_publishes_before_lexical_first(self):
+        requests = []
+        for number, gap in [(1, 1000), (2, 1330), (3, 1220)]:
+            request, item, sealed = self.completed(number)
+            sealed['body']['computed']['best'] = [dict(lower_prime='150000000000000000001', gap=gap)]
+            item['report_root'] = sealed['report_root'] = hashlib.sha256(canonical_bytes(sealed['body'])).hexdigest()
+            (self.root/'tickets'/item['ticket']/'network-report.json').write_bytes(canonical_bytes(sealed))
+            self.queue.register(request, item)
+            requests.append(request)
+        self.client.reveal_owner_reports()
+        self.assertEqual(self.sent, [requests[1], requests[2], requests[0]])
+        self.assertEqual(self.count(1), 0)
+
     def test_cursor_survives_restart_and_wraps_to_new_lower_id(self):
         self.queue.register_batch({identity(i):self.item(i) for i in range(2, 131)})
         first = self.queue.next_page()

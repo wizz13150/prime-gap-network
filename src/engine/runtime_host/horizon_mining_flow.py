@@ -557,6 +557,7 @@ class MiningFlow:
     def refresh_audit_pressure(self):
         # Read-only management I/O never runs in the GPU execution lane.
         while not self.worker.quitting.is_set():
+            began = time.monotonic()
             try:
                 state = self.worker.rpc.call("getpgnnetworkmetrics", [2, 60, 600])
                 if state.get("schema") != "PGN_NETWORK_METRICS_V1" or state.get("genesis") != self.worker.args.genesis:
@@ -570,7 +571,10 @@ class MiningFlow:
             except Exception as error:
                 # A failed read is not a zero backlog. Keep the last allocation.
                 self.audit_pressure_notice = str(error)[:240]
-            self.worker.quitting.wait(5)
+            # Large histories can make this observation more expensive than
+            # its old fixed pause. Keep its request duty at most25%, leaving
+            # the chain lock available to assignment and publication RPCs.
+            self.worker.quitting.wait(max(5.0, 3.0 * (time.monotonic()-began)))
 
     def audit_work(self, audit, position):
         while not self.worker.quitting.is_set():
