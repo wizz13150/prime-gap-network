@@ -10,6 +10,7 @@ from horizon_coordination import confirm_candidate, validate_intent
 from horizon_audit_answers import AuditAnswers
 from horizon_owner_reports import OwnerReports
 from horizon_audit_progress import presentation as audit_presentation
+from horizon_audit_snapshot import AnchoredAuditStates
 
 def save(file, value):
     atomic_bytes(Path(file), canonical_bytes(value) + b"\n")
@@ -124,6 +125,11 @@ class NetworkAudits:
             raise ValueError("Bounded canonical audit lookups required")
         if not requests:
             return {}
+        atomic = getattr(self.worker.rpc, 'audit_snapshot', None)
+        if callable(atomic) and len(requests) <= 100:
+            # The real Core adapter supplies one authenticated atomic snapshot.
+            # Invalid responses propagate; never reinterpret them as legacy data.
+            return atomic(requests)
         before = self.worker.rpc.call("getbestblockhash")
         result = {}
         for offset in range(0, len(requests), 100):
@@ -141,7 +147,15 @@ class NetworkAudits:
             return None
         return result
 
-    def terminal_on_anchor(self, audit, anchor):
+    def terminal_on_anchor(self, audit, anchor, states=None):
+        if isinstance(states, AnchoredAuditStates):
+            if states.anchor != anchor:
+                return False
+            job = next((job for job in states.get(audit['request_id'], {}).get('jobs', [])
+                        if job['slot'] == audit['slot'] and job['attempt'] == audit['attempt']), None)
+            return bool(job and job['state'] in ('passed', 'failed')
+                        and job.get('commitment') == audit.get('answer', {}).get('commitment')
+                        and states.current(self.worker.rpc))
         # Only the final ACK needs this exact atomic projection. The ordinary
         # batched progress read stays cheap. Before/after tip equality alone
         # cannot exclude an A→B→A branch race during that read.
@@ -188,6 +202,8 @@ class NetworkAudits:
         states = self.states(audit["request_id"] for _, audit in saved)
         if states is None:
             return
+        if isinstance(states, AnchoredAuditStates):
+            anchor = states.anchor
         keep = []
         for name, audit in saved:
             state = states.get(audit["request_id"], {})
@@ -198,7 +214,7 @@ class NetworkAudits:
                 keep.append(name)
                 continue
             if job["state"] in ("passed", "failed"):
-                if not self.terminal_on_anchor(audit, anchor):
+                if not self.terminal_on_anchor(audit, anchor, states):
                     keep.append(name)
                     continue
                 self.answers.acknowledge(name)
@@ -230,7 +246,10 @@ class NetworkAudits:
         self.owner_reports.import_legacy()
         self.owner_reports.register(work["request_id"], dict(ticket=work["ticket"], report_root=sealed["report_root"]))
 
-    def owner_terminal_on_anchor(self, request, anchor):
+    def owner_terminal_on_anchor(self, request, anchor, states=None):
+        if isinstance(states, AnchoredAuditStates):
+            return bool(states.anchor == anchor and states.get(request, {}).get('audited') is True
+                        and states.current(self.worker.rpc))
         view = self.worker.rpc.call("getpgnworkview", ["audits", 0, 1, request])
         state, rows = view.get("state", {}), view.get("audits", [])
         return bool(view.get("schema") == "PGN_WORK_VIEW_V1" and view.get("kind") == "audits"
@@ -267,6 +286,8 @@ class NetworkAudits:
             self.owner_reports.invalidate_sweep()
             self.owner_poll_more = True
             return
+        if isinstance(states, AnchoredAuditStates):
+            anchor = states.anchor
         first_error = None
         for request, item in list(pending.items()):
             try:
@@ -296,7 +317,8 @@ class NetworkAudits:
                     # necessarily obsolete pre-publication tip.
                     terminal_anchor = self.owner_reports.observe(self.worker.rpc) if outcome == "accepted" else anchor
                     if (outcome in ("accepted", "no_gold") and terminal_anchor is not None
-                            and self.owner_terminal_on_anchor(request, terminal_anchor)):
+                            and self.owner_terminal_on_anchor(request, terminal_anchor,
+                                  None if outcome == 'accepted' else states)):
                         self.owner_reports.acknowledge(request, item)
                     else:
                         self.owner_reports.invalidate_sweep()

@@ -87,6 +87,10 @@ class CoreRpc:
             # have created a key or submitted a block before the reply was lost.
             self._return_connection(connection, generation, reusable)
 
+    def audit_snapshot(self, requests):
+        from horizon_audit_snapshot import read_snapshot
+        return read_snapshot(self, requests, self.genesis)
+
     def cancel_all(self):
         with self._lock:
             self._generation += 1
