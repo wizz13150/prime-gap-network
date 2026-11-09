@@ -137,6 +137,20 @@ class UpdateTests(unittest.TestCase):
  def test_tampered_payload_refused(self):
   self.transport.files[self.target+'components.zip']+=b'CORRUPTED'
   with self.assertRaises(DownloadLengthMismatchError):self.client().prepare(['cpu'])
+ def test_gateway_recovery_keeps_TUF_verification_authoritative(self):
+  from unittest.mock import patch
+  self.transport.files[self.target+'components.zip']+=b'CORRUPTED'
+  original=self.transport._fetch;attempts=0
+  def interrupted(url):
+   nonlocal attempts
+   if url==self.target+'components.zip':
+    attempts+=1
+    if attempts==1:raise DownloadHTTPError('Temporary gateway failure',504)
+   yield from original(url)
+  self.transport._fetch=interrupted
+  with patch('horizon_update_progress.time.sleep'),self.assertRaises(DownloadLengthMismatchError):self.client().prepare(['cpu'])
+  self.assertEqual(attempts,2)
+  self.assertEqual(self.sentinel.read_bytes(),b'PRIVATE SENTINEL NOT READ BY UPDATER')
  def test_incomplete_cached_download_is_repaired_and_reverified(self):
   client=self.client();client.prepare(['cpu'])
   payload=next(client.targets.glob('*-components.zip'));payload.write_bytes(b'INCOMPLETE DOWNLOAD')

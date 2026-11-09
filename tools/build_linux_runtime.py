@@ -14,7 +14,7 @@ ABI='pgn.epoch2.2026.11'
 INPUT_URL='https://github.com/wizz13150/prime-gap-network/releases/download/v0.1.0-alpha.1/PGN-Horizon-testnet-preview-Ubuntu24.04-x86_64.tar.gz'
 INPUT_SHA='0bc3768ecb953b789b5ea79e1d506ba71333451b260b24f8ce4a8c719a0d6eee'
 INPUT_BYTES=107844589
-VERSIONS=dict(ui='2026.11.9.105',core='2026.11.9.8',gpu='2026.11.9.41',cpu='2026.11.6.389')
+VERSIONS=dict(ui='2026.11.9.106',core='2026.11.9.8',gpu='2026.11.9.41',cpu='2026.11.6.389')
 
 
 def sha(path):

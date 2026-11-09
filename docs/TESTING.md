@@ -24,3 +24,7 @@ CPU mining may stay OFF while GPU mining is ON. Recording Diagnostics is optiona
 One connected peer can be enough for synchronization; the peer count is not a count of other miners. Core 2026.11.8.5 and GPU runtime 2026.11.8.34 remove the manual approval prerequisite. The common testnet difficulty transition occurs at height3456; update Core before then. Earlier chain history and wallet data are retained.
 
 If a device returns from Starting to OFF, copy the status text and export a diagnostic ZIP. The current process diagnostics retain bounded launch failures, stderr and exit information from before recording started; do not send wallet files, private keys or authentication cookies. Physical SM120 startup remains subject to the tester's actual result.
+
+## Authenticated updater recovery
+
+In the updater SDK environment from `docs/BUILDING.md`, run `python -I tests/test_update_fetch_recovery.py` and `python -I tests/test_authenticated_updates.py`. These suites require the updater dependencies and are separate from the default CTest set. They exercise temporary HTTP failure recovery, partial-body rejection, preserved 404 handling, and authoritative TUF length/hash checks after a retry. A successful metadata check or preparation is not an installation test.
