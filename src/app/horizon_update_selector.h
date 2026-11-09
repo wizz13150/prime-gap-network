@@ -34,6 +34,11 @@ inline SelectedCohort selectedUpdateCohort(const QString& applicationDirectory,c
   require(digest(raw)==pointer.value("inventory_sha256").toString(),"Selected update inventory changed");
   const auto manifest=QJsonDocument::fromJson(raw).object();
   require(manifest.value("schema")=="PGN_COMPONENT_MANIFEST_V1"&&manifest.value("network")==network,"Selected update inventory is invalid");
+#ifdef Q_OS_WIN
+  const QString primaryName="PGN-Horizon.exe";
+#else
+  const QString primaryName="PGN-Horizon";
+#endif
   bool primary=false;int count=0;qint64 total=0;
   for(const auto& value:manifest.value("components").toArray()){
    const auto component=value.toObject();if(component.value("id")!="ui")continue;
@@ -47,11 +52,11 @@ inline SelectedCohort selectedUpdateCohort(const QString& applicationDirectory,c
     total+=info.size();require(total<=512*1024*1024,"Selected UI exceeds its byte budget");
     QFile file(path);require(file.open(QIODevice::ReadOnly),"Selected UI file cannot be read");QCryptographicHash hash(QCryptographicHash::Sha256);
     require(hash.addData(&file)&&QString::fromLatin1(hash.result().toHex())==row.value("sha256").toString(),"Selected UI fingerprint differs");
-    if(relative=="PGN-Horizon.exe")primary=true;
+    if(relative==primaryName)primary=true;
    }
   }
   require(primary,"Selected UI entry point is absent");
-  return {directory+"/PGN-Horizon.exe",{}};
+  return {directory+"/"+primaryName,{}};
  }catch(const std::exception& error){return {{},QString::fromUtf8(error.what())};}
 }
 }
