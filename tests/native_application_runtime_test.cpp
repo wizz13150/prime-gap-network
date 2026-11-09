@@ -270,7 +270,14 @@ void firstOwned(bool timingAudit=false,bool completedRecovery=false,bool explici
     }
     check(waitFor([&]{return scalar(f.config.transport.paths.bookingDatabase,"SELECT count(*) FROM dispatch_requests WHERE state='STARTED' AND run IS NOT NULL")==1;}),"First actual owned observation reconciles PREPARED before manifest save");
     check(scalar(f.config.transport.paths.bookingDatabase,"SELECT count(*) FROM bookings WHERE kind='RUNTIME' AND state='ACTIVE'")==1,"Actual initial RUNNING identity created atomically, not by UI model");
-    check(waitFor([&]{return f.count("stream")==1&&QFileInfo::exists(f.config.transport.paths.sourceHistoryDatabase);}),"Same first owned epoch attaches exactly one real SOURCE client");
+    const bool sourceReady=waitFor([&]{return f.count("stream")>=1&&QFileInfo::exists(f.config.transport.paths.sourceHistoryDatabase);});
+    if(!sourceReady||f.count("stream")!=1){
+        std::cerr<<"FIRST_OWNED_ATTACH stream="<<f.count("stream")<<" constant="<<f.count("constant")<<" finite="<<f.count("finite")<<'\n';
+        for(qsizetype i=std::max(qsizetype(0),f.statuses.size()-12);i<f.statuses.size();++i)std::cerr<<"STATUS "<<f.statuses[i].toStdString()<<'\n';
+        const auto begin=std::max(qsizetype(0),f.packets.size()-32);
+        for(qsizetype i=begin;i<f.packets.size();++i){const auto p=f.packets[i];QJsonObject trace;for(const auto* key:{"type","status","run","request_id","error","local_exit","received_frames","next_offset","committed_offset"})if(p.contains(key))trace.insert(key,p.value(key));std::cerr<<"PACKET "<<QJsonDocument(trace).toJson(QJsonDocument::Compact).constData()<<'\n';}
+    }
+    check(sourceReady&&f.count("stream")==1,"Same first owned epoch attaches exactly one real SOURCE client");
     check(store.savedSourceRunManifest(Device,OwnedRun).status==SourceRunManifestReadStatus::Present,"Actual immutable manifest belongs to reconciled tuple");
     check(f.count("constant")==(explicitStartObservation?2:1),"No extra physical poll rescued wrong native ordering");
     check(waitFor([&]{return f.type("native_index");}),"Independent exact index reader reaches application presentation without another SOURCE frame");

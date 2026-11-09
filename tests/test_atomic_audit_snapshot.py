@@ -5,7 +5,7 @@ import copy, sys, unittest
 import types
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / 'src/engine/runtime_host'), str(ROOT / 'src/protocol')]
+sys.path[:0] = [str(ROOT / 'src/engine/runtime_host'), str(ROOT / 'src/protocol'), str(ROOT / 'tests')]
 from horizon_core_rpc import CoreRpc
 from horizon_audit_snapshot import AnchoredAuditStates
 from horizon_network_audits import NetworkAudits
