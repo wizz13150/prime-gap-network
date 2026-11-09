@@ -5,6 +5,7 @@
 #include "wallet/explorer_projection.h"
 #include <algorithm>
 #include "wallet/core_runtime.h"
+#include "wallet/core_rpc_stream.h"
 #include "wallet/setup_deployment.h"
 #include "wallet/participant_snapshot.h"
 #include "wallet/network_metrics_snapshot.h"
@@ -269,13 +270,9 @@ void CoreRuntime::rpc(const QString& method,const QJsonArray& params,std::functi
  const QString requestId=QUuid::createUuid().toString(QUuid::WithoutBraces);
  const QJsonObject call{{"jsonrpc","2.0"},{"id",requestId},{"method",method},{"params",params}};
  auto* reply=network_.post(request,QJsonDocument(call).toJson(QJsonDocument::Compact));
- // The finished-only reader must never buffer an arbitrarily large local
- // response before enforcing the cap. An oversized server stalls at this
- // bounded buffer and is rejected by its per-call transfer timeout.
- reply->setReadBufferSize(262145);
- connect(reply,&QNetworkReply::finished,this,[reply,requestId,method,consume=std::move(consume)]{
-  const auto error=reply->error();const auto http=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();const auto detail=reply->errorString().left(160);const auto bytes=reply->read(262145);reply->deleteLater();
-  if(bytes.size()>262144){consume({},"Core RPC response exceeds 256 KiB bound");return;}
+ readBoundedCoreRpcReply(reply,this,coreRpcResponseLimit(method),[reply,requestId,method,consume=std::move(consume)](QByteArray bytes,bool oversized){
+  const auto error=reply->error();const auto http=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();const auto detail=reply->errorString().left(160);reply->deleteLater();
+  if(oversized){consume({},QString("Core RPC response exceeds %1 byte bound").arg(coreRpcResponseLimit(method)));return;}
   const auto decoded=decodeCoreRpcResponse(bytes,requestId,method);
   if(error!=QNetworkReply::NoError&&!verifiedRpcHttpError(decoded,http)){consume({},QString("Core RPC read failed (%1): %2").arg(int(error)).arg(detail));return;}
   consume(decoded.value,decoded.error);

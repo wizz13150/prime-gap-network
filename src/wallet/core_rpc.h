@@ -13,8 +13,13 @@ struct CoreEpoch {
  bool matches(const CoreEpoch& other)const{return pid>0&&!birth.isEmpty()&&pid==other.pid&&birth==other.birth&&generation==other.generation;}
 };
 struct CoreRpcResult {QJsonValue value;QString error;bool applicationError{};};
+inline qsizetype coreRpcResponseLimit(const QString& method){
+ // These native payloads have a512KiB server budget. The JSON-RPC envelope
+ // adds its own result/id/error fields outside that payload.
+ return method=="getpgnauditactivity"||method=="getpgnworkview"||method=="getpgnticketatlas"?524288+1024:262144;
+}
 inline CoreRpcResult decodeCoreRpcResponse(const QByteArray& bytes,const QString& expectedId,const QString& method={}){
- if(bytes.size()>262144||expectedId.isEmpty())return {{},"Core RPC response exceeds bound or request identity is missing"};
+ if(bytes.size()>coreRpcResponseLimit(method)||expectedId.isEmpty())return {{},"Core RPC response exceeds bound or request identity is missing"};
  QJsonParseError parse;const auto document=QJsonDocument::fromJson(bytes,&parse);
  if(parse.error!=QJsonParseError::NoError||!document.isObject())return {{},"Core RPC returned invalid JSON"};
  const auto object=document.object();

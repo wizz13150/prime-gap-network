@@ -14,5 +14,11 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);using namespace p
  if(!decodeCoreRpcResponse(failure,"unique").error.contains("-32602")||decodeCoreRpcResponse(failure,"old").error.contains("Wrong request shape"))return 5;
  const auto secret=QByteArray("prv")+QByteArray(64,'1');const auto privateError=QByteArray("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-5,\"message\":\"")+secret+"\"},\"id\":\"unique\"}";
  if(decodeCoreRpcResponse(privateError,"unique").error.contains(QString::fromLatin1(secret)))return 6;
+ const auto large=QByteArray("{\"jsonrpc\":\"2.0\",\"id\":\"unique\",\"result\":\"")+QByteArray(400000,'x')+"\"}";
+ for(const auto* method:{"getpgnauditactivity","getpgnworkview","getpgnticketatlas"}){
+  const auto value=decodeCoreRpcResponse(large,"unique",method);
+  if(!value.error.isEmpty()||value.value.toString().size()!=400000)return 7;
+ }
+ if(decodeCoreRpcResponse(large,"unique","getbalances").error.isEmpty())return 8;
  std::cout<<"PASS exact request identity, valid genuine Core response forms, bounded/error/malformed/foreign rejection and PID-birth-generation lifecycle isolation\n";
 }
