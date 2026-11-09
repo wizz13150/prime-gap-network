@@ -3,6 +3,12 @@
 These are maintainer build instructions. Installed Horizon does not require
 Python, a CUDA compiler, or a separate Scout installation.
 
+`tools/component_versions.json` declares the component versions for a source
+runtime build. The Linux assembler uses this declaration for every inventory
+row, and hashes the actual assembled files. Maintain the declaration with the
+qualified component cohort; a version label alone does not qualify a rebuilt
+binary or imply bit-for-bit reproducibility.
+
 ## Windows updater
 
 The qualified build used Python 3.12.14 and the versions in

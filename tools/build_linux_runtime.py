@@ -6,7 +6,7 @@ input archive; its old Core, UI, profiles and network configuration are never
 used. No wallet, chain data or running application is inspected or changed.
 """
 from pathlib import Path,PurePosixPath
-import argparse,hashlib,json,os,platform,shutil,subprocess,sys,sysconfig,tarfile,tempfile,urllib.request
+import argparse,hashlib,json,os,platform,re,shutil,subprocess,sys,sysconfig,tarfile,tempfile,urllib.request
 
 ROOT=Path(__file__).resolve().parents[1]
 GENESIS='0ccd1f2349ed75f9cf4d0279871a204e107683e5baa1dd6641c4e6f08a25a17d'
@@ -14,7 +14,17 @@ ABI='pgn.epoch2.2026.11'
 INPUT_URL='https://github.com/wizz13150/prime-gap-network/releases/download/v0.1.0-alpha.1/PGN-Horizon-testnet-preview-Ubuntu24.04-x86_64.tar.gz'
 INPUT_SHA='0bc3768ecb953b789b5ea79e1d506ba71333451b260b24f8ce4a8c719a0d6eee'
 INPUT_BYTES=107844589
-VERSIONS=dict(ui='2026.11.9.106',core='2026.11.9.8',gpu='2026.11.9.41',cpu='2026.11.6.389')
+def load_versions(path=ROOT/'tools/component_versions.json'):
+    versions=json.loads(path.read_text(encoding='utf-8'))
+    names=('ui','core','gpu','cpu')
+    if not isinstance(versions,dict)or set(versions)!=set(names):
+        raise ValueError('Declare exactly the four runtime component versions')
+    if any(not isinstance(v,str)or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+_-]{0,95}',v)for v in versions.values()):
+        raise ValueError('Explicit bounded component versions required')
+    return {name:versions[name]for name in names}
+
+
+VERSIONS=load_versions()
 
 
 def sha(path):
@@ -159,21 +169,29 @@ case "${QT_QPA_PLATFORM_PLUGIN_PATH-}" in */snap/*|*/var/lib/snapd/*) unset QT_Q
 exec "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/PGN-Horizon" "$@"
 ''',encoding='utf-8');launcher.chmod(0o755)
     (output/'README.txt').write_text('PGN Horizon testnet. Run ./launch-horizon.sh. Qt 6 runtime packages must be installed.\nThe Wallet management page opens when no wallet is configured.\nMining never requires diagnostic recording or manual admission.\n',encoding='utf-8')
-    from build_component_bundle import COMPONENT_PREFIX,validate_update_deployment,validate_network_bootstrap
-    rows={name:[]for name in VERSIONS}
-    for path in sorted(output.rglob('*')):
-        if not path.is_file():continue
-        relative=path.relative_to(output).as_posix()
-        identity='cpu'if relative.startswith('EngineRuntime/cpu/')else 'gpu'if relative.startswith('EngineRuntime/')else 'core'if relative.startswith('Core/')else 'ui'
-        rows[identity].append(dict(path=relative[len(COMPONENT_PREFIX[identity]):],bytes=path.stat().st_size,sha256=sha(path)))
-    manifest=dict(schema='PGN_COMPONENT_MANIFEST_V1',network='testnet',platform='linux-x86_64',
-        release_version=VERSIONS['ui'],published=True,components=[dict(id=k,version=v,files=rows[k])for k,v in VERSIONS.items()])
-    write(output/'components.json',manifest)
+    from build_component_bundle import validate_update_deployment,validate_network_bootstrap
+    write_inventory(output,VERSIONS)
     context=dict(network='testnet',genesis_hash=GENESIS,platform='linux-x86_64',compatibility_set=ABI)
     declared={p.relative_to(output).as_posix()for p in output.rglob('*')if p.is_file()}
     validate_update_deployment(output,declared,context,ABI);validate_network_bootstrap(output,declared,context)
     from horizon_component_install import inventory
     return inventory(output)
+
+
+def write_inventory(output,versions):
+    """Bind the source declaration to the files assembled in this runtime."""
+    from build_component_bundle import COMPONENT_PREFIX
+    rows={name:[]for name in versions}
+    for path in sorted(output.rglob('*')):
+        if not path.is_file():continue
+        relative=path.relative_to(output).as_posix()
+        if relative=='components.json':continue
+        identity='cpu'if relative.startswith('EngineRuntime/cpu/')else 'gpu'if relative.startswith('EngineRuntime/')else 'core'if relative.startswith('Core/')else 'ui'
+        rows[identity].append(dict(path=relative[len(COMPONENT_PREFIX[identity]):],bytes=path.stat().st_size,sha256=sha(path)))
+    manifest=dict(schema='PGN_COMPONENT_MANIFEST_V1',network='testnet',platform='linux-x86_64',
+        release_version=versions['ui'],published=True,components=[dict(id=k,version=v,files=rows[k])for k,v in versions.items()])
+    (output/'components.json').write_text(json.dumps(manifest,sort_keys=True,separators=(',',':'))+'\n',encoding='utf-8')
+    return manifest
 
 
 def main():

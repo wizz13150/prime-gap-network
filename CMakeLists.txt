@@ -1662,6 +1662,7 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(audit-answer-fairness PROPERTIES TIMEOUT 420 LABELS "audits;recovery;storage;synthetic;no-gpu")
     add_test(NAME host-bootstrap-preservation COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_host_bootstrap_preservation.py")
     add_test(NAME engine-host-builder COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_engine_host_builder.py")
+    add_test(NAME linux-runtime-builder COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_linux_runtime_builder.py")
 endif()
 
 # Keep qualified libraries reusable; only this GUI target's Release objects
