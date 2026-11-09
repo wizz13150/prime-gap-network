@@ -3544,7 +3544,10 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             m_addrman.Good(pfrom.addr);
         }
 
-        peer.m_time_offset = NodeSeconds{std::chrono::seconds{nTime}} - Now<NodeSeconds>();
+        // cs_main or earlier messages may delay processing. Queue time is not
+        // clock skew: time_received was captured by the socket receive path.
+        peer.m_time_offset = TimeOffsets::FromVersionTime(std::chrono::seconds{nTime},
+            std::chrono::time_point_cast<std::chrono::seconds>(time_received).time_since_epoch());
         if (!pfrom.IsInboundConn()) {
             // Don't use timedata samples from inbound peers to make it
             // harder for others to create false warnings about our clock being out of sync.

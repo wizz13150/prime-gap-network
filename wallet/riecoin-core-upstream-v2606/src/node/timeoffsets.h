@@ -37,6 +37,12 @@ public:
      *  Raise a warning if it is found that the difference between system and network time is larger. */
     static constexpr std::chrono::seconds MAX_TIME_OFFSET{5};
 
+    /** Compare VERSION time with socket receipt, not delayed message handling. */
+    static constexpr std::chrono::seconds FromVersionTime(std::chrono::seconds peer_time, std::chrono::seconds receipt_time)
+    {
+        return peer_time - receipt_time;
+    }
+
     /** Add a new time offset sample. */
     void Add(std::chrono::seconds offset) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
