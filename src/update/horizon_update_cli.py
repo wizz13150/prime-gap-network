@@ -17,7 +17,7 @@ from horizon_update_client import AuthenticatedUpdates
 from horizon_component_install import CohortStore, _write
 import horizon_update_progress as progress
 
-VERSION='2026.11.9.19'
+VERSION='2026.11.9.20'
 
 
 def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,recovery_factory=None):
@@ -92,10 +92,14 @@ def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,
             if lifecycle is not None:return lifecycle.restore_previous(*args)
         try:
             committed=store.activate(candidate,drain,start,restore)
-            if committed:progress.report('committed',completed=1,total=1,force=True)
+            if committed:
+                try:progress.report('committed',completed=1,total=1,force=True)
+                except OSError:
+                    store.commit_warning='Update installed; its final status could not be saved. Free disk space or check folder permissions.'
             return dict(schema='PGN_UPDATE_INSTALL_RESULT_V1',publisher_authenticated=True,
                 installation_performed=committed,installation_committed=committed,
-                selected=candidate['selected'],current=store.current(),process_control_performed=True)
+                selected=candidate['selected'],current=store.current(),process_control_performed=True,
+                warning=store.commit_warning)
         finally:
             if lifecycle is not None:lifecycle.close()
     return dict(schema='PGN_UPDATE_INSTALL_PREPARATION_V1',publisher_authenticated=True,
@@ -164,10 +168,18 @@ def main():
             progress.configure(emit_progress)
             try:result=run(request)
             finally:progress.configure(None)
-        if result_path:_write(result_path,result)
+        if result_path:
+            try:_write(result_path,result)
+            except OSError:
+                result['result_file_written']=False
+                result['warning']=('Update installed; its final status could not be saved. Free disk space or check folder permissions.'
+                    if result.get('installation_committed')is True else
+                    'The update status could not be saved. Free disk space or check folder permissions.')
         print(json.dumps(result,separators=(',',':')),flush=True);return 0
     except Exception as error:
         result=dict(schema='PGN_UPDATE_HELPER_ERROR_V1',error_type=type(error).__name__,error=str(error)[:512],installation_performed=False,installation_committed=False)
-        if result_path:_write(result_path,result)
+        if result_path:
+            try:_write(result_path,result)
+            except OSError:result['result_file_written']=False
         print(json.dumps(result,separators=(',',':')),flush=True);return 1
 if __name__=='__main__':raise SystemExit(main())

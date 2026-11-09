@@ -2,7 +2,7 @@
 from pathlib import Path
 from copy import deepcopy
 from unittest.mock import patch
-import sys,unittest
+import contextlib,errno,io,json,sys,unittest
 P=Path(__file__).resolve().parents[1];sys.path[:0]=[str(P/'tools'),str(P/'src/update')]
 import horizon_update_cli as cli
 from test_component_install import InstallTests
@@ -65,6 +65,42 @@ class CliTests(unittest.TestCase):
     with self.assertRaisesRegex(ValueError,'before shutdown'):self.call()
    check.assert_called_once();lifecycle.assert_not_called()
   finally:base.tearDown()
+ def test_failed_final_progress_write_keeps_authenticated_install_success(self):
+  base=InstallTests();base.setUp();calls=[]
+  try:
+   self.request.update(action='install',base_cohort=str(base.base),installation_store=str(self.fixture.root/'progress-full-install'),activation={'fixture':'owned-lifecycle'})
+   self.request['context']=deepcopy(self.request['context']);self.request['context']['installed']=deepcopy(base.context['installed'])
+   component=self.fixture.manifest['components'][0];component['primary']='payload/cpu/EngineRuntime/cpu/horizon-cpu-controller.exe';component['files'][0]['path']=component['primary'];component['abi']='qa.1';self.fixture.publish()
+   class Lifecycle:
+    def __init__(self,*args):pass
+    def drain(self):calls.append('drained');return True
+    def start_and_verify(self,path):calls.append('healthy');return True
+    def restore_previous(self,*args):raise AssertionError('Committed runtime must not be rolled back')
+    def close(self):calls.append('closed')
+   def full(stage,*args,**kwargs):
+    if stage=='committed':raise OSError(errno.ENOSPC,'Injected full progress volume')
+   with patch.object(cli.progress,'report',side_effect=full):
+    result=cli.run(self.request,repositories=self.repositories,fetcher=self.fixture.transport,lifecycle_factory=Lifecycle)
+   self.assertTrue(result['publisher_authenticated']);self.assertTrue(result['installation_committed']);self.assertTrue(result['installation_performed'])
+   self.assertIn('Update installed',result['warning']);self.assertEqual(calls,['drained','healthy','closed'])
+  finally:base.tearDown()
+ def test_main_emits_true_committed_result_if_result_file_is_full(self):
+  folder=Path(self.request['cache'])/'sessions'/('1'*32);folder.mkdir(parents=True);source=folder/'request.json';request=dict(self.request,action='install');source.write_text(json.dumps(request));target=folder/'result.json';output=io.StringIO();write=cli._write
+  result=dict(schema='PGN_UPDATE_INSTALL_RESULT_V1',publisher_authenticated=True,installation_performed=True,installation_committed=True)
+  def full(path,value):
+   if value.get('schema')=='PGN_UPDATE_INSTALL_RESULT_V1':raise OSError(errno.ENOSPC,'Full result volume')
+   return write(path,value)
+  with patch.object(sys,'argv',['horizon-updater','--request-file',str(source),'--result-file',str(target)]),patch.object(cli,'run',return_value=result),patch.object(cli,'_write',side_effect=full),contextlib.redirect_stdout(output):
+   code=cli.main()
+  saved=json.loads(output.getvalue());self.assertEqual(code,0);self.assertTrue(saved['installation_committed']);self.assertTrue(saved['installation_performed']);self.assertFalse(saved['result_file_written']);self.assertIn('Update installed',saved['warning'])
+ def test_main_emits_original_error_if_error_result_file_is_full(self):
+  folder=Path(self.request['cache'])/'sessions'/('2'*32);folder.mkdir(parents=True);source=folder/'request.json';request=dict(self.request,action='install');source.write_text(json.dumps(request));target=folder/'result.json';output=io.StringIO();write=cli._write
+  def full(path,value):
+   if value.get('schema')=='PGN_UPDATE_HELPER_ERROR_V1':raise OSError(errno.ENOSPC,'Full result volume')
+   return write(path,value)
+  with patch.object(sys,'argv',['horizon-updater','--request-file',str(source),'--result-file',str(target)]),patch.object(cli,'run',side_effect=ValueError('Original verification failure')),patch.object(cli,'_write',side_effect=full),contextlib.redirect_stdout(output):
+   code=cli.main()
+  saved=json.loads(output.getvalue());self.assertEqual(code,1);self.assertFalse(saved['installation_committed']);self.assertEqual(saved['error'],'Original verification failure');self.assertFalse(saved['result_file_written'])
  def test_recovery_is_offline_locked_and_closes_its_native_handles(self):
   base=InstallTests();base.setUp();calls=[];parent=self
   try:

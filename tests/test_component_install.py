@@ -6,7 +6,7 @@ selection, old-version conservation, and lifecycle failure behavior.
 """
 from copy import deepcopy
 from pathlib import Path
-import hashlib,json,sys,tempfile,unittest,zipfile
+import errno,hashlib,json,sys,tempfile,unittest,zipfile
 from unittest.mock import patch
 P=Path(__file__).resolve().parents[1];sys.path[:0]=[str(P/'tools'),str(P/'src/update')]
 import stage_component_bundle as stage
@@ -108,11 +108,67 @@ class InstallTests(unittest.TestCase):
   def fail():raise RuntimeError('Core closed but final UI acknowledgement failed')
   with self.assertRaisesRegex(RuntimeError,'acknowledgement failed'):self.store.activate(candidate,fail,lambda p:starts.append(p),lambda *args:restores.append(args))
   self.assertFalse(starts);self.assertEqual(len(restores),1);self.assertEqual(self.store.current()['cohort'],str(self.base));self.assertEqual(json.loads((self.store.root/'transaction.json').read_bytes())['state'],'shutdown_failed')
+ def test_disk_full_before_shutdown_never_stops_the_runtime(self):
+  candidate=self.store.prepare(self.client,['cpu']);calls=[];write=install._write
+  def full(path,value):
+   if Path(path).name=='transaction.json':raise OSError(errno.ENOSPC,'Injected full journal volume')
+   return write(path,value)
+  with patch.object(install,'_write',side_effect=full):
+   with self.assertRaises(OSError):self.store.activate(candidate,lambda:calls.append('drain'),lambda p:calls.append('start'),lambda *a:calls.append('restore'))
+  self.assertEqual(calls,[]);self.assertEqual(self.store.current()['cohort'],str(self.base))
+ def test_disk_full_after_shutdown_restores_once_even_if_failure_journal_is_full(self):
+  candidate=self.store.prepare(self.client,['cpu']);calls=[];write=install._write
+  def full(path,value):
+   if Path(path).name=='transaction.json'and value.get('state')in ('starting_candidate','activation_failed'):
+    raise OSError(errno.ENOSPC,'Injected full journal volume')
+   return write(path,value)
+  def drain():calls.append('drain');return True
+  with patch.object(install,'_write',side_effect=full):
+   with self.assertRaises(OSError):self.store.activate(candidate,drain,lambda p:calls.append('start'),lambda *a:calls.append('restore'))
+  self.assertEqual(calls,['drain','restore']);self.assertEqual(self.store.current()['cohort'],str(self.base))
+  self.assertEqual(json.loads((self.store.root/'transaction.json').read_bytes())['state'],'prepared')
+  self.assertTrue(Path(candidate['cohort']).is_dir());self.assertEqual(self.sentinel.read_bytes(),b'NEVER TOUCHED')
+ def test_transient_journal_failure_after_shutdown_preserves_retryable_restoration(self):
+  candidate=self.store.prepare(self.client,['cpu']);calls=[];write=install._write
+  def full(path,value):
+   if Path(path).name=='transaction.json'and value.get('state')=='starting_candidate':
+    raise OSError(errno.ENOSPC,'Injected transient full journal volume')
+   return write(path,value)
+  def drain():calls.append('drain');return True
+  with patch.object(install,'_write',side_effect=full):
+   with self.assertRaises(OSError):self.store.activate(candidate,drain,lambda p:calls.append('start'),lambda *a:calls.append('restore'))
+  self.assertEqual(calls,['drain','restore']);self.store.require_resolved_transaction()
+  saved=json.loads((self.store.root/'transaction.json').read_bytes())
+  self.assertEqual(saved['state'],'activation_failed');self.assertTrue(saved['restoration_completed'])
  def test_restore_failure_is_not_retried_inside_same_transaction(self):
   candidate=self.store.prepare(self.client,['cpu']);restores=[]
   def fail_restore(*args):restores.append(args);raise RuntimeError('Previous UI refused startup')
   with self.assertRaisesRegex(RuntimeError,'refused startup'):self.store.activate(candidate,lambda:True,lambda p:False,fail_restore)
   self.assertEqual(len(restores),1);self.assertEqual(self.store.current()['cohort'],str(self.base))
+ def test_full_final_receipt_preserves_committed_installation_and_never_restarts_it(self):
+  candidate=self.store.prepare(self.client,['cpu']);calls=[];write=install._write
+  def full(path,value):
+   if Path(path).name=='transaction.json'and value.get('state')=='committed':
+    raise OSError(errno.ENOSPC,'Injected terminal receipt full')
+   return write(path,value)
+  def drain():calls.append('drain');return True
+  def start(path):calls.append('start');return True
+  with patch.object(install,'_write',side_effect=full):
+   self.assertTrue(self.store.activate(candidate,drain,start,lambda *a:calls.append('restore')))
+  self.assertEqual(calls,['drain','start']);self.assertEqual(self.store.current()['cohort'],candidate['cohort'])
+  self.assertIn('Update installed',self.store.commit_warning);self.store.require_resolved_transaction()
+  reopened=install.CohortStore(self.store.root,self.context,self.context_sha)
+  self.assertEqual(reopened.recover_previous(lambda *a:self.fail('Committed runtime must not be restarted')),self.store.current())
+  self.assertEqual(json.loads((self.store.root/'transaction.json').read_bytes())['state'],'starting_candidate')
+ def test_incomplete_final_receipt_cannot_authorise_a_changed_selector(self):
+  candidate=self.store.prepare(self.client,['cpu']);write=install._write
+  def full(path,value):
+   if Path(path).name=='transaction.json'and value.get('state')=='committed':raise OSError(errno.ENOSPC,'Full')
+   return write(path,value)
+  with patch.object(install,'_write',side_effect=full):
+   self.assertTrue(self.store.activate(candidate,lambda:True,lambda path:True,lambda *a:None))
+  selected=self.store.current();selected['sequence']+=1;install._write(self.store.root/'current.json',selected)
+  with self.assertRaises(install.RecoveryRequired):self.store.require_resolved_transaction()
  def test_success_is_published_only_after_health_confirmation(self):
   candidate=self.store.prepare(self.client,['cpu']);calls=[]
   def start(path):

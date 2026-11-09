@@ -76,6 +76,7 @@ def inventory(root):
 class CohortStore:
     def __init__(self,root,context,context_sha256):
         self.root=stage._plain_chain(root);self.context=context;self.context_sha256=context_sha256
+        self.commit_warning=''
         stage.require(stage._read_plain(self.root/'.owner',128)==MARKER,'Not an owned installation store')
         self._quota()
         # On subsequent updates the protected running code is itself a cohort
@@ -131,6 +132,7 @@ class CohortStore:
             'Unknown installation recovery journal; existing files retained')
         current=self.current()if current is None else current
         state=value.get('state');reference=None
+        if self._selector_commits_transaction(value,current):return
         if state=='committed':reference=value.get('candidate')
         elif state in ('shutdown_failed','shutdown_refused','startup_failed','activation_failed','recovered_previous')and value.get('restoration_completed')is True:
             reference=value.get('before')
@@ -138,6 +140,29 @@ class CohortStore:
             reference.get('cohort')==current.get('cohort')and
             reference.get('inventory_sha256')==current.get('inventory_sha256')):
             raise RecoveryRequired('An interrupted installation requires recovery; its transaction and backups have been retained')
+
+    def _selector_commits_transaction(self,transaction,current):
+        """The fsynced selector is the commit point; its final receipt may fail.
+
+        A mere matching path is insufficient. Require the complete intended
+        selector, original frame, inventory, sequence and context. This cannot
+        promote a prepared-only transaction or an unrelated manual selector.
+        """
+        if transaction.get('state')!='starting_candidate':return False
+        before=transaction.get('before');candidate=transaction.get('candidate')
+        if not(type(before)is dict and type(candidate)is dict and
+               candidate.get('expected_current')==before and
+               before.get('network')==self.context['network'] and
+               before.get('genesis_hash')==self.context['genesis_hash']):return False
+        previous_sequence=before.get('sequence');sequence=candidate.get('sequence')
+        if not(type(previous_sequence)is int and type(sequence)is int and
+               0<=previous_sequence<=sequence<2**63):return False
+        if type(candidate.get('cohort'))is not str or stage._plain_chain(candidate['cohort']).parent!=self.root/'cohorts':return False
+        expected=dict(schema='PGN_ACTIVE_COHORT_V1',network=self.context['network'],
+            genesis_hash=self.context['genesis_hash'],cohort=candidate.get('cohort'),
+            inventory_sha256=candidate.get('inventory_sha256'),sequence=sequence,
+            previous={k:v for k,v in before.items()if k!='previous'})
+        return current==expected
 
     def prepare(self,client,selected):
         # Never accept a caller-created boolean "authenticated" receipt.
@@ -225,6 +250,7 @@ class CohortStore:
         including after a startup exception or selector publication failure.
         """
         with locked_cache(self.root):
+            self.commit_warning=''
             before=self.current();self.require_resolved_transaction(before)
             stage.require(before==candidate['expected_current'],'Installation changed since preparation')
             path=stage._plain_chain(candidate['cohort']);stage.require(path.parent==self.root/'cohorts','Candidate is outside installation store')
@@ -248,9 +274,11 @@ class CohortStore:
                 restore_previous(Path(before['cohort']),path)
                 transaction['restoration_completed']=True
                 transaction['state']='shutdown_refused';_write(self.root/'transaction.json',transaction);return False
-            transaction['state']='starting_candidate';_write(self.root/'transaction.json',transaction)
             restored=False
             try:
+                # Shutdown has already completed. A full/locked journal must
+                # take the same restoration path as a failed candidate start.
+                transaction['state']='starting_candidate';_write(self.root/'transaction.json',transaction)
                 healthy=bool(start_and_verify(path))
                 if not healthy:
                     restored=True
@@ -268,7 +296,14 @@ class CohortStore:
                 finally:
                     transaction['state']='activation_failed';_write(self.root/'transaction.json',transaction)
                 raise
-            transaction['state']='committed';_write(self.root/'transaction.json',transaction)
+            transaction['state']='committed'
+            try:_write(self.root/'transaction.json',transaction)
+            except OSError:
+                # Startup was verified and current.json was already fsynced.
+                # Do not roll back healthy code or report an unperformed update
+                # merely because this redundant final acknowledgement failed.
+                if self.current()!=selected:raise
+                self.commit_warning='Update installed; the final installation receipt could not be written. Free disk space or check folder permissions.'
             return True
 
     def recover_previous(self,restore_and_verify):
@@ -300,6 +335,7 @@ class CohortStore:
             stage.require((current['cohort'],current['inventory_sha256'])in
                 ((str(previous),before['inventory_sha256']),(str(failed),candidate['inventory_sha256'])),
                 'Installation changed outside the interrupted transaction')
+            if self._selector_commits_transaction(transaction,current):return current
             if transaction['state']=='recovered_previous'and transaction.get('restoration_completed')is True:
                 stage.require(current['cohort']==str(previous)and current['inventory_sha256']==before['inventory_sha256'],
                     'Recovered selector no longer matches previous code')
