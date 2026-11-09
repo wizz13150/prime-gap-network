@@ -85,6 +85,42 @@ class WorkCycleTests(unittest.TestCase):
             with self.assertRaises(OSError): self.journal.reserve_extra_audit(self.request, 'c' * 64)
         self.assertEqual(self.journal.file.read_bytes(), before)
         self.assertNotIn('extra_audits', self.journal.snapshot(self.request))
+        self.assertEqual(self.journal.extra_audits(self.request), [])
+
+    def test_admission_keeps_released_cycle_wire_format_and_no_partition_rewrites(self):
+        before = self.journal.file.read_bytes()
+        self.journal.reserve_extra_audit(self.request, 'c' * 64)
+        self.assertEqual(self.journal.file.read_bytes(), before)
+        with patch('horizon_work_cycle.atomic_bytes', side_effect=AssertionError('No partition rewrite')):
+            self.journal.reserve_extra_audit(self.request, 'c' * 64)
+        # Contract of released engine41, independent of the new reader.
+        for cycle in json.loads(self.journal.file.read_bytes())['cycles']:
+            self.assertIn(set(cycle), ({'work','stage','audits','hold'},
+                                      {'work','stage','audits','hold','native_service'}))
+
+    def test_private42_budget_migration_survives_interrupted_cycle_rewrite(self):
+        from horizon_work_cycle import atomic_bytes as real_atomic
+        self.journal.close()
+        saved = json.loads(self.journal.file.read_bytes())
+        saved['cycles'][0]['extra_audits'] = ['c' * 64, 'd' * 64]
+        self.journal.file.write_text(json.dumps(saved))
+        def fail_cycle(path, data):
+            if path == self.journal.file: raise OSError('Interrupted after budget commit')
+            return real_atomic(path, data)
+        with patch('horizon_work_cycle.atomic_bytes', side_effect=fail_cycle):
+            with self.assertRaises(OSError): WorkCycleJournal(self.folder, 'a' * 64)
+        self.journal = WorkCycleJournal(self.folder, 'a' * 64)
+        self.assertEqual(self.journal.extra_audits(self.request), ['c' * 64, 'd' * 64])
+        self.assertFalse(self.journal.may_extra_audit(self.request, 'e' * 64))
+        self.assertNotIn('extra_audits', json.loads(self.journal.file.read_bytes())['cycles'][0])
+
+    def test_foreign_sidecar_cannot_reset_an_existing_budget(self):
+        self.journal.reserve_extra_audit(self.request, 'c' * 64)
+        self.journal.close()
+        path = self.folder / 'audit-execution.json'
+        value = json.loads(path.read_bytes()); value['genesis'] = 'b' * 64
+        path.write_text(json.dumps(value))
+        with self.assertRaises(ValueError): WorkCycleJournal(self.folder, 'a' * 64)
 
     def test_recovery_keeps_first_confirmation_and_second_binding(self):
         self.attach_pair(); self.publish(0); self.journal.close()

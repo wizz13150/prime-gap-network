@@ -48,6 +48,7 @@ class WorkCycleJournal:
                 self.validate(saved)
                 self.value = saved
             self.history.check_many(self.value['cycles'])
+            self.load_extra_budget()
         except BaseException:
             self.owner.release()
             raise
@@ -347,11 +348,63 @@ class WorkCycleJournal:
         # already admitted whole audit keeps its original cycle and allowance.
         with self.lock:
             return next((cycle['work']['request_id'] for cycle in self.value['cycles']
-                         if audit_id in cycle.get('extra_audits', [])), None)
+                         if audit_id in self.extra.get(cycle['work']['request_id'], [])), None)
+
+    def load_extra_budget(self):
+        # Scheduling metadata stays outside the cycle wire format. Released
+        # engines can therefore read their journals after an installer rollback.
+        self.extra_file = self.folder / 'audit-execution.json'
+        budget = {}
+        if self.extra_file.exists():
+            if self.extra_file.stat().st_size > self.maximum_bytes:
+                raise ValueError('Audit execution budget exceeds its storage limit')
+            saved = json.loads(self.extra_file.read_bytes(), object_pairs_hook=unique_object)
+            if (set(saved) != {'schema', 'genesis', 'cycles'}
+                    or saved['schema'] != 'PGN_AUDIT_EXECUTION_BUDGET_V1'
+                    or saved['genesis'] != self.value['genesis']
+                    or not isinstance(saved['cycles'], dict) or len(saved['cycles']) > self.maximum_cycles):
+                raise ValueError('Invalid audit execution budget')
+            budget = saved['cycles']
+            for request, audits in budget.items():
+                if (not identity(request) or not isinstance(audits, list) or len(audits) > 32
+                        or any(not identity(item) for item in audits) or len(set(audits)) != len(audits)):
+                    raise ValueError('Invalid whole-audit execution identity')
+        hot = {cycle['work']['request_id'] for cycle in self.value['cycles']}
+        candidate = {key: value for key, value in budget.items() if key in hot}
+        legacy = any('extra_audits' in cycle for cycle in self.value['cycles'])
+        for cycle in self.value['cycles']:
+            if 'extra_audits' in cycle:
+                request = cycle['work']['request_id']
+                candidate[request] = list(dict.fromkeys(candidate.get(request, []) + cycle['extra_audits']))
+        if legacy or candidate != budget:
+            # Persist the identities first. A crash before the cycle rewrite
+            # replays an idempotent migration rather than spending twice.
+            self.save_extra_budget(candidate)
+        if legacy:
+            clean = copy.deepcopy(self.value)
+            for cycle in clean['cycles']:
+                cycle.pop('extra_audits', None)
+            atomic_bytes(self.file, canonical_bytes(clean) + b'\n')
+            self.value = clean
+        self.extra = candidate
+
+    def save_extra_budget(self, budget):
+        if (len(budget) > self.maximum_cycles or any(not identity(key) or len(value) > 32
+                or any(not identity(item) for item in value) or len(set(value)) != len(value)
+                for key, value in budget.items())):
+            raise ValueError('Invalid bounded audit execution budget')
+        raw = canonical_bytes(dict(schema='PGN_AUDIT_EXECUTION_BUDGET_V1',
+                                   genesis=self.value['genesis'], cycles=budget)) + b'\n'
+        if len(raw) > self.maximum_bytes:
+            raise BufferError('Audit execution budget exceeds its storage limit')
+        atomic_bytes(self.extra_file, raw)
+
+    def extra_audits(self, request):
+        with self.lock:
+            return list(self.extra.get(request, []))
 
     @staticmethod
-    def extra_audit_available(cycle, audit_id):
-        admitted = cycle.get('extra_audits', [])
+    def extra_audit_available(cycle, audit_id, admitted):
         # Explicitly empty regular slots may be filled by the lab lanes. They
         # occupy the first two visual audit sections, rather than catch-up.
         regular = sum(bool(task and task['stage'] == 'unavailable') for task in cycle['audits'])
@@ -360,7 +413,8 @@ class WorkCycleJournal:
     def may_extra_audit(self, request, audit_id):
         if not identity(audit_id):
             raise ValueError('Whole-audit identity required')
-        return self.extra_audit_available(self.snapshot(request), audit_id)
+        with self.lock:
+            return self.extra_audit_available(self.snapshot(request), audit_id, self.extra.get(request, []))
 
     def reserve_extra_audit(self, request, audit_id):
         if not identity(audit_id):
@@ -368,16 +422,16 @@ class WorkCycleJournal:
         with self.lock:
             if self.owner.fd is None:
                 raise RuntimeError('Work-cycle writer is closed')
-            if audit_id in self.snapshot(request).get('extra_audits', []):
+            cycle = self.find(self.value['cycles'], request)
+            if audit_id in self.extra.get(request, []):
                 return # No journal rewrite between this audit's partitions.
-        def apply(cycles):
-            cycle = self.find(cycles, request)
-            if not self.extra_audit_available(cycle, audit_id):
+            if not self.extra_audit_available(cycle, audit_id, self.extra.get(request, [])):
                 raise BufferError('Two catch-up audits already admitted for this ticket')
-            admitted = cycle.setdefault('extra_audits', [])
-            if audit_id not in admitted:
-                admitted.append(audit_id)
-        self.update(apply, request)
+            hot = {item['work']['request_id'] for item in self.value['cycles']}
+            candidate = {key: list(value) for key, value in self.extra.items() if key in hot}
+            candidate.setdefault(request, []).append(audit_id)
+            self.save_extra_budget(candidate)
+            self.extra = candidate
 
     def advance(self, request, stage):
         def apply(cycles):
