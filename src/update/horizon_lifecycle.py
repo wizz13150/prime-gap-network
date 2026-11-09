@@ -17,9 +17,15 @@ def owned_ipc(ui, command):
         raise LifecycleError('Unsupported lifecycle operation')
     if ui.exited():
         raise LifecycleError('Owned UI already exited')
-    result = subprocess.run([str(ui.executable), command, str(ui.pid)],
-                            stdin=subprocess.DEVNULL, capture_output=True,
-                            timeout=8, creationflags=0x08000000 if os.name=='nt' else 0)
+    try:
+        result = subprocess.run([str(ui.executable), command, str(ui.pid)],
+                                stdin=subprocess.DEVNULL, capture_output=True,
+                                timeout=8, creationflags=0x08000000 if os.name=='nt' else 0)
+    except subprocess.TimeoutExpired as error:
+        # A missed observation is not proof that the exact owned process failed.
+        # Callers retain their overall bounded health/drain deadlines and must
+        # still verify ownership, context and readiness before accepting it.
+        raise LifecycleError('Owned UI observation deadline elapsed') from error
     if result.returncode or len(result.stdout) > 131072:
         raise LifecycleError('Owned lifecycle response failed or exceeded its bound')
     try:

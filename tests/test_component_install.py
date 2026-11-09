@@ -270,4 +270,31 @@ class InstallTests(unittest.TestCase):
   calls=[]
   with self.assertRaisesRegex(ValueError,'Known interrupted'):self.store.recover_previous(lambda *args:calls.append('bad'))
   self.assertFalse(calls)
+class LifecycleObservationTests(unittest.TestCase):
+ def test_one_observation_timeout_is_a_lifecycle_error_not_a_failed_process(self):
+  import subprocess
+  from types import SimpleNamespace
+  import horizon_lifecycle as lifecycle
+  owner=SimpleNamespace(pid=17,executable=Path('fixture-ui'),exited=lambda:False)
+  with patch.object(lifecycle.subprocess,'run',side_effect=subprocess.TimeoutExpired(['fixture-ui'],8)):
+   with self.assertRaises(lifecycle.LifecycleError):lifecycle.owned_ipc(owner,'--inspect-owned')
+
+ def test_delayed_authenticated_startup_can_recover_after_an_observation_timeout(self):
+  import subprocess
+  from types import SimpleNamespace
+  import horizon_lifecycle as lifecycle
+  import horizon_cohort_lifecycle as native
+  owner=SimpleNamespace(pid=17,executable=Path('cohort/PGN-Horizon.exe'),exited=lambda:False,close=lambda:None)
+  life=native.NativeCohortLifecycle.__new__(native.NativeCohortLifecycle)
+  life.store=SimpleNamespace(context=dict(network='testnet',genesis_hash='b'*64))
+  life.ui_relative='PGN-Horizon.exe';life.explicit_root=False;life.minimized=False
+  life.data=Path('data');life.had_core=True;life.launch_environment=lambda:{};life.launch_options=lambda:{}
+  life.own_process=lambda *args:owner;life.ipc=lifecycle.owned_ipc;events=[];life.record=events.append
+  healthy=dict(pgn_update_genesis='b'*64,pgn_update_data_root='data',pgn_core_link_state='ready')
+  responses=[subprocess.TimeoutExpired(['fixture-ui'],8),subprocess.CompletedProcess([],0,json.dumps(healthy).encode(),b'')]
+  with patch.object(native,'inventory',return_value=(None,{'pgn-horizon.exe':{'sha256':'a'*64}},None,None)),patch.object(native.subprocess,'Popen',return_value=SimpleNamespace(pid=17)),patch.object(lifecycle.subprocess,'run',side_effect=responses)as observer,patch.object(native.time,'sleep'):
+   self.assertTrue(life.launch(Path('cohort')))
+  self.assertEqual(observer.call_count,2)
+  self.assertEqual(events,['verifying_startup','healthy'])
+
 if __name__=='__main__':unittest.main()
