@@ -177,13 +177,38 @@ class MiningFlow:
             return False
         cycle = job.context.get("work_cycle")
         if job.context["role"] == "audit":
-            return cycle is None or self.cycles.may_audit(cycle, job.context["audit_position"])
+            if cycle is not None:
+                return self.cycles.may_audit(cycle, job.context["audit_position"])
+            owner = self.extra_audit_owner(job)
+            return owner is None or self.cycles.may_extra_audit(owner, job.context['presentation']['audit_id'])
         if job.context.get("legacy_assignment"):
             return True
         state = self.cycles.snapshot(cycle)
         return not state["hold"] and (self.cycles.may_search(cycle) or
                                       state["stage"] == "running" or
                                       state["stage"] == "completed" and not job.context.get("prepared"))
+
+    def extra_audit_owner(self, job):
+        audit_id = job.context.get('presentation', {}).get('audit_id')
+        if not audit_id:
+            return None
+        retained = self.cycles.extra_audit_cycle(audit_id)
+        if retained:
+            return retained
+        active = getattr(self.gpu, 'active', None)
+        if active and active.context.get('role') == 'search' and active.context.get('work_cycle'):
+            return active.context['work_cycle']
+        # The yielded search stays at the head. Prepared work for the next
+        # ticket must not replace the owner of the current cycle's allowance.
+        pending = next((item.context.get('work_cycle') for item in self.gpu.search
+                        if item.context.get('work_cycle')), None)
+        if pending:
+            return pending
+        current = getattr(self.worker, 'current', None)
+        request = current.get('request_id') if current else None
+        if request and self.cycles.contains(request) and self.cycles.snapshot(request)['stage'] != 'completed':
+            return request
+        return None
 
     def bind_audit_cycle(self, position, audit):
         cycle = audit.get("work_cycle") or self.cycles.bound_audit(audit["request_id"], audit["slot"], audit["attempt"], position)
@@ -366,6 +391,11 @@ class MiningFlow:
                 self.cycles.advance(work["request_id"], "running")
             worker.audits.presentation = None
         else:
+            if not job.context.get('work_cycle'):
+                owner = self.extra_audit_owner(job)
+                if owner:
+                    self.cycles.reserve_extra_audit(owner, job.context['presentation']['audit_id'])
+                    job.context['audit_budget_cycle'] = owner
             worker.audits.presentation = dict(job.context["presentation"])
         bind = getattr(worker.source, "bind_cycle", None)
         if bind is not None:
@@ -531,7 +561,7 @@ class MiningFlow:
             cycle = context.get('work_cycle')
             catch_up = context.get('role') == 'audit' and not cycle
             if catch_up:
-                cycle = next((job.context.get('work_cycle') for job in self.gpu.search
+                cycle = context.get('audit_budget_cycle') or next((job.context.get('work_cycle') for job in self.gpu.search
                               if job.context.get('work_cycle')), None)
         if cycle:
             try:state = self.cycles.snapshot(cycle)

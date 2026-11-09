@@ -323,7 +323,7 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  }
  const auto accent=transition?QColor("#ffbd69"):QColor("#69efc5");
  const double total=frame_.value("positions_total").toString().toDouble(),done=frame_.value("positions").toString().toDouble();
- const auto cycle=miningCycleProgress(frame_,cycleHistory_.audits());const auto fraction=cycle.known?std::optional<double>(cycle.fraction):total>0?std::optional<double>(std::clamp(done/total,0.,1.)):std::nullopt;
+ const auto cycle=miningCycleProgress(frame_,cycleHistory_.audits(),cycleHistory_.search());const auto fraction=cycle.known?std::optional<double>(cycle.fraction):total>0?std::optional<double>(std::clamp(done/total,0.,1.)):std::nullopt;
  if(cycle.known)displayPhase=cycle.phase;
  const auto field=bar();const double seconds=flow_.moving()?clock_.elapsed()/1000.:0.;
  double pressure=0.;

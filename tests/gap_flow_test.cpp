@@ -41,7 +41,13 @@ int main(int argc,char** argv){
  history.observe(cycleFrame);require(history.audits().size()==3,"Repeated physical frame duplicated an audit slot");
  cycleFrame.insert("positions","100");history.observe(cycleFrame);cycleMeta.insert("catch_up",false);cycleMeta.insert("active_index",2);cycleFrame.insert("work_role","search");cycleFrame.insert("positions_total","1800");cycleFrame.insert("positions","900");cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});history.observe(cycleFrame);const auto retained=miningCycleProgress(cycleFrame,history.audits());
  require(retained.slices.size()==4&&retained.slices[0].fraction==1&&retained.slices[1].fraction==1&&retained.slices[2].fraction==1&&retained.slices[2].role=="catch_up","All three completed physical audit slots remain visible throughout search");
- cycleMeta.insert("request_id",QString(64,'e'));cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});history.observe(cycleFrame);require(history.audits().isEmpty(),"A new cycle inherited old audit work");
+ cycleFrame.insert("positions","1404");history.observe(cycleFrame);
+ cycleMeta.insert("catch_up",true);cycleFrame.insert("work_role","audit");cycleFrame.insert("ticket_id","actual-audit-four");cycleFrame.insert("positions_total","100");cycleFrame.insert("positions","50");cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});history.observe(cycleFrame);
+ const auto interrupted=miningCycleProgress(cycleFrame,history.audits(),history.search());
+ require(std::abs(interrupted.slices.last().fraction-.78)<1e-12,"Catch-up audit erased the search prefix already computed");
+ require(interrupted.cycleEta&&std::abs(*interrupted.cycleEta-44.6)<1e-12,"Catch-up ETA counted the entire search again");
+ cycleFrame.insert("positions","75");history.observe(cycleFrame);require(history.audits().size()==4&&history.search().value("fraction").toDouble()==.78,"Audit refresh duplicated a slot or replaced search progress");
+ cycleMeta.insert("request_id",QString(64,'e'));cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});history.observe(cycleFrame);require(history.audits().size()==1&&history.search().isEmpty(),"A new cycle inherited old audit or search work");
  const QPointF entrance(100,10),destination(400,80);
  require(livingFlowPoint(entrance,destination,0,.2,1,40)==entrance&&livingFlowPoint(entrance,destination,1,.2,1,40)==destination,"Living motion lost its destination");
  require(QLineF(livingFlowPoint(entrance,destination,.5,.2,1,40),livingFlowPoint(entrance,destination,.5,.7,1,40)).length()>1,"All entities follow the same route");

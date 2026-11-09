@@ -13,14 +13,19 @@ struct CycleProgress {
 };
 // These are observed physical audits, independent of server service credits.
 class MiningCycleHistory {
- QString request_;QJsonArray audits_;
+ QString request_;QJsonArray audits_;QJsonObject search_;
 public:
  void observe(const QJsonObject& frame){
   const auto cycle=frame.value("audit_service").toObject().value("cycle").toObject();const auto request=cycle.value("request_id").toString();
   if(request.isEmpty())return;
-  if(request!=request_){request_=request;audits_={};}
-  if(frame.value("work_role")!="audit")return;
+  if(request!=request_){request_=request;audits_={};search_={};}
   const double total=frame.value("positions_total").toString().toDouble(),done=frame.value("positions").toString().toDouble();
+  if(frame.value("work_role")=="search"){
+   if(total>0&&done>=0&&done<=total&&!frame.value("source_stale").toBool())
+    search_={{"total",total},{"fraction",done/total},{"remaining",total-done}};
+   return;
+  }
+  if(frame.value("work_role")!="audit")return;
   const auto identity=frame.value("ticket_id").toString();
   if(identity.isEmpty()||total<=0||done<0||done>total)return;
   QJsonObject item{{"identity",identity},{"fraction",done/total},{"remaining",total-done}};
@@ -28,8 +33,9 @@ public:
   audits_.append(item);
  }
  const QJsonArray& audits()const{return audits_;}
+ const QJsonObject& search()const{return search_;}
 };
-inline CycleProgress miningCycleProgress(const QJsonObject& frame,QJsonArray observed={}){
+inline CycleProgress miningCycleProgress(const QJsonObject& frame,QJsonArray observed={},QJsonObject observedSearch={}){
  CycleProgress out;const auto cycle=frame.value("audit_service").toObject().value("cycle").toObject();
  const auto audits=cycle.value("audits").toArray();const int index=cycle.value("active_index").toInt(-1);
  const double total=frame.value("positions_total").toString().toDouble(),done=frame.value("positions").toString().toDouble(),rate=frame.value("eta_rate").toDouble();
@@ -53,11 +59,16 @@ inline CycleProgress miningCycleProgress(const QJsonObject& frame,QJsonArray obs
   const double fraction=i==active?local:std::clamp(item.value("fraction").toDouble(),0.,1.);
   out.slices.append({.05/scale,fraction,i<2?"audit":"catch_up",false});
   if(i==active)remaining+=total-done;else if(item.value("remaining").isDouble())remaining+=item.value("remaining").toDouble();
-  else if(audits[i].toObject().value("positions").isString())remaining+=audits[i].toObject().value("positions").toString().toDouble();else etaKnown=false;
+  else if(i<audits.size()&&audits[i].toObject().value("positions").isString())remaining+=audits[i].toObject().value("positions").toString().toDouble();else etaKnown=false;
  }
  const double search=cycle.value("search_positions").toString().toDouble();
- out.slices.append({.9/scale,auditing?0.:local,"search",false});
- if(!auditing)remaining+=total-done;else if(search>0)remaining+=search;else etaKnown=false;
+ const bool retainedSearch=search>0&&observedSearch.value("total").toDouble()==search;
+ const double searchFraction=auditing?(retainedSearch?std::clamp(observedSearch.value("fraction").toDouble(),0.,1.):0.):local;
+ out.slices.append({.9/scale,searchFraction,"search",false});
+ if(!auditing)remaining+=total-done;
+ else if(retainedSearch)remaining+=observedSearch.value("remaining").toDouble();
+ else if(search>0&&active<2)remaining+=search;
+ else etaKnown=false; // A mid-search attachment cannot reconstruct its prefix.
  for(const auto& slice:out.slices)out.fraction+=slice.weight*slice.fraction;
  if(rate>0&&std::isfinite(rate)){out.taskEta=(total-done)/rate;if(etaKnown)out.cycleEta=remaining/rate;}
  return out;

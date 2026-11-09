@@ -56,6 +56,36 @@ class WorkCycleTests(unittest.TestCase):
         self.journal.advance(self.request, 'running')
         self.journal.advance(self.request, 'completed')
 
+    def test_catch_up_is_two_whole_audits_not_partitions_and_survives_restart(self):
+        self.attach_pair(); self.publish(0); self.publish(1)
+        self.journal.advance(self.request, 'running')
+        first, second, third = ('c' * 64, 'd' * 64, 'e' * 64)
+        for _ in range(5):
+            self.journal.reserve_extra_audit(self.request, first)
+        self.journal.reserve_extra_audit(self.request, second)
+        self.assertFalse(self.journal.may_extra_audit(self.request, third))
+        with self.assertRaises(BufferError): self.journal.reserve_extra_audit(self.request, third)
+        self.journal.close(); self.journal = WorkCycleJournal(self.folder, 'a' * 64)
+        self.assertTrue(self.journal.may_extra_audit(self.request, first))
+        self.assertEqual(self.journal.extra_audit_cycle(first), self.request)
+        self.assertFalse(self.journal.may_extra_audit(self.request, third))
+        self.journal.prepare(work(2))
+        self.assertTrue(self.journal.may_extra_audit(work(2)['request_id'], third))
+
+    def test_lab_empty_regular_slots_allow_two_regular_plus_two_catch_up(self):
+        empty = dict(stage='unavailable', anchor='b' * 64, reason='no_eligible_independent_work')
+        for index in range(2): self.journal.attach(self.request, index, empty)
+        for number in range(4): self.journal.reserve_extra_audit(self.request, f'{700 + number:064x}')
+        self.assertFalse(self.journal.may_extra_audit(self.request, f'{704:064x}'))
+        self.assertTrue(self.journal.may_search(self.request))
+
+    def test_budget_write_failure_does_not_spend_or_erase_audit_allowance(self):
+        before = self.journal.file.read_bytes()
+        with patch('horizon_work_cycle.atomic_bytes', side_effect=OSError('Disk full')):
+            with self.assertRaises(OSError): self.journal.reserve_extra_audit(self.request, 'c' * 64)
+        self.assertEqual(self.journal.file.read_bytes(), before)
+        self.assertNotIn('extra_audits', self.journal.snapshot(self.request))
+
     def test_recovery_keeps_first_confirmation_and_second_binding(self):
         self.attach_pair(); self.publish(0); self.journal.close()
         self.journal = WorkCycleJournal(self.folder, 'a' * 64)

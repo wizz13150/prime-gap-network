@@ -85,7 +85,7 @@ class WorkCycleJournal:
         seen = set()
         consumed_audits = set()
         for cycle in cycles:
-            if set(cycle) not in ({'work', 'stage', 'audits', 'hold'}, {'work', 'stage', 'audits', 'hold','native_service'}):
+            if not {'work', 'stage', 'audits', 'hold'} <= set(cycle) or set(cycle) - {'work', 'stage', 'audits', 'hold', 'native_service', 'extra_audits'}:
                 raise ValueError('Invalid work-cycle fields')
             work = cls.work_identity(cycle['work'])
             if work != cycle['work'] or work['request_id'] in seen:
@@ -101,6 +101,10 @@ class WorkCycleJournal:
                     raise ValueError('Work cycle differs from its confirmed native audit credits')
             if not isinstance(audits, list) or len(audits) != 2:
                 raise ValueError('Two explicit audit stages required')
+            extra = cycle.get('extra_audits', [])
+            if (not isinstance(extra, list) or len(extra) > 4
+                    or any(not identity(item) for item in extra) or len(set(extra)) != len(extra)):
+                raise ValueError('Invalid bounded whole-audit execution budget')
             reports = set()
             for task in audits:
                 if task is None:
@@ -337,6 +341,43 @@ class WorkCycleJournal:
     def may_search(self, request):
         cycle = self.snapshot(request)
         return cycle['stage'] == 'prepared' and self.ready(cycle)
+
+    def extra_audit_cycle(self, audit_id):
+        # Hot cycles retain every unfinished search. A partition/resume of an
+        # already admitted whole audit keeps its original cycle and allowance.
+        with self.lock:
+            return next((cycle['work']['request_id'] for cycle in self.value['cycles']
+                         if audit_id in cycle.get('extra_audits', [])), None)
+
+    @staticmethod
+    def extra_audit_available(cycle, audit_id):
+        admitted = cycle.get('extra_audits', [])
+        # Explicitly empty regular slots may be filled by the lab lanes. They
+        # occupy the first two visual audit sections, rather than catch-up.
+        regular = sum(bool(task and task['stage'] == 'unavailable') for task in cycle['audits'])
+        return audit_id in admitted or len(admitted) < 2 + regular
+
+    def may_extra_audit(self, request, audit_id):
+        if not identity(audit_id):
+            raise ValueError('Whole-audit identity required')
+        return self.extra_audit_available(self.snapshot(request), audit_id)
+
+    def reserve_extra_audit(self, request, audit_id):
+        if not identity(audit_id):
+            raise ValueError('Whole-audit identity required')
+        with self.lock:
+            if self.owner.fd is None:
+                raise RuntimeError('Work-cycle writer is closed')
+            if audit_id in self.snapshot(request).get('extra_audits', []):
+                return # No journal rewrite between this audit's partitions.
+        def apply(cycles):
+            cycle = self.find(cycles, request)
+            if not self.extra_audit_available(cycle, audit_id):
+                raise BufferError('Two catch-up audits already admitted for this ticket')
+            admitted = cycle.setdefault('extra_audits', [])
+            if audit_id not in admitted:
+                admitted.append(audit_id)
+        self.update(apply, request)
 
     def advance(self, request, stage):
         def apply(cycles):
