@@ -20,6 +20,8 @@ int main(int argc,char** argv){
     const auto oldRoot=temp.filePath("old-package"),root=temp.filePath("new-package"),runtime=temp.filePath("profile"),data=temp.filePath("wallet-data");
     QDir().mkpath(runtime);QDir().mkpath(data);
     const auto genesis=QString(64,'a');const auto old=bundle(oldRoot,"OLD INERT CORE",genesis),current=bundle(root,"NEW INERT CORE",genesis);
+    need(managedCoreBundleRoot(oldRoot,root)==root,"running program bundle wins over retained configuration root");
+    need(managedCoreBundleRoot(root,temp.filePath("probe-tools"))==root,"explicit test/tool bundle remains supported");
     auto profile=old;profile.insert("schema","pgn-core-deployment-3");profile.insert("wallet","alice");
     profile.insert("data_directory",data);profile.insert("data_directory_origin","user_setup");
     profile.insert("approved_data_directory",data);profile.insert("create_wallet",false);profile.insert("peers",QJsonArray{"127.0.0.1:30103"});

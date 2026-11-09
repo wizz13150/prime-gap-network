@@ -8,6 +8,12 @@ namespace pgn::wallet {
 enum class CoreOwnerPresence {Absent,Live,Unknown};
 using CoreOwnerProbe=std::function<CoreOwnerPresence(const CoreProfile&,const QJsonObject&)>;
 struct CoreProfilePreparation {CoreProfile profile;QString digest,error,notice;bool ownedUpgradePending{};};
+// A retained user/configuration root can contain an older portable Core.
+// Prefer the bundle next to the running program; test/tools without a bundled
+// Core retain their explicit bundle root.
+inline QString managedCoreBundleRoot(const QString& configuredRoot,const QString& executableRoot){
+    return QFileInfo(executableRoot+"/Core/core-template.json").isFile()?executableRoot:configuredRoot;
+}
 namespace managed_core_detail {
 inline QByteArray read(const QString& path,qint64 limit,bool* okay){
     QFile file(path);*okay=!file.exists();

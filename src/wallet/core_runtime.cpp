@@ -287,7 +287,7 @@ void CoreRuntime::begin(bool allowNew){
  if(!ownershipLock_->tryLock(0)){failStart("Another PGN GUI owns wallet lifecycle; no duplicate client launched");return;}
  allowNew_=allowNew;
  launching_=true;report("Checking pinned Core executable once, outside the GUI/mining loop");
- const auto root=root_,runtime=runtimeDirectory_,chain=expectedChain_;
+ const auto root=managedCoreBundleRoot(root_,QCoreApplication::applicationDirPath()),runtime=runtimeDirectory_,chain=expectedChain_;
  verifier_.setFuture(QtConcurrent::run([root,runtime,chain,allowNew]{
   return prepareManagedCoreProfile(root,runtime,chain,allowNew,coreOwnerPresence);
  }));
