@@ -1079,7 +1079,7 @@ int main(int argc,char** argv) {
    if(auto* save=toolsButton->findChild<QPushButton*>("pgn-public-profile-save"))QObject::connect(save,&QPushButton::clicked,stream,sendPublicProfile);
    auto buffer=std::make_shared<QByteArray>();
     QObject::connect(stream,&QProcess::stateChanged,&window,[canvas,stream,device](QProcess::ProcessState state){canvas->setProperty("pgn_worker_stream_state",int(state));canvas->setProperty("pgn_worker_stream_pid",qint64(stream->processId()));auto intents=canvas->property("pgn_update_gpu_intents").toJsonObject();auto entry=intents.value(device).toObject();entry.insert("running",state==QProcess::Running);intents.insert(device,entry);canvas->setProperty("pgn_update_gpu_intents",intents);});
-   QObject::connect(stream,&QProcess::errorOccurred,&window,[canvas,stream](QProcess::ProcessError){canvas->setProperty("pgn_worker_stream_error",stream->errorString().left(400));});
+   QObject::connect(stream,&QProcess::errorOccurred,&window,[canvas,stream,processDiagnostics](QProcess::ProcessError error){if(processDiagnostics->expectedObserverReplacement()&&error==QProcess::Crashed)return;canvas->setProperty("pgn_worker_stream_error",stream->errorString().left(400));});
     QObject::connect(stream,&QProcess::readyReadStandardOutput,&window,[stream,buffer,profile,cpuFleet,miningResults,records,testnetSummary,testnetProgress,pgn,miningToggle,networkMode,stopRequested,canvas,pendingCard,presentationSequence,ticketProgressRail,gapRates,connectionRecovery,status,toolsButton,frameSelection,processDiagnostics,miningStartupNotice]{
     const auto received=stream->readAllStandardOutput();canvas->setProperty("pgn_worker_stream_bytes",canvas->property("pgn_worker_stream_bytes").toLongLong()+received.size());buffer->append(received);if(buffer->size()>4194304){buffer->clear();testnetSummary->setText("Worker presentation exceeded its admitted size");return;}
     while(buffer->contains('\n')){const auto newline=buffer->indexOf('\n');const auto line=buffer->left(newline);buffer->remove(0,newline+1);auto packet=QJsonDocument::fromJson(line).object();if(pgn::ui::presentPublicProfileStatus(toolsButton,packet))continue;
@@ -1114,7 +1114,7 @@ int main(int argc,char** argv) {
     {auto intents=canvas->property("pgn_update_gpu_intents").toJsonObject();auto entry=intents.value(device).toObject();entry.insert("wanted",on);intents.insert(device,entry);canvas->setProperty("pgn_update_gpu_intents",intents);}
     miningToggle->setText(on?"Stop mining":"Stopping…");if(on)*stopRequested=false;if(!on){*stopRequested=true;*pendingNetwork=false;miningToggle->setEnabled(false);}
     if(stream->state()==QProcess::NotRunning){connectionRecovery->restartIfClosed();return;}
-    if(on&&!*networkMode){*pendingNetwork=true;if(stream->state()==QProcess::NotRunning)startNetwork();else stream->kill();return;}
+    if(on&&!*networkMode){*pendingNetwork=true;if(stream->state()==QProcess::NotRunning)startNetwork();else{processDiagnostics->replacingObserver();stream->kill();}return;}
     if(*networkMode&&stream->state()==QProcess::Running){stream->write(on?"{\"action\":\"resume\"}\n":"{\"action\":\"pause\"}\n");testnetSummary->setText(on?"Starting · resuming the saved checkpoint":"Stopping · saving the current checkpoint");}
    };
    QObject::connect(miningToggle,&QPushButton::toggled,&window,[applyMiningIntent](bool on){(*applyMiningIntent)(on);});

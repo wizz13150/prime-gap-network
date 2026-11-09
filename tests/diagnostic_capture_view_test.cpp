@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <iostream>
 int main(int argc,char** argv){
+ if(argc>1&&QString::fromLocal8Bit(argv[1])=="--process-wait"){QThread::msleep(10000);return 0;}
  if(argc>1&&QString::fromLocal8Bit(argv[1])=="--process-failure"){
   std::cerr<<"Traceback: C:/Users/example/private-folder/engine.py\nModuleNotFoundError: missing_runtime_module\npassword=INERT-SENSITIVE\n";return 7;
  }
@@ -40,6 +41,12 @@ int main(int argc,char** argv){
  if(startup.isHidden()||control.value("stage")!="prepare_failed"||control.value("gpu_profiles").toInt()!=0||controlBytes.contains("private-folder")||controlBytes.contains("INERT-"))return 13;
  pgn::ui::presentMiningStartup(&canvas,&startup,"ready","Prepared; computation waits for user ON");
  if(!startup.isHidden()||canvas.property("pgn_local_runtime_stage").toString()!="ready")return 14;
+ canvas.setProperty("pgn_network_desired_on",true);
+ canvas.setProperty("pgn_worker_process_state",QJsonObject{{"role","network"},{"running",true},{"phase","Searching"},{"notice",""}});
+ if(pgn::ui::diagnosticMiningStartup(&canvas)["detail"]!="Searching"||pgn::ui::diagnosticMiningStartup(&canvas)["stage"]!="network")return 24;
+ canvas.setProperty("pgn_worker_process_state",QJsonObject{{"role","observer"},{"running",true}});
+ if(pgn::ui::diagnosticMiningStartup(&canvas)["detail"].toString().contains("OFF"))return 25;
+ canvas.setProperty("pgn_worker_process_state",QJsonObject{});canvas.setProperty("pgn_network_desired_on",false);
  pgn::ui::presentMiningStartup(&canvas,&startup,"gpu_unavailable","NVIDIA hardware query failed");
  if(startup.isHidden()||!startup.text().contains("NVIDIA hardware query failed"))return 15;
   {
@@ -57,6 +64,19 @@ int main(int argc,char** argv){
    while(!canvas.property("pgn_worker_process_state").toJsonObject().contains("process_error")&&until.elapsed()<5000){app.processEvents();QThread::msleep(2);}
    if(canvas.property("pgn_worker_process_state").toJsonObject()["process_error"].toInt(-1)!=int(QProcess::FailedToStart))return 18;
   }
+ // Deliberate handover must not hide an unrelated observer failure.
+ for(bool expected:{true,false}){
+  QWidget isolated;QProcess process;pgn::ui::MiningProcessDiagnostics diagnostic(&isolated,&process,"GPU-OBSERVER-FIXTURE");
+  diagnostic.launching("observer");process.start(QCoreApplication::applicationFilePath(),{"--process-wait"});
+  if(!process.waitForStarted(5000))return 26;
+  app.processEvents();if(expected)diagnostic.replacingObserver();process.kill();
+  QElapsedTimer until;until.start();while((process.state()!=QProcess::NotRunning||!isolated.property("pgn_worker_process_state").toJsonObject().contains("exit_code"))&&until.elapsed()<5000){app.processEvents();QThread::msleep(2);}
+  const auto state=isolated.property("pgn_worker_process_state").toJsonObject();
+  if(expected){if(state["exit_kind"]!="replaced"||state.contains("process_error")||state["native_exit_kind"]!="crash")return 27;}
+  else if(state["exit_kind"]!="crash"||state["process_error"].toInt(-1)!=int(QProcess::Crashed))return 28;
+ }
+ const auto maintenance=pgn::ui::diagnosticPublicationMaintenance(QJsonObject{{"owner",QJsonObject{{"active",true},{"elapsed_seconds",2.5},{"next_in_seconds",1.0},{"error","password=INERT-MAINTENANCE"},{"cookie","INERT-MAINTENANCE"}}},{"auditors",QJsonObject{{"active",false},{"elapsed_seconds",-1},{"error",QJsonValue{}}}}});
+ if(QJsonDocument(maintenance).toJson().contains("INERT-")||maintenance["auditors"].toObject().contains("elapsed_seconds")||maintenance["owner"].toObject()["elapsed_seconds"]!=2.5)return 29;
  const QJsonObject inventory{{"schema","PGN_LOCAL_COMPONENT_VIEW_V1"},{"components",QJsonArray{
   QJsonObject{{"id","ui"},{"state","matched_local_manifest"},{"version","2026.11.7.45"},{"primary_bound",true},{"code_root","C:/Users/example/private-location"},{"private_key","INERT-DO-NOT-COPY"}},
   QJsonObject{{"id","cpu"},{"state","unidentified"},{"version","99.0"},{"reason","password=INERT-DO-NOT-COPY"}}}}};

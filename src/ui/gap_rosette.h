@@ -13,6 +13,9 @@ public:
 protected:
     void initStyleOption(QStyleOptionViewItem* option,const QModelIndex& index)const override{
         QStyledItemDelegate::initStyleOption(option,index);
+        // Keep the same text rectangle on ordinary and decorated rows.
+        // The view supplies one icon size for this complete column.
+        option->features|=QStyleOptionViewItem::HasDecoration;
         option->decorationPosition=QStyleOptionViewItem::Right;
         option->decorationAlignment=Qt::AlignRight|Qt::AlignVCenter;
     }

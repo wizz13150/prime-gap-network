@@ -10,7 +10,7 @@ namespace pgn::ui {
 // manual recording. No command line, wallet context or arbitrary files copied.
 class MiningProcessDiagnostics final:public QObject {
  QWidget* canvas_;QProcess* process_;QString device_,role_{"observer"},stderr_;
- QJsonObject state_;
+ QJsonObject state_;bool replacingObserver_{false};
  void event(const QString& kind,QString detail={}){
   state_.insert("role",role_);state_.insert("device",device_);
   canvas_->setProperty("pgn_worker_process_state",state_);
@@ -27,21 +27,24 @@ public:
   });
   connect(process_,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){
    const auto reason=diagnosticStatusText(process_->errorString());
-   if(role_=="observer"&&error==QProcess::Crashed){event("observer_replaced");return;}
+   if(replacingObserver_&&role_=="observer"&&error==QProcess::Crashed)return;
    state_.insert("process_error",int(error));state_.insert("last_failure",reason);event("process_error",reason);
    canvas_->setProperty("pgn_worker_stream_error",reason);if(failure)failure(reason);
   });
   connect(process_,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),this,[this](int code,QProcess::ExitStatus status){
    const auto finalError=process_->readAllStandardError();if(!finalError.isEmpty())standardError(finalError);
-   state_.insert("running",false);state_.insert("exit_code",code);state_.insert("exit_kind",status==QProcess::NormalExit?"normal":"crash");
-   event("exited",QString("Exit %1 (%2)").arg(code).arg(status==QProcess::NormalExit?"normal":"crash"));
+   const bool replaced=replacingObserver_&&role_=="observer";
+   state_.insert("running",false);state_.insert("exit_code",code);state_.insert("native_exit_kind",status==QProcess::NormalExit?"normal":"crash");state_.insert("exit_kind",replaced?"replaced":status==QProcess::NormalExit?"normal":"crash");
+   event(replaced?"observer_replaced":"exited",replaced?QString("Observer stopped for network handover; native exit %1").arg(code):QString("Exit %1 (%2)").arg(code).arg(status==QProcess::NormalExit?"normal":"crash"));
    if(role_=="network"&&(code!=0||status!=QProcess::NormalExit)){
     const auto reason=QString("Mining controller stopped: exit %1 (%2). %3").arg(code).arg(status==QProcess::NormalExit?"normal":"crash",state_.value("last_failure").toString());
     canvas_->setProperty("pgn_worker_stream_error",reason);if(failure)failure(reason);
    }
   });
  }
- void launching(const QString& role){role_=role;stderr_.clear();for(const auto* key:{"exit_code","exit_kind","process_error","phase","notice","pid"})state_.remove(key);state_.insert("attempt",state_.value("attempt").toInt()+1);state_.insert("running",false);state_.insert("entry_program",QFileInfo(process_->program()).fileName());state_.insert("entry_present",QFileInfo::exists(process_->program()));state_.insert("stderr_tail",QString{});event("launch_requested");}
+ void launching(const QString& role){role_=role;replacingObserver_=false;stderr_.clear();for(const auto* key:{"exit_code","exit_kind","native_exit_kind","process_error","phase","notice","pid"})state_.remove(key);state_.insert("attempt",state_.value("attempt").toInt()+1);state_.insert("running",false);state_.insert("entry_program",QFileInfo(process_->program()).fileName());state_.insert("entry_present",QFileInfo::exists(process_->program()));state_.insert("stderr_tail",QString{});event("launch_requested");}
+ void replacingObserver(){if(role_=="observer"&&process_->state()!=QProcess::NotRunning){replacingObserver_=true;event("observer_replace_requested");}}
+ bool expectedObserverReplacement()const{return replacingObserver_&&role_=="observer";}
  void intent(bool on){event(on?"on_requested":"off_requested");}
  void standardError(const QByteArray& bytes){
   // Sanitize before retaining. Keep enough context for Python/import, loader,
@@ -52,6 +55,10 @@ public:
   canvas_->setProperty("pgn_worker_stream_error",tail);event("stderr",safe.isEmpty()?QString{}:safe.last());
  }
  void packet(const QJsonObject& packet){
+  if(packet.value("publication_maintenance").isObject()){
+   state_.insert("publication_maintenance",diagnosticPublicationMaintenance(packet.value("publication_maintenance").toObject()));
+   state_.insert("maintenance_observed_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+  }
   const auto phase=packet.value("phase").toString();if(phase.isEmpty())return;
   const auto fault=packet.value("failure").toObject();
   if(fault.value("schema")=="PGN_RUNTIME_FAILURE_V1"){

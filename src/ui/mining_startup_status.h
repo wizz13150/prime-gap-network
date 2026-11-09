@@ -21,11 +21,37 @@ inline QString diagnosticStatusText(QString text){
  text.replace(QRegularExpression("/(?:home|Users|tmp|var)/[^\\r\\n\\\"<>|]*"),"<local path>");
  return text;
 }
+inline QJsonObject diagnosticPublicationMaintenance(const QJsonObject& source){
+ QJsonObject safe;
+ for(const auto* lane:{"owner","auditors"}){
+  const auto row=source.value(lane).toObject();if(row.isEmpty())continue;
+  QJsonObject value;
+  if(row.value("active").isBool())value.insert("active",row.value("active"));
+  for(const auto* key:{"elapsed_seconds","next_in_seconds"})if(row.value(key).isDouble()){
+   const double n=row.value(key).toDouble();if(n>=0&&n<=31536000)value.insert(key,n);
+  }
+  if(row.value("error").isString())value.insert("error",diagnosticStatusText(row.value("error").toString()));
+  else if(row.value("error").isNull())value.insert("error",QJsonValue{});
+  safe.insert(lane,value);
+ }
+ return safe;
+}
 inline QJsonObject diagnosticMiningStartup(QWidget* canvas){
  // Explicit allowlist: never serialize the wallet connection or profile.
+ const auto process=canvas->property("pgn_worker_process_state").toJsonObject();
+ auto stage=canvas->property("pgn_local_runtime_stage").toString();
+ auto detail=canvas->property("pgn_local_runtime_status").toString();
+ // Preparation is a one-time inventory state, not the current work state.
+ // Use observed controller facts, never infer GPU activity from an ON request.
+ if(stage=="ready"){
+  const auto phase=process.value("phase").toString();
+  if(process.value("role")=="network"&&process.value("running").toBool()&&!phase.isEmpty()){
+   stage="network";detail=phase;const auto notice=process.value("notice").toString();if(!notice.isEmpty())detail+=" · "+notice;
+  }else detail=canvas->property("pgn_network_desired_on").toBool()?"ON requested; waiting for network controller":"Prepared; computation is OFF";
+ }
  QJsonObject value{{"schema","PGN_MINING_STARTUP_STATUS_V1"},
-  {"stage",canvas->property("pgn_local_runtime_stage").toString()},
-  {"detail",diagnosticStatusText(canvas->property("pgn_local_runtime_status").toString())},
+  {"stage",stage},
+  {"detail",diagnosticStatusText(detail)},
   {"gpu_profiles",canvas->property("pgn_local_gpu_profiles").toInt()},
   {"desired_on",canvas->property("pgn_network_desired_on").toBool()},
   {"stream_state",canvas->property("pgn_worker_stream_state").toInt()},
