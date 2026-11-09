@@ -206,6 +206,9 @@ class NetworkAudits:
             anchor = states.anchor
         keep = []
         for name, audit in saved:
+            stopping = getattr(self.worker, 'quitting', None)
+            if stopping is not None and stopping.is_set():
+                return  # The full selected window and catalogue stay durable.
             state = states.get(audit["request_id"], {})
             jobs = state.get("jobs", [])
             job = next((j for j in jobs if j["slot"] == audit["slot"] and j["attempt"] == audit["attempt"]), None)
@@ -290,6 +293,11 @@ class NetworkAudits:
             anchor = states.anchor
         first_error = None
         for request, item in list(pending.items()):
+            stopping = getattr(self.worker, 'quitting', None)
+            if stopping is not None and stopping.is_set():
+                self.owner_reports.invalidate_sweep()
+                self.owner_poll_more = True
+                return
             try:
                 state = states.get(request, {})
                 jobs = state.get("jobs", [])

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import math
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 P = Path(__file__).resolve().parents[1]
@@ -32,6 +33,28 @@ class Lane:
 
 
 class MaintenancePollTests(unittest.TestCase):
+    def test_slow_owner_does_not_delay_real_auditor_publication_lane(self):
+        entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+        audited = []
+        def slow_owner():
+            entered.set()
+            if not release.wait(2):
+                raise RuntimeError('Test owner was not released')
+        owner = SimpleNamespace(reveal_owner_reports=slow_owner, reveal_committed=lambda:audited.append('owner'))
+        lane = SimpleNamespace(reveal_committed=lambda:audited.append('auditor'))
+        poller = ReportPoller(owner, [lane])
+        thread = threading.Thread(target=poller.run_owner, args=(stopped,))
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertEqual(poller.poll_audits(), None)
+            self.assertEqual(audited, ['owner', 'auditor'])
+            self.assertTrue(poller.snapshot()['owner']['active'])
+            self.assertFalse(poller.snapshot()['auditors']['active'])
+        finally:
+            stopped.set(); release.set(); thread.join(2)
+        self.assertFalse(thread.is_alive())
+
     def test_fast_owner_sweep_does_not_increase_auditor_frequency(self):
         clock=Clock();owner=Lane(clock);lane=Lane(clock)
         poller=ReportPoller(owner,[lane],clock=clock)

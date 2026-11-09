@@ -139,7 +139,7 @@ class MiningFlow:
             folder.mkdir(parents=True, exist_ok=True)
             proxy = AuditGpuProxy(self, index)
             lane = SimpleNamespace(root=folder, args=worker.args, rpc=worker.rpc,
-                                   running=worker.running, network_lock=worker.network_lock,
+                                   running=worker.running, quitting=worker.quitting, network_lock=worker.network_lock,
                                    source=proxy, address=worker.address, ledger=worker.ledger)
             if lab_actors is not None:
                 lane.address = lambda actor=lab_actors[index]: actor
@@ -157,6 +157,10 @@ class MiningFlow:
         worker.audit_service_snapshot = self.audit_service_snapshot
         self.pressure_thread = threading.Thread(target=self.refresh_audit_pressure, name="audit-service-policy", daemon=True)
         self.report_thread = threading.Thread(target=self.publish_reports, name="report-publication", daemon=True)
+        from horizon_report_poll import ReportPoller
+        self.report_poller = ReportPoller(worker.audits, self.audit_lanes)
+        self.owner_report_thread = threading.Thread(target=self.report_poller.run_owner,
+            args=(worker.quitting,), name="owner-report-maintenance", daemon=True)
         self.finalize_thread = (threading.Thread(target=self.finalize_reports, name="report-finalization", daemon=True)
                                 if self.finalizer is not None else None)
         self.audit_threads = [threading.Thread(target=self.audit_work, args=(audit, i),
@@ -474,7 +478,10 @@ class MiningFlow:
 
     def publish_reports(self):
         from horizon_report_poll import ReportPoller
-        poller = ReportPoller(self.worker.audits, self.audit_lanes)
+        poller = getattr(self, 'report_poller', None)
+        independent_owner = poller is not None
+        if poller is None:
+            poller = ReportPoller(self.worker.audits, self.audit_lanes)
         next_recheck = 0
         while not self.worker.quitting.is_set():
             try:
@@ -501,7 +508,11 @@ class MiningFlow:
                     # Historical reads have their own tip/anchor checks. Only
                     # each actual publication holds the mutation lane; a slow
                     # sweep must not prevent preparing the next GPU audit.
-                    self.worker.network_notice = poller.poll()
+                    if independent_owner:
+                        poller.poll_audits()
+                        self.worker.network_notice = poller.owner_error or poller.audit_error
+                    else:
+                        self.worker.network_notice = poller.poll()
                 if entry:
                     continue
             except Exception as error:
@@ -536,6 +547,8 @@ class MiningFlow:
                     positions=str(totals[(cycle, i)]) if (cycle, i) in totals else None)
                     for i, task in enumerate(state['audits'])])
         value["measurement_notice"] = self.audit_pressure_notice
+        if getattr(self, 'report_poller', None) is not None:
+            value['publication_maintenance'] = self.report_poller.snapshot()
         controlled = getattr(self, 'controlled_lab_audit_actors', False)
         value["controlled_lab_identities"] = controlled
         value["independent_economic_auditors"] = False if controlled else None
@@ -633,6 +646,7 @@ class MiningFlow:
             # audit lanes running instead of deadlocking before they start.
             self.prefetch.start()
             self.report_thread.start()
+            self.owner_report_thread.start()
             if self.finalize_thread is not None:
                 self.finalize_thread.start()
             self.pressure_thread.start()
@@ -656,7 +670,7 @@ class MiningFlow:
             self.gpu.wake()
             self.changed.set()
             self.prefetch.close(5)
-            for thread in [self.report_thread, self.finalize_thread, self.pressure_thread, *self.audit_threads]:
+            for thread in [self.report_thread, self.owner_report_thread, self.finalize_thread, self.pressure_thread, *self.audit_threads]:
                 if thread is not None and thread.ident is not None:
                     thread.join(5)
             worker.release_device()
