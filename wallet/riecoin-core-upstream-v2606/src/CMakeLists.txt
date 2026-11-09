@@ -487,3 +487,7 @@ target_link_libraries(pgn-native-script-work-cache-test PRIVATE core_interface r
 if(BUILD_TESTS)
   add_test(NAME native-script-work-cache COMMAND pgn-native-script-work-cache-test)
 endif()
+
+# Native audit replay: signed history, forks, budget changes and missing archive.
+add_executable(pgn-native-audit-replay-test EXCLUDE_FROM_ALL pgn/native_audit_replay_test.cpp)
+target_link_libraries(pgn-native-audit-replay-test PRIVATE core_interface riecoin_node univalue)

@@ -8,6 +8,7 @@ namespace pgn::core {
 struct NativeWorkDutyActivation {
     uint256 chain,genesis,anchor;
     int32_t anchor_height{},height{},first_assignment_height{};
+    bool operator==(const NativeWorkDutyActivation&)const=default;
     bool Valid()const {
         return !chain.IsNull()&&!genesis.IsNull()&&!anchor.IsNull()&&anchor_height>=0&&
             height>anchor_height&&first_assignment_height>=0&&first_assignment_height<=height;
@@ -29,12 +30,10 @@ inline bool NativeWorkDutyActivationOnBranch(const CCoinsView& view,const CBlock
         anchor&&anchor->phashBlock&&anchor->GetBlockHash()==activation.anchor;
 }
 struct NativeWorkDutyState {NativeAuditLedger audits;NativeDutySpent spent;};
-inline std::optional<NativeWorkDutyState> ReadNativeWorkDutyState(const CCoinsView& view,
-    const CBlockIndex& parent,const NativeRequestHistoryArchive& history,const RangePolicyReadBudget& policy_budget,
-    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,const NativeWorkDutyActivation& activation){
-    if(!NativeWorkDutyActivationOnBranch(view,parent,activation))return {};
-    NativeDutySpent spent;
-    const auto before=[&](const NativeAuditLedger& ledger,const CBlockIndex& prior,const VerifiedNativeRequestBlock& block){
+inline bool ApplyNativeWorkDutyBlock(const CCoinsView& view,const CBlockIndex& parent,
+    const RangeScheduleBudget& schedule_budget,const NativeWorkDutyActivation& activation,
+    const NativeAuditLedger& ledger,const CBlockIndex& prior,const VerifiedNativeRequestBlock& block,NativeDutySpent& spent)
+{
         if(prior.nHeight+1<activation.height)return true;
         const auto scan=ScanConfirmedTicketRequests(view,parent,block,schedule_budget.scan);
         if(!scan.batch)return false;
@@ -45,10 +44,47 @@ inline std::optional<NativeWorkDutyState> ReadNativeWorkDutyState(const CCoinsVi
                 request.Request().miner,request.Id(),spent))return false;
         }
         return true;
-    };
-    auto ledger=ReadNativeAuditLedgerWithBlockHook(view,parent,history,policy_budget,schedule_budget,signature_budget,before);
+}
+// Full history remains the independent replay oracle and cold fallback.
+inline std::optional<NativeWorkDutyState> ReadNativeWorkDutyStateUncached(const CCoinsView& view,
+    const CBlockIndex& parent,const NativeRequestHistoryArchive& history,const RangePolicyReadBudget& policy_budget,
+    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,const NativeWorkDutyActivation& activation)
+{
+    if(!NativeWorkDutyActivationOnBranch(view,parent,activation))return {};
+    NativeDutySpent spent;
+    auto ledger=ReadNativeAuditLedgerWithBlockHook(view,parent,history,policy_budget,schedule_budget,signature_budget,
+        [&](const NativeAuditLedger& state,const CBlockIndex& prior,const VerifiedNativeRequestBlock& block){
+            return ApplyNativeWorkDutyBlock(view,parent,schedule_budget,activation,state,prior,block,spent);
+        });
     if(!ledger)return {};
     return NativeWorkDutyState{std::move(*ledger),std::move(spent)};
+}
+inline std::optional<size_t> NativeWorkDutyRetainedCharge(const NativeDutySpent& spent)
+{
+    constexpr size_t limit=16*1024*1024;
+    size_t used=sizeof(spent)+256;
+    for(const auto& [reference,request]:spent){
+        const size_t fixed=sizeof(reference)+sizeof(request)+256;
+        if(fixed>limit-used)return {};
+        used+=fixed;
+        if(reference.commitment.capacity()>limit-used)return {};
+        used+=reference.commitment.capacity();
+    }
+    return used;
+}
+inline std::optional<NativeWorkDutyState> ReadNativeWorkDutyState(const CCoinsView& view,
+    const CBlockIndex& parent,const NativeRequestHistoryArchive& history,const RangePolicyReadBudget& policy_budget,
+    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,const NativeWorkDutyActivation& activation)
+{
+    if(!NativeWorkDutyActivationOnBranch(view,parent,activation))return {};
+    using namespace native_audit_replay_detail;
+    static Snapshot<NativeDutySpent,NativeWorkDutyActivation> cached;
+    auto result=ReadIncremental(view,parent,history,policy_budget,schedule_budget,signature_budget,cached,activation,
+        [&](const NativeAuditLedger& state,const CBlockIndex& prior,const VerifiedNativeRequestBlock& block,NativeDutySpent& spent){
+            return ApplyNativeWorkDutyBlock(view,parent,schedule_budget,activation,state,prior,block,spent);
+        },NativeWorkDutyRetainedCharge);
+    if(!result)return {};
+    return NativeWorkDutyState{std::move(result->audits),std::move(result->extra)};
 }
 inline bool VerifyProposedNativeWorkDuties(const CCoinsView& view,const CBlockIndex& parent,
     const NativeRequestHistoryArchive& history,const VerifiedProposedTicketRequests& proposed,

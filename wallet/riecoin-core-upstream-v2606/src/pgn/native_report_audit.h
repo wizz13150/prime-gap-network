@@ -1,3 +1,5 @@
+#include <array>
+#include <new>
 // Copyright (c) 2026 The PGN developers. MIT.
 // Blind audit events: commitment precedes every answer disclosure.
 #pragma once
@@ -225,10 +227,12 @@ inline void ApplyNativeAuditEvent(NativeAuditLedger& ledger,const NativeAuditEve
     const auto nonce=body["nonce"].get_str();RequireAudit(nonce.size()==64&&IsHex(nonce)&&HexStr(ParseHex(nonce))==nonce,"Invalid audit nonce");job->stage=passed?NativeAuditJob::Passed:NativeAuditJob::Failed;job->reveal=text;
     if(passed)job->passed_height=parent.nHeight+1;
 }
-template<class BeforeBlock>
-inline std::optional<NativeAuditLedger> ReadNativeAuditLedgerWithBlockHook(const CCoinsView& view,const CBlockIndex& parent,
-    const NativeRequestHistoryArchive& history,const RangePolicyReadBudget& policy_budget,
-    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,BeforeBlock&& before_block){
+// Build the same report/range/initial-authority state for full and incremental replay.
+struct NativeAuditInitialState {NativeAuditLedger ledger;uint256 chain;};
+inline std::optional<NativeAuditInitialState> InitializeNativeAuditLedger(
+    const CCoinsView& view,const CBlockIndex& parent,const NativeRequestHistoryArchive& history,
+    const RangePolicyReadBudget& policy_budget,const RangeScheduleBudget& schedule_budget)
+{
     try{
         auto reports=ReadConfirmedNativeReports(view,parent,history,schedule_budget);if(!reports)return {};
         NativeAuditLedger ledger;const auto fact_head=view.GetPgnFactHead();
@@ -256,6 +260,18 @@ inline std::optional<NativeAuditLedger> ReadNativeAuditLedgerWithBlockHook(const
                 ledger.emplace(id,std::move(entry));
             }
         }
+        return NativeAuditInitialState{std::move(ledger),policy.policy->Chain()};
+    }catch(const std::exception&){return {};}
+}
+template<class BeforeBlock>
+inline std::optional<NativeAuditLedger> ReadNativeAuditLedgerWithBlockHook(const CCoinsView& view,const CBlockIndex& parent,
+    const NativeRequestHistoryArchive& history,const RangePolicyReadBudget& policy_budget,
+    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget,BeforeBlock&& before_block){
+    try{
+        auto initial=InitializeNativeAuditLedger(view,parent,history,policy_budget,schedule_budget);
+        if(!initial)return {};
+        const auto chain=initial->chain;
+        auto ledger=std::move(initial->ledger);
         for(int32_t height=1;height<=parent.nHeight;++height){
             const auto loaded=history.Load(view,parent,height,schedule_budget.archive);const auto* index=parent.GetAncestor(height);
             if(!loaded.block||!index||!index->pprev)return {};
@@ -265,17 +281,157 @@ inline std::optional<NativeAuditLedger> ReadNativeAuditLedgerWithBlockHook(const
             for(const auto& output:loaded.block->Coinbase()->vout){
                 if(!IsNativeAuditScript(output.scriptPubKey))continue;
                 const auto event=DecodeNativeAuditEnvelope(output.scriptPubKey);if(!event||output.nValue!=0)return {};
-                ApplyNativeAuditEvent(ledger,*event,*index->pprev,policy.policy->Chain(),signature_budget);
+                ApplyNativeAuditEvent(ledger,*event,*index->pprev,chain,signature_budget);
             }
         }return ledger;
     }catch(const std::exception&){return {};}
 }
-inline std::optional<NativeAuditLedger> ReadNativeAuditLedger(const CCoinsView& view,const CBlockIndex& parent,
-    const NativeRequestHistoryArchive& history,const RangePolicyReadBudget& policy_budget,
-    const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget){
-    return ReadNativeAuditLedgerWithBlockHook(view,parent,history,policy_budget,schedule_budget,signature_budget,
-        [](const NativeAuditLedger&,const CBlockIndex&,const VerifiedNativeRequestBlock&){return true;});
+// Process-local derived state only; every new event is still verified.
+// Reorgs, budget changes and changed report/range bindings use full replay.
+namespace native_audit_replay_detail {
+inline std::array<uint64_t,22> NativeAuditReplayBudgetKey(
+    const RangePolicyReadBudget& p,const RangeScheduleBudget& s,ScriptWorkBudget v)
+{
+    const auto& [po,pi,ps,pp]=p;
+    const auto& [blocks,requests,active,archive,scan,draw]=s;
+    const auto& [coinbase,proof]=archive;
+    const auto& [outputs,scanned_requests,scripts,age,request]=scan;
+    const auto& [miner,reward,signature,time_leases]=request;
+    const auto& [attempts,draw_bytes,hashes]=draw;
+    const auto& [verify_script,verify_signature]=v;
+    // Structured bindings deliberately fail compilation if a budget gains an
+    // unrepresented field. No padding bytes or object addresses enter the key.
+    return {po,pi,ps,pp,blocks,requests,active,coinbase,proof,outputs,
+            scanned_requests,scripts,age,miner,reward,signature,uint64_t(time_leases),
+            attempts,draw_bytes,hashes,verify_script,verify_signature};
 }
+inline bool SameReportBase(const NativeReportAudit& a,const NativeReportAudit& b)
+{
+    const auto& x=a.report;const auto& y=b.report;
+    return x.block==y.block&&x.height==y.height&&
+        x.commitment.request==y.commitment.request&&x.commitment.ticket==y.commitment.ticket&&
+        x.commitment.root==y.commitment.root&&x.commitment.parent==y.commitment.parent&&
+        x.commitment.signature==y.commitment.signature&&a.owner==b.owner&&
+        a.range.ticket_id==b.range.ticket_id&&a.range.start==b.range.start&&
+        a.range.length==b.range.length&&a.range.segments==b.range.segments;
+}
+inline bool Fits(const NativeAuditLedger& ledger,size_t extra_bytes)
+{
+    constexpr size_t limit=16*1024*1024;
+    size_t used=sizeof(ledger)+1024;
+    if(extra_bytes>limit-used)return false;
+    used+=extra_bytes;
+    const auto charge=[&](size_t bytes){if(bytes>limit-used)return false;used+=bytes;return true;};
+    if(!charge(ledger.authority.capacity()))return false;
+    for(const auto& [script,member]:ledger.participants)
+        if(!charge(sizeof(member)+sizeof(script)+256)||!charge(script.capacity()))return false;
+    for(const auto& [id,entry]:ledger){
+        if(!charge(sizeof(id)+sizeof(entry)+1024)||!charge(entry.report.commitment.signature.capacity())||
+           !charge(entry.owner.capacity())||!charge(entry.owner_reveal.capacity()))return false;
+        for(const auto* integer:{&entry.range.start,&entry.range.length}){
+            const size_t limbs=integer->backend().size();
+            const size_t width=2*sizeof(*integer->backend().limbs());
+            if(limbs>(limit-used)/width||!charge(limbs*width))return false;
+        }
+        for(const auto& job:entry.jobs)if(job&&(!charge(job->actor.capacity())||!charge(job->commitment.capacity())||!charge(job->reveal.capacity())))return false;
+    }
+    return true;
+}
+template<class Extra> struct LedgerState {NativeAuditLedger audits;Extra extra;};
+template<class Extra,class Context> struct Snapshot {
+    uint256 chain,tip;int32_t height{-1};
+    const NativeRequestHistoryArchive* archive{};
+    std::array<uint64_t,22> budgets{};
+    std::optional<Context> context;
+    std::optional<LedgerState<Extra>> state;
+};
+struct NoExtraState {};
+
+// Keep hook state together with the ledger at the same authenticated prefix.
+// BeforeBlock runs before that block's audit events, including on extension.
+template<class Extra,class Context,class BeforeBlock,class ExtraCharge>
+inline std::optional<LedgerState<Extra>> ReadIncremental(
+    const CCoinsView& view,const CBlockIndex& parent,const NativeRequestHistoryArchive& history,
+    const RangePolicyReadBudget& policy_budget,const RangeScheduleBudget& schedule_budget,
+    ScriptWorkBudget signature_budget,Snapshot<Extra,Context>& cached,const Context& context,
+    BeforeBlock&& before_block,ExtraCharge&& extra_charge)
+{
+    AssertLockHeld(cs_main);
+    const auto full=[&]() -> std::optional<LedgerState<Extra>> {
+        Extra extra;
+        auto ledger=ReadNativeAuditLedgerWithBlockHook(view,parent,history,policy_budget,schedule_budget,signature_budget,
+            [&](const NativeAuditLedger& state,const CBlockIndex& prior,const VerifiedNativeRequestBlock& block){
+                return before_block(state,prior,block,extra);
+            });
+        if(!ledger)return {};
+        return LedgerState<Extra>{std::move(*ledger),std::move(extra)};
+    };
+    const auto key=NativeAuditReplayBudgetKey(policy_budget,schedule_budget,signature_budget);
+    const auto head=view.GetPgnFactHead();
+    const auto* anchor=cached.height>=0&&cached.height<=parent.nHeight?parent.GetAncestor(cached.height):nullptr;
+    bool reuse=head&&head->Valid()&&parent.phashBlock&&parent.IsValid(BLOCK_VALID_SCRIPTS)&&
+        head->tip==parent.GetBlockHash()&&view.GetBestBlock()==head->tip&&cached.state&&
+        cached.chain==head->chain&&cached.archive==&history&&cached.budgets==key&&cached.context&&
+        *cached.context==context&&anchor&&anchor->phashBlock&&anchor->IsValid(BLOCK_VALID_SCRIPTS)&&
+        anchor->GetBlockHash()==cached.tip&&uint64_t(parent.nHeight-cached.height)<=schedule_budget.maximum_blocks;
+    std::optional<LedgerState<Extra>> result;
+    if(reuse){
+        try{
+            auto initial=InitializeNativeAuditLedger(view,parent,history,policy_budget,schedule_budget);
+            const auto& old=cached.state->audits;
+            if(!initial||initial->chain!=head->chain||initial->ledger.authority!=old.authority||
+               initial->ledger.authority_request!=old.authority_request||initial->ledger.authority_height!=old.authority_height||
+               initial->ledger.public_admission!=old.public_admission)reuse=false;
+            if(reuse)for(const auto& [id,entry]:old){
+                const auto j=initial->ledger.find(id);
+                if(j==initial->ledger.end()||!SameReportBase(entry,j->second)){reuse=false;break;}
+            }
+            if(reuse){
+                result=*cached.state;
+                for(auto& [id,entry]:initial->ledger)
+                    if(!result->audits.contains(id))result->audits.emplace(id,std::move(entry));
+                for(int64_t height=int64_t(cached.height)+1;height<=parent.nHeight;++height){
+                    const auto loaded=history.Load(view,parent,int32_t(height),schedule_budget.archive);
+                    const auto* index=parent.GetAncestor(int32_t(height));
+                    RequireAudit(loaded.block&&index&&index->pprev,"Incremental audit history unavailable");
+                    RequireAudit(before_block(result->audits,*index->pprev,*loaded.block,result->extra),
+                                 "Invalid incremental audit hook state");
+                    for(const auto& output:loaded.block->Coinbase()->vout){
+                        if(!IsNativeAuditScript(output.scriptPubKey))continue;
+                        const auto event=DecodeNativeAuditEnvelope(output.scriptPubKey);
+                        RequireAudit(event&&output.nValue==0,"Invalid incremental audit event");
+                        ApplyNativeAuditEvent(result->audits,*event,*index->pprev,head->chain,signature_budget);
+                    }
+                }
+            }
+        }catch(const std::exception&){reuse=false;result.reset();}
+    }
+    if(!reuse){cached=Snapshot<Extra,Context>{};result=full();}
+    try{
+        const auto charge=result?extra_charge(result->extra):std::optional<size_t>{};
+        if(result&&head&&charge&&Fits(result->audits,*charge)){
+            Snapshot<Extra,Context> next;
+            next.chain=head->chain;next.tip=parent.GetBlockHash();next.height=parent.nHeight;
+            next.archive=&history;next.budgets=key;next.context=context;next.state=*result;
+            cached=std::move(next);
+        }else cached=Snapshot<Extra,Context>{};
+    }catch(const std::bad_alloc&){cached=Snapshot<Extra,Context>{};}
+    return result;
+}
+} // namespace native_audit_replay_detail
+inline std::optional<NativeAuditLedger> ReadNativeAuditLedger(
+    const CCoinsView& view,const CBlockIndex& parent,const NativeRequestHistoryArchive& history,
+    const RangePolicyReadBudget& policy_budget,const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget)
+{
+    using namespace native_audit_replay_detail;
+    static Snapshot<NoExtraState,uint8_t> cached;
+    auto result=ReadIncremental(view,parent,history,policy_budget,schedule_budget,signature_budget,cached,uint8_t{0},
+        [](const NativeAuditLedger&,const CBlockIndex&,const VerifiedNativeRequestBlock&,NoExtraState&){return true;},
+        [](const NoExtraState&)->std::optional<size_t>{return 0;});
+    if(!result)return {};
+    return std::move(result->audits);
+}
+
 inline bool VerifyProposedNativeAuditEvents(const CCoinsView& view,const CBlockIndex& parent,
     const NativeRequestHistoryArchive& history,const CBlock& block,const RangePolicyReadBudget& policy_budget,
     const RangeScheduleBudget& schedule_budget,ScriptWorkBudget signature_budget){
