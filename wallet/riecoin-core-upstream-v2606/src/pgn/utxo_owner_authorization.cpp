@@ -1,3 +1,9 @@
+#include <cuckoocache.h>
+#include <random.h>
+#include <util/hasher.h>
+#include <memory>
+#include <mutex>
+#include <new>
 // MIT. Uses actual Core coins view and maintained native BIP-322 verifier.
 #include <pgn/utxo_owner_authorization.h>
 #include <pgn/script_work_proof.h>
@@ -6,6 +12,39 @@
 #include <script/solver.h>
 namespace pgn::core {
 namespace {
+
+// Derived verification cache only. Every input/context/budget check below is
+// still performed; a hit proves only that these exact bytes satisfied BIP322.
+// No ledger state, audit verdict, ticket eligibility or payment is cached.
+class VerifiedScriptWorkCache {
+    uint256 m_nonce{GetRandHash()};
+    CuckooCache::cache<uint256, SignatureCacheHasher> m_entries;
+    std::mutex m_mutex;
+public:
+    VerifiedScriptWorkCache() { m_entries.setup_bytes(4 * 1024 * 1024); }
+    uint256 Key(const ScriptWorkContext& c, const CScript& script,
+                const std::vector<unsigned char>& signature) const {
+        HashWriter out{TaggedHash("PGN/DERIVED/VERIFIED-SCRIPT-WORK/1")};
+        out << m_nonce << c.chain << c.work << c.parent << script << signature;
+        return out.GetHash();
+    }
+    bool Contains(const uint256& key) {
+        std::lock_guard lock{m_mutex};
+        return m_entries.contains(key, false);
+    }
+    void Remember(const uint256& key) {
+        std::lock_guard lock{m_mutex};
+        m_entries.insert(key);
+    }
+};
+VerifiedScriptWorkCache* ScriptCache() {
+    static const auto cache=[]() -> std::unique_ptr<VerifiedScriptWorkCache> {
+        try { return std::make_unique<VerifiedScriptWorkCache>(); }
+        catch (const std::bad_alloc&) { return {}; }
+    }();
+    return cache.get();
+}
+
 bool ValidScriptBudget(ScriptWorkBudget b){return b.script_bytes&&b.signature_bytes&&b.script_bytes<=1024*1024&&b.signature_bytes<=1024*1024;}
 }
 std::optional<std::string> ScriptWorkChallenge(const ScriptWorkContext& c,const CScript& script,ScriptWorkBudget budget){
@@ -19,8 +58,13 @@ ScriptWorkCheck VerifyScriptWork(const ScriptWorkContext& c,const CScript& scrip
     const auto challenge=ScriptWorkChallenge(c,script,budget);if(!challenge)return {ScriptWorkVerdict::InvalidContext,{},{}};
     CTxDestination destination;if(!ExtractDestination(script,destination))return {ScriptWorkVerdict::UnsupportedScript,{},{}};
     std::vector<unsigned char> bounded(signature.begin(),signature.end());
+    auto* cache=ScriptCache();
+    const auto cache_key=cache?cache->Key(c,script,bounded):uint256{};
+    if(cache&&cache->Contains(cache_key))
+        return {ScriptWorkVerdict::Verified,MessageVerificationResult::OK,VerifiedScriptWork{c,script}};
     const auto result=MessageVerifyBIP322(destination,bounded,*challenge,MessageVerificationResult::ERR_INVALID);
     if(result!=MessageVerificationResult::OK)return {ScriptWorkVerdict::InvalidSignature,result,{}};
+    if(cache)cache->Remember(cache_key);
     return {ScriptWorkVerdict::Verified,result,VerifiedScriptWork{c,script}};
 }
 std::optional<std::string> UtxoOwnerChallenge(const UtxoOwnerContext& c){

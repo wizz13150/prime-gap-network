@@ -480,3 +480,10 @@ target_link_libraries(pgn-native-bootstrap-dispatch-test PRIVATE core_interface 
 if(BUILD_TESTS)
   add_test(NAME native-bootstrap-dispatch COMMAND pgn-native-bootstrap-dispatch-test)
 endif()
+
+# Context-bound native BIP322 cache regression; no wallet or daemon.
+add_executable(pgn-native-script-work-cache-test EXCLUDE_FROM_ALL pgn/script_work_cache_test.cpp)
+target_link_libraries(pgn-native-script-work-cache-test PRIVATE core_interface riecoin_node univalue)
+if(BUILD_TESTS)
+  add_test(NAME native-script-work-cache COMMAND pgn-native-script-work-cache-test)
+endif()
