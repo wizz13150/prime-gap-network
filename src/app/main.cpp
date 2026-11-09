@@ -240,6 +240,11 @@ int main(int argc,char** argv) {
     }
     if(auto* rail=inspectCanvas->window()->findChild<QWidget*>("pgn-ticket-progress-rail")){receipt.insert("ticket_progress",QJsonValue::fromVariant(rail->property("pgn_ticket_progress_fraction")));receipt.insert("ticket_animation_active",rail->property("pgn_ticket_animation_active").toBool());receipt.insert("ticket_animation_phase",QJsonValue::fromVariant(rail->property("pgn_ticket_animation_phase")));for(const auto* name:{"pgn_ticket_flow_received","pgn_ticket_flow_coalesced","pgn_ticket_animation_paint_ns","pgn_ticket_animation_paint_max_ns","pgn_ticket_collection_size","pgn_ticket_collection_departing","pgn_ticket_deliveries","pgn_ticket_landing_error"})receipt.insert(QString::fromLatin1(name),QJsonValue::fromVariant(rail->property(name)));}
     if(auto* work=inspectCanvas->window()->findChild<QWidget*>("pgn-network-work-explorer"))receipt.insert("selected_ticket_evidence",work->property("pgn_selected_ticket_evidence").toJsonObject());
+    if(auto* animation=inspectCanvas->window()->findChild<QWidget*>("pgn-network-audit-animation")){
+     QJsonArray surfaces;auto objects=animation->findChildren<QObject*>();objects.prepend(animation);
+     for(const auto* object:objects){QJsonObject state;for(const auto& name:object->dynamicPropertyNames())if(name.startsWith("pgn_audit"))state.insert(QString::fromLatin1(name),QJsonValue::fromVariant(object->property(name.constData())));if(!state.isEmpty()){state.insert("object",object->objectName());surfaces.append(state);}}
+     receipt.insert("audit_animation",surfaces);
+    }
     if(auto* explorer=inspectCanvas->window()->findChild<QWidget*>("pgn-block-explorer"))receipt.insert("selected_explorer_block",explorer->property("pgn_explorer_selected_block").toJsonObject());
     const auto frame=inspectCanvas->window()->frameGeometry();
     const auto screen=inspectCanvas->window()->screen();

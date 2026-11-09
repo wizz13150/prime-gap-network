@@ -165,7 +165,7 @@ class NativeCohortLifecycle:
         self.restored=True
         self.record('restoring_previous')
         if self.new_ui and not self.new_ui.exited():
-            current=self.runtime/'wallet-owned.json'
+            current=self.owner_path
             owned_core=None
             try:
                 if current.exists():

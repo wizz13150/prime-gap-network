@@ -107,8 +107,9 @@ inline std::pair<uint64_t,uint256> AuditSettlementTaskCommitment(const NativeAud
     return {tasks,hash.GetHash()};
 }
 // Financial kernel exercised separately from authentication. No mint authority.
-inline std::optional<AuditSettlementPage> ApplyAuditSettlementPage(
-    const NativeAuditLedger& ledger,const GoldEpochDefinition& definition,uint16_t maximum_outputs,
+template<class LoadLedger>
+inline std::optional<AuditSettlementPage> ApplyAuditSettlementPageLazy(
+    LoadLedger&& load_ledger,const GoldEpochDefinition& definition,uint16_t maximum_outputs,
     uint64_t cutoff_golds,int32_t cutoff_height,const uint256& cutoff,IssuanceSnapshot& after){
     if(!maximum_outputs||maximum_outputs>128||!GoldEpochDefinitionValid(definition)||!after.Valid()||!after.audit_settlement||!after.epochs||!after.partition||!after.pools)return {};
     auto next=after;auto& state=*next.audit_settlement;
@@ -117,22 +118,26 @@ inline std::optional<AuditSettlementPage> ApplyAuditSettlementPage(
     const auto accrued=QuoteCumulativeAuditAccrual(definition,next.epochs->golds);
     if(!accrued||state.total_paid>*accrued||next.pools->audit!=*accrued-state.total_paid)return {};
     AuditSettlementPage page;
+    // No audit settlement is due. The same financial invariants above still
+    // run, but no report/recipient can affect this exact empty page. Do not
+    // reconstruct the complete historical audit ledger for that non-operation.
+    if(!state.active&&cutoff_golds<=state.completed_golds)return page;
+    const auto ledger=load_ledger();if(!ledger)return {};
     if(!state.active){
-        if(cutoff_golds<=state.completed_golds)return page;
         if(cutoff_golds>next.epochs->golds||cutoff_golds%definition.audit_period||cutoff_height<=state.completed_height||cutoff.IsNull())return {};
-        const auto [tasks,root]=AuditSettlementTaskCommitment(ledger,state.completed_height,cutoff_height);
+        const auto [tasks,root]=AuditSettlementTaskCommitment(*ledger,state.completed_height,cutoff_height);
         if(!tasks){state.completed_golds=cutoff_golds;state.completed_height=cutoff_height;after=next;return page;}
         const auto reserved=QuoteCumulativeAuditAccrual(definition,cutoff_golds);
         if(!reserved||*reserved<state.total_paid||*reserved-state.total_paid>next.pools->audit)return {};
         state.active=AuditSettlementActive{cutoff_golds,tasks,0,cutoff_height,cutoff,root,*reserved-state.total_paid};
     }
     auto& active=*state.active;
-    if(AuditSettlementTaskCommitment(ledger,state.completed_height,active.height)!=std::pair{active.tasks,active.root})return {};
+    if(AuditSettlementTaskCommitment(*ledger,state.completed_height,active.height)!=std::pair{active.tasks,active.root})return {};
     page.first=active.next;page.count=std::min<uint64_t>(maximum_outputs,active.tasks-active.next);
     const auto amount=QuoteAuditPotRange(active.pot,active.tasks,page.first,page.count);if(!amount)return {};
     page.paid=*amount;page.receipt=AuditSettlementReceipt(active,page.first,page.count);
     uint64_t ordinal{};
-    VisitAuditSettlementTasks(ledger,state.completed_height,active.height,[&](const uint256&,const uint256&,uint8_t,const NativeAuditJob& job){
+    VisitAuditSettlementTasks(*ledger,state.completed_height,active.height,[&](const uint256&,const uint256&,uint8_t,const NativeAuditJob& job){
         if(ordinal>=page.first&&ordinal-page.first<page.count){
             const auto value=*QuoteAuditPotRange(active.pot,active.tasks,ordinal,1);
             if(value)page.outputs.emplace_back(value,job.actor);
@@ -151,6 +156,12 @@ inline std::optional<AuditSettlementPage> ApplyAuditSettlementPage(
     if(!next.Valid())return {};
     after=std::move(next);return page;
 }
+inline std::optional<AuditSettlementPage> ApplyAuditSettlementPage(
+    const NativeAuditLedger& ledger,const GoldEpochDefinition& definition,uint16_t maximum_outputs,
+    uint64_t cutoff_golds,int32_t cutoff_height,const uint256& cutoff,IssuanceSnapshot& after){
+    return ApplyAuditSettlementPageLazy([&]{return &ledger;},definition,maximum_outputs,
+                                      cutoff_golds,cutoff_height,cutoff,after);
+}
 inline std::optional<AuditSettlementPage> PrepareNativeAuditSettlement(
     const CCoinsView& view,const CBlockIndex& parent,const ChainMonetaryPolicy& policy,
     const NativeAuditSettlementContext* context,IssuanceSnapshot& after){
@@ -165,8 +176,6 @@ inline std::optional<AuditSettlementPage> PrepareNativeAuditSettlement(
         AuditSettlementPage page;page.activation=AuditSettlementActivationReceipt(*policy.Activation());return page;
     }
     if(!before->epochs)return {};
-    const auto ledger=ReadNativeAuditLedger(view,parent,context->history,context->policy,context->schedule,context->signature);
-    if(!ledger)return {};
     if(const auto& active=before->audit_settlement->active;active){
         const auto* anchor=parent.GetAncestor(active->height);
         if(!anchor||anchor->GetBlockHash()!=active->cutoff)return {};
@@ -184,7 +193,9 @@ inline std::optional<AuditSettlementPage> PrepareNativeAuditSettlement(
         }
         if(!cutoff_height)return {};
     }
-    return ApplyAuditSettlementPage(*ledger,*policy.Epochs(),policy.Audits()->page_outputs,cutoff_golds,cutoff_height,cutoff,after);
+    return ApplyAuditSettlementPageLazy([&]{return ReadNativeAuditLedger(view,parent,
+        context->history,context->policy,context->schedule,context->signature);},
+        *policy.Epochs(),policy.Audits()->page_outputs,cutoff_golds,cutoff_height,cutoff,after);
 }
 struct NativeAuditCoordinationPlan {IssuanceHistoryStep forward;AuditSettlementPage page;};
 // Settlement consumes already-promised audit reserves. It grants neither a Gold

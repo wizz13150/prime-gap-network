@@ -28,16 +28,19 @@ inline QString validateTicketAtlas(const QJsonObject& view,const QString& genesi
         if((start.isEmpty()&&(first!=origin||last!=limit))||(!start.isEmpty()&&(view.value("start")!=start||view.value("end")!=end)))return "Atlas viewport changed";
         const auto all=count(view.value("tracked_assignments")),visible=count(view.value("visible_assignments"));if(visible>all)return "Atlas count exceeds schedule";
         const auto rows=view.value("details").toArray(),blocks=view.value("bins").toArray();const int expected=span<bins?span.convert_to<int>():bins;
-        if(!view.value("details").isArray()||!view.value("bins").isArray()||blocks.size()!=expected||rows.size()!=std::min<qint64>(visible,100)||!view.value("details_truncated").isBool()||view.value("details_truncated").toBool()!=(visible>100))return "Atlas display budget or detail count invalid";
+        if(!view.value("details").isArray()||!view.value("bins").isArray()||blocks.isEmpty()||blocks.size()>expected||rows.size()!=std::min<qint64>(visible,100)||!view.value("details_truncated").isBool()||view.value("details_truncated").toBool()!=(visible>100))return "Atlas display budget or detail count invalid";
         std::array<AtlasInteger,5> sums{};AtlasInteger previous=first;
         for(qsizetype i=0;i<blocks.size();++i){
             const auto block=blocks[i].toObject();const AtlasInteger a=atlasInteger(block.value("start")),b=atlasInteger(block.value("end"));
-            if(a!=previous||a!=first+span*i/expected||b!=first+span*(i+1)/expected||a>=b)return "Atlas bins do not partition viewport";
+            // Linear and per-bit views share the same invariant: bounded,
+            // adjacent exact integer cells covering the requested viewport.
+            if(a!=previous||a>=b||b>last)return "Atlas bins do not partition viewport";
             previous=b;AtlasInteger used{};const auto stages=block.value("stages").toObject();
             if(stages.size()!=5)return "Atlas stage set invalid";
             for(size_t s=0;s<5;++s){const auto amount=stages.value(AtlasStates[s]).toObject();const AtlasInteger positions=atlasInteger(amount.value("positions"));const auto n=count(amount.value("tickets"));if(n>visible||(n==0)!=(positions==0)||positions<n)return "Atlas bin count invalid";used+=positions;sums[s]+=positions;}
             if(used>b-a)return "Overlapping atlas occupancy";
         }
+        if(previous!=last)return "Atlas bins do not cover viewport";
         const auto totals=view.value("totals").toObject();if(totals.size()!=5)return "Atlas total stages invalid";qint64 counted{};
         for(size_t s=0;s<5;++s){const auto amount=totals.value(AtlasStates[s]).toObject();const auto n=count(amount.value("tickets"));counted+=n;if(n>visible||atlasInteger(amount.value("positions"))!=sums[s])return "Atlas totals mismatch";}
         if(counted!=visible)return "Atlas visible count mismatch";

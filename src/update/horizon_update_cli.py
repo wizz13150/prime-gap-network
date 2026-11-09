@@ -17,7 +17,7 @@ from horizon_update_client import AuthenticatedUpdates
 from horizon_component_install import CohortStore, _write
 import horizon_update_progress as progress
 
-VERSION='2026.11.8.17'
+VERSION='2026.11.9.18'
 
 
 def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,recovery_factory=None):

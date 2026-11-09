@@ -206,7 +206,7 @@ class CohortStore:
                     shutil.copyfile(source_file,target)
                     if self.context['platform']=='linux-x86_64':
                         with target.open('rb') as stream:is_elf=stream.read(4)==b'\x7fELF'
-                        if is_elf:target.chmod(0o755)
+                        if is_elf or relative=='launch-horizon.sh':target.chmod(0o755)
                 progress.report('prepare',completed=len(ordered),total=len(ordered),force=True)
                 _write(pending/'components.json',merged)
                 _,_,digest,_=inventory(pending)

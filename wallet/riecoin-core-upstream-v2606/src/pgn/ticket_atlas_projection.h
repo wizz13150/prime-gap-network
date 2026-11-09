@@ -25,7 +25,29 @@ public:
             throw std::invalid_argument("Invalid bounded atlas viewport");
         const size_t n=m_span<requested?m_span.convert_to<size_t>():requested;
         m_bins.reserve(n);
-        for(size_t i=0;i<n;++i)m_bins.push_back({m_start+m_span*i/n,m_start+m_span*(i+1)/n,{}});
+        // The overview renderer uses equal horizontal space per bit band.
+        // Aggregate in that same space: a linear first cell across 68..95
+        // bits would falsely place its occupied midpoint near 87 bits.
+        const bool bit_scale=m_start>0&&boost::multiprecision::msb(m_end-1)>boost::multiprecision::msb(m_start)+1;
+        const Integer unit=Integer(1)<<40;
+        const auto coordinate=[&](const Integer& value)->Integer{
+            const auto k=boost::multiprecision::msb(value);const Integer base=Integer(1)<<k;
+            return Integer(k)*unit+(value-base)*unit/base;
+        };
+        const Integer lower=bit_scale?coordinate(m_start):Integer(0),upper=bit_scale?coordinate(m_end):Integer(0);
+        Integer previous=m_start;
+        for(size_t i=1;i<=n;++i){
+            Integer boundary=m_end;
+            if(i<n){
+                if(bit_scale){
+                    const Integer cut=lower+(upper-lower)*i/n;const unsigned k=(cut/unit).convert_to<unsigned>();
+                    const Integer base=Integer(1)<<k;boundary=base+base*(cut%unit)/unit;
+                }else boundary=m_start+m_span*i/n;
+            }
+            // Very small integer domains can quantize adjacent cuts to the
+            // same integer. Merge them, preserving an exact covering partition.
+            if(boundary>previous){m_bins.push_back({previous,boundary,{}});previous=boundary;}
+        }
     }
     // Current schedule order is numeric slot order. Reject overlap/duplicates
     // rather than interpreting two assignments as twice-completed coverage.
@@ -37,13 +59,10 @@ public:
         const Integer left=std::max(start,m_start),right=std::min(end,m_end);
         if(right<=left)return false;
         auto& total=m_totals[s];++total.tickets;total.positions+=right-left;
-        const size_t n=m_bins.size();
-        // Bins are [floor(span*i/n), floor(span*(i+1)/n)). The usual
-        // floor(offset*n/span) is wrong at some indivisible boundaries.
-        const size_t first=(((left-m_start+1)*n-1)/m_span).convert_to<size_t>();
-        const size_t last=(((right-m_start)*n-1)/m_span).convert_to<size_t>();
-        for(size_t i=first;i<=last;++i){
-            auto& bin=m_bins.at(i);const Integer a=std::max(left,bin.start),b=std::min(right,bin.end);
+        auto first=std::upper_bound(m_bins.begin(),m_bins.end(),left,
+            [](const Integer& value,const AtlasBin& bin){return value<bin.end;});
+        for(auto it=first;it!=m_bins.end()&&it->start<right;++it){
+            auto& bin=*it;const Integer a=std::max(left,bin.start),b=std::min(right,bin.end);
             if(a<b){++bin.stages[s].tickets;bin.stages[s].positions+=b-a;}
         }
         return true;

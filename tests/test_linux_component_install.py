@@ -41,6 +41,8 @@ class LinuxInstallTests(unittest.TestCase):
         for identity,name in LINUX_PRIMARY.items():
             path=self.base/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(image);path.chmod(0o755)
             components.append(dict(id=identity,version='1.0.0',files=[dict(path=name[len(COMPONENT_PREFIX[identity]):],bytes=len(image),sha256=stage.sha(image))]))
+        launcher=self.base/'launch-horizon.sh';launcher.write_bytes(b'#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        next(c for c in components if c['id']=='ui')['files'].append(dict(path=launcher.name,bytes=launcher.stat().st_size,sha256=stage.sha(launcher.read_bytes())))
         _write(self.base/'components.json',dict(schema='PGN_COMPONENT_MANIFEST_V1',network='testnet',platform='linux-x86_64',release_version='1.0.0',published=True,components=components))
         self.context=dict(schema='PGN_COMPONENT_STAGE_CONTEXT_V1',network='testnet',genesis_hash='5'*64,platform='linux-x86_64',compatibility_set='qa.linux',minimum_sequence=1,installed=[dict(id=x,version='1.0.0',abi='qa.1')for x in LINUX_PRIMARY],protected_roots=[str(self.base),str(self.data)])
         self.context,self.context_sha=stage.context_from_bytes(json.dumps(self.context).encode())
@@ -101,6 +103,8 @@ class LinuxInstallTests(unittest.TestCase):
         self.assertEqual(json.loads(self.profile.read_bytes())['executable'],str(self.new/LINUX_PRIMARY['core']))
         for row in inventory(self.new)[0]['components']:
             self.assertTrue((self.new/LINUX_PRIMARY[row['id']]).stat().st_mode&0o100)
+        self.assertTrue((self.new/'launch-horizon.sh').stat().st_mode&0o100)
+        self.assertEqual(subprocess.run([str(self.new/'launch-horizon.sh')],timeout=5).returncode,0)
         with self.assertRaises(BlockingIOError):
             with ui_scope_lease(self.data,'5'*64):self.fail('Two data owners')
 
@@ -123,6 +127,25 @@ class LinuxInstallTests(unittest.TestCase):
         self.assertTrue(self.store.activate(self.candidate,life.drain,life.start_and_verify,life.restore_previous))
         self.assertEqual(json.loads(self.profile.read_bytes())['executable'],str(self.new/LINUX_PRIMARY['core']))
         self.assertFalse((self.runtime/'wallet-core.json').exists())
+
+    def test_rollback_reads_core_owner_from_the_configured_directory(self):
+        configured=self.root/'config/wallet/testnet'/('5'*64)
+        configured.mkdir(parents=True)
+        self.profile.replace(configured/'wallet-core.json');self.profile=configured/'wallet-core.json'
+        state_path=self.control/('state.'+str(self.processes[0].pid))
+        state=json.loads(state_path.read_bytes());state['pgn_update_core_runtime_directory']=str(configured);_write(state_path,state)
+        life=self.lifecycle()
+        self.assertTrue(self.store.activate(self.candidate,life.drain,life.start_and_verify,life.restore_previous))
+        candidate_pid=life.new_ui.pid
+        _write(configured/'wallet-owned.json',dict(genesis_hash='5'*64,pid=candidate_pid,
+            executable=str(life.new_ui.executable),executable_sha256=stage.sha(life.new_ui.executable.read_bytes()),birth=life.new_ui.birth))
+        opened=[];native_own=life.own_process
+        def observe(*args):
+            opened.append(args[0]);return native_own(*args)
+        life.own_process=observe
+        life.restore_previous(self.base,self.new)
+        self.assertIn(candidate_pid,opened)
+        self.assertEqual(life.new_ui.executable,self.base/LINUX_PRIMARY['ui'])
 
     def test_failed_candidate_restarts_previous_with_exact_profile_bytes(self):
         os.environ['PGN_TEST_UPDATE_FAIL_IMAGE']=str(self.new/LINUX_PRIMARY['ui'])

@@ -23,6 +23,17 @@ class ComponentBundleTests(unittest.TestCase):
   (self.code/'empty.dll').write_bytes(b'');self.manifest(['PGN-Horizon.exe',self.marker,'empty.dll'])
   with self.assertRaisesRegex(ValueError,'Invalid file declaration'):builder.build(self.code,self.context,self.root/'bundle.zip',2,'1.0','qa.1')
   self.assertFalse((self.root/'bundle.zip').exists())
+ def test_core_update_brings_compatible_ui_without_cyclic_dependencies(self):
+  core=self.code/'Core';core.mkdir();(core/'pgn-core.exe').write_bytes(pe())
+  value=component.build(dict(release_version='2.0',network='testnet',published=False,components=[
+   dict(id='ui',version='2.0',root=str(self.code),files=['PGN-Horizon.exe',self.marker]),
+   dict(id='core',version='2.0',root=str(core),files=['pgn-core.exe'])]))
+  (self.code/'components.json').write_text(json.dumps(value))
+  archive=self.root/'bundle.zip';builder.build(self.code,self.context,archive,2,'2.0','qa.1')
+  context,_=stage.context_from_bytes(self.context.read_bytes())
+  with zipfile.ZipFile(archive)as z:raw=z.read('component-bundle.json')
+  self.assertEqual(stage._manifest(raw,context,['core'])[3],['core','ui'])
+  self.assertEqual(stage._manifest(raw,context,['ui'])[3],['ui'])
  def deployment(self):
   helper=self.code/'UpdateRuntime/horizon-updater.exe';helper.write_bytes(pe())
   value=dict(schema='PGN_UPDATE_DEPLOYMENT_V1',network='testnet',genesis_hash='5'*64,

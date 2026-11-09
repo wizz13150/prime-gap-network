@@ -44,6 +44,29 @@ int main(){
         TicketAtlasProjection huge(Integer("150000000000000000000"),(Integer(1)<<95),512);
         const Integer end=(Integer(1)<<95);huge.Add(end-1,end,AtlasStage::Assigned);
         need(huge.Bins().back().stages[0].positions==1);
+        TicketAtlasProjection lowerBand(largeOrigin,end,256);
+        lowerBand.Add(largeOrigin,largeOrigin+ticketWidth,AtlasStage::Pending);
+        Integer preserved{};
+        for(const auto& bin:lowerBand.Bins())if(bin.stages[1].positions>0){
+            need(bin.start<=largeOrigin&&bin.end<=(Integer(1)<<68));
+            preserved+=bin.stages[1].positions;
+        }
+        need(preserved==ticketWidth);
+        // Independent intersections across every displayed bit band.
+        TicketAtlasProjection bands(largeOrigin,end,256);
+        std::vector<std::pair<Integer,Integer>> intervals;
+        for(unsigned k=68;k<95;++k){const Integer a=(Integer(1)<<k)+13;intervals.emplace_back(a,a+37);bands.Add(a,a+37,AtlasStage::Passed);}
+        for(const auto& bin:bands.Bins()){
+            Integer expected{};
+            for(const auto& [a,b]:intervals){const Integer l=std::max(a,bin.start),r=std::min(b,bin.end);if(r>l)expected+=r-l;}
+            need(bin.stages[3].positions==expected);
+        }
+        for(const auto& [a,b]:std::vector<std::pair<Integer,Integer>>{{1,5},{1,129},{3,4097}}){
+            TicketAtlasProjection small(a,b,512);Integer last=a,total{};
+            small.Add(a,b,AtlasStage::Assigned);
+            for(const auto& bin:small.Bins()){need(bin.start==last&&bin.end>last);last=bin.end;total+=bin.stages[0].positions;}
+            need(last==b&&total==b-a&&small.Bins().size()<=512);
+        }
         bool rejected=false;try{huge.Add(end-1,end,AtlasStage::Assigned);}catch(const std::invalid_argument&){rejected=true;}need(rejected);
         for(int n:{0,513}){rejected=false;try{TicketAtlasProjection bad(0,100,n);}catch(const std::invalid_argument&){rejected=true;}need(rejected);}
         std::cout<<"PASS "<<checks<<" atlas integer checks;1024 independent per-position grids,10000ticket/512binpopulation,95bitorigin,indivisible bins,clipping,overlap and budgets\n";return 0;

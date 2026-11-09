@@ -44,7 +44,9 @@ This is the current portable Windows preview for supervised tests on the PGN tes
 4. Choose your public name in Profile, then turn a GPU on. No coordinator approval, enrollment or diagnostic recording is required. Core verifies the signatures and work automatically. Never send wallet files, keys or RPC credentials.
 5. Turn your GPU on. CPU mining can remain OFF. Network service may assign audits before a new search ticket; that work uses the GPU and is part of the same normal cycle. Starting Diagnostics recording is never required to turn mining on. Reports, audits and searches share the normal worker.
 
-Core **2026.11.9.6** retains the elapsed-time difficulty controller activated at ledger height **3456**: median chain time, a 30-minute response scale and merit floor 21. The transition and decline between Golds have been observed on the running testnet. History, genesis and wallets are retained. Coordination records remain part of this laboratory; final Gold-only architecture is separate work.
+Core **2026.11.9.8** retains the elapsed-time difficulty controller activated at ledger height **3456**: median chain time, a 30-minute response scale and merit floor 21. The transition and decline between Golds have been observed on the running testnet. History, genesis and wallets are retained. Coordination records remain part of this laboratory; final Gold-only architecture is separate work.
+
+Core 8 avoids reconstructing the audit ledger when no audit settlement is due. On a retained 3,760-record chain, level-4 verification of eight blocks took 21.25 seconds before and 6.98 seconds after, with identical native state. This measures block verification, not GPU search throughput.
 
 ### What this preview provides
 
@@ -67,7 +69,7 @@ The test ledger includes coordination records without coin issuance. **Ledger he
 
 ## Recovery and diagnostic update
 
-Interface **2026.11.9.101**, Core **2026.11.9.6** and GPU runtime **2026.11.8.34** retain current-network templates, bounded startup failure traces and automatic work resumption after an update. The updater distinguishes local connection failures from server outages, verifies downloaded components, installs them as a coherent code cohort and retains a recovery path. Fresh installations keep the Core configuration in the user configuration directory and mining state in the separate user data directory; both paths survive a component update. Diagnostics remain optional. Robert's machine-specific startup failure has not yet been confirmed resolved.
+Interface **2026.11.9.103**, Core **2026.11.9.8** and GPU runtime **2026.11.8.34** retain current-network templates, bounded startup failure traces and automatic work resumption after an update. The updater distinguishes local connection failures from server outages, verifies downloaded components, installs them as a coherent code cohort and retains a recovery path. Fresh installations keep the Core configuration in the user configuration directory and mining state in the separate user data directory; both paths survive a component update. Linux updates preserve the launcher’s execute permission, and rollback looks up Core ownership in its configured directory. Diagnostics remain optional. Robert's machine-specific startup failure has not yet been confirmed resolved.
 
 The audit scene is still under visual revision. The native scene/Atlas trajectory integration and Robert's physical SM120 startup remain unqualified. Clean source CI builds every default target, runs the registered tests, and preserves the test log.
 
