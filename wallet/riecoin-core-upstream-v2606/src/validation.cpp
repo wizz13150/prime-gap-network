@@ -1,3 +1,4 @@
+#include <pgn/bootstrap_block_dispatch.h>
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-present The Bitcoin Core developers
 // Copyright (c) 2013-present The Riecoin developers
@@ -4656,7 +4657,13 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
         if(!ancestor_view)return state.Error(ancestor_error);
         parent=ancestor_view->parent;
         auto& parent_view=*ancestor_view->coins;
-        auto verified=VerifyNativeCandidateBlockScience(parent_view,*parent,*history,block,*budget);
+        // Bootstrap already verifies the signed reports/audit events. Avoid
+        // replaying those checks through the science verifier for a body
+        // with no science envelope, while retaining its cheap body bounds.
+        NativeBlockScienceCheck verified{NativeBlockScienceVerdict::MissingProof,{},{}};
+        if(!m_options.pgn_candidate_bootstrap_budget||
+           !CanDispatchDirectlyToNativeBootstrap(block,*parent,*budget))
+            verified=VerifyNativeCandidateBlockScience(parent_view,*parent,*history,block,*budget);
         if(!verified.candidate){
             if(!HasNativeCandidateBlockScienceEnvelope(block)&&m_options.pgn_candidate_bootstrap_budget){
                 auto bootstrap=VerifyNativeBootstrapBlock(parent_view,*parent,*history,block,*m_options.pgn_candidate_bootstrap_budget,&*m_options.pgn_candidate_science_budget);

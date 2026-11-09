@@ -473,3 +473,10 @@ target_link_libraries(pgn-native-audit-activation-test PRIVATE core_interface ri
 # Native epoch2 service activation bindings; no daemon or live network.
 add_executable(pgn-testnet-service-activation-test EXCLUDE_FROM_ALL pgn/testnet_service_activation_test.cpp)
 target_link_libraries(pgn-testnet-service-activation-test PRIVATE core_interface riecoin_node univalue)
+
+# Routing regression linked to the real native verifier and body primitives.
+add_executable(pgn-native-bootstrap-dispatch-test EXCLUDE_FROM_ALL pgn/bootstrap_block_dispatch_test.cpp)
+target_link_libraries(pgn-native-bootstrap-dispatch-test PRIVATE core_interface riecoin_node univalue)
+if(BUILD_TESTS)
+  add_test(NAME native-bootstrap-dispatch COMMAND pgn-native-bootstrap-dispatch-test)
+endif()
