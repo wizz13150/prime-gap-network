@@ -39,6 +39,8 @@ class OwnerReports:
             db.execute('PRAGMA synchronous=FULL')
             db.execute('PRAGMA cache_size=-1024')
             db.executescript('CREATE TABLE IF NOT EXISTS reports(name TEXT PRIMARY KEY,ticket TEXT NOT NULL,root TEXT NOT NULL,waiting INTEGER NOT NULL) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS waiting_reports ON reports(waiting,name); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;')
+            if not existing:
+                db.execute("INSERT INTO meta VALUES('gold_publication_version','3')")
             with db:
                 yield db
         finally:
@@ -80,6 +82,17 @@ class OwnerReports:
                 or len(text) > 20 or str(int(text)) != text or int(text) >= 1 << 64):
             raise ValueError('Invalid owner catalogue generation')
         return int(text)
+
+    def reopen_for_gold_publications(self):
+        # V2 acknowledged an entire report after its first Gold. Revisit once
+        # after upgrading; immutable report identities and fair cursor survive.
+        with self.database() as db:
+            row = db.execute("SELECT value FROM meta WHERE key='gold_publication_version'").fetchone()
+            if row and row[0] == '3':
+                return
+            db.execute('UPDATE reports SET waiting=1')
+            db.execute("DELETE FROM meta WHERE key='sweep'")
+            db.execute("INSERT OR REPLACE INTO meta VALUES('gold_publication_version','3')")
 
     def invalidate_sweep(self):
         # Keep the fair cursor. A transient RPC/publication race may require

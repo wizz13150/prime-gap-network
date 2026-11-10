@@ -33,6 +33,7 @@ int main(int argc,char** argv){
             const QPointF at(g.value("x").toDouble()+g.value("width").toDouble()/2,g.value("y").toDouble()+g.value("height").toDouble()/2);
             QMouseEvent move(QEvent::MouseMove,at,view->mapToGlobal(at.toPoint()),Qt::NoButton,Qt::NoButton,Qt::NoModifier);QCoreApplication::sendEvent(view,&move);app.processEvents();
             const auto hover=view->property("pgn_network_chart_hover").toJsonObject();require(hover.value("chart").toInt()==chart&&hover.value("sample_index").toInt()==1&&hover.value("time")==points[1].toObject().value("time"),"Crosshair must select a real nearest sample, never interpolated data");require(hover.value("reported_positions")==points[1].toObject().value("reported_positions")&&hover.value("merit_target_q16")==points[1].toObject().value("merit_target_q16"),"Hover exact source values changed");
+            require(view->toolTip().contains("Exact target: "+QString::number(points[1].toObject().value("merit_target_q16").toInteger())+"/65536")&&view->toolTip().contains("Target merit: ≈ "),"Rounded merit lacks approximation or exact source ratio");
         }
         QEvent leave(QEvent::Leave);QCoreApplication::sendEvent(view,&leave);require(view->toolTip().isEmpty()&&view->property("pgn_network_chart_hover").toJsonObject().isEmpty(),"Stale hover remains outside chart");
         if(argc>1){QDir().mkpath(QString::fromLocal8Bit(argv[1]));require(image.save(QString::fromLocal8Bit(argv[1])+QString("/%1-%2.png").arg(view==home?"overview":"history").arg(width)),"Render receipt failed");}

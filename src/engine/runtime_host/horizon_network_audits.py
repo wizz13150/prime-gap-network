@@ -35,6 +35,7 @@ class NetworkAudits:
         # Reopen its sweep on restart; retain the durable fair cursor.
         if self.owner_reports.file.exists():
             self.owner_reports.invalidate_sweep()
+            self.owner_reports.reopen_for_gold_publications()
         self.owner_poll_more = False
         self.presentation = None
         self.current_audit = None

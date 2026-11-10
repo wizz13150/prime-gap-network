@@ -3,6 +3,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <cmath>
+#include "rational_formats.h"
 #include <boost/multiprecision/cpp_int.hpp>
 
 namespace pgn::ui {
@@ -19,14 +20,13 @@ inline QJsonObject networkSummaryRows(const QJsonObject& value){
     const auto seconds=value.value("window_seconds").toInteger(),target=value.value("merit_target_q16").toInteger();
     const auto positions=value.value("reported_positions").toString();
     if(seconds<30||seconds>86400||target<1||target>64*65536||!QRegularExpression("^(0|[1-9][0-9]{0,37})$").match(positions).hasMatch())return missing;
-    const double rate=positions.toDouble()/seconds;
-    const QString rateText=rate>=1e12?QString::number(rate/1e12,'g',3)+" Tpos/s":rate>=1e9?QString::number(rate/1e9,'g',3)+" Gpos/s":rate>=1e6?QString::number(rate/1e6,'g',3)+" Mpos/s":QString::number(rate,'g',3)+" pos/s";
+    const QString rateText=reportedRateText(positions,seconds);
     QJsonArray rows;
     const auto add=[&](QString label,QString text){rows.append(QJsonObject{{"label",label},{"value",text}});};
     add("Registered operators",QString::number(value.value("registered_operators").toInteger()));
     add("Reporting miners",QString::number(value.value("reporting_operators_in_window").toInteger()));
     add("Reported search",rateText);
-    add("Gold merit",QString::number(double(target)/65536.,'f',4));
+    add("Gold merit",meritTargetText(target));
     add("Audits pending",QString::number(value.value("pending_audits").toInteger()));
     return {{"available",true},{"rows",rows},{"window_seconds",seconds},{"parent",value.value("parent")},
             {"scope","Reported search excludes audits; registrations are not online counts"}};
@@ -104,7 +104,7 @@ inline QJsonObject networkBitCoverage(const QJsonObject& metrics,const QString& 
     }catch(const std::exception&){return missing;}
 }
 inline QString coveragePercent(qint64 ppb,bool positive=false){
-    if(ppb<0||ppb>1000000000)return "—";
+    if(ppb<0||ppb>1000000000)return "â€”";
     if(ppb==0)return positive?"<0.0000001%":"0%";
     QString value=QString::number(double(ppb)/10000000.,'f',7);
     while(value.endsWith('0'))value.chop(1);if(value.endsWith('.'))value.chop(1);return value+"%";

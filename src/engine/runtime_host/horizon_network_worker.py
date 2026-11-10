@@ -222,10 +222,10 @@ class NetworkWorker:
                 frame.update(phase="Starting", speed_rate=None, average_rate=None, compute_tests_rate=None, eta_rate=None)
             if event.get("phase") == "PAUSED_ACK":
                 frame.update(phase="Paused", controller_state="off", speed_rate=None, average_rate=None, compute_tests_rate=None, eta_rate=None)
-            frame["validation_state"] = "Coordination pilot · independently audited acceptance remains separate"
+            frame["validation_state"] = "Coordination pilot Â· independently audited acceptance remains separate"
             self.emit(frame)
         except (OSError, ValueError, KeyError):
-            self.message("Checkpoint saved; GPU released" if event.get("phase") == "PAUSED_ACK" else "Starting · preparing the first coherent checkpoint", "Paused" if event.get("phase") == "PAUSED_ACK" else "Starting")
+            self.message("Checkpoint saved; GPU released" if event.get("phase") == "PAUSED_ACK" else "Starting Â· preparing the first coherent checkpoint", "Paused" if event.get("phase") == "PAUSED_ACK" else "Starting")
 
     def configure_cpu_resource(self, control):
         device = control.get("device_id", "")
@@ -502,56 +502,8 @@ class NetworkWorker:
         self.mark_report_confirmed(work, sealed)
 
     def submit_gold(self, request, sealed, details_root):
-        folder = self.root / "tickets" / sealed["body"]["ticket"]
-        binding = dict(request_id=request, ticket=sealed["body"]["ticket"],
-                       report_root=sealed["report_root"], details_root=details_root,
-                       genesis=self.args.genesis)
-        # An accepted block changes the chain tip. Retrying maintenance, or
-        # restarting after submitblock, must not try to mint the same report.
-        for name in ("network-acceptance.json", "gold-publication-intent.json"):
-            file = folder / name
-            if not file.exists():
-                continue
-            if file.stat().st_size > 32768:
-                raise ValueError("Gold publication journal exceeds budget")
-            receipt = json.loads(file.read_bytes())
-            if receipt.get("schema") != "PGN_HORIZON_GOLD_PUBLICATION_V2":
-                continue
-            if any(receipt.get(key) != value for key, value in binding.items()):
-                raise ValueError("Gold publication journal differs from audited report")
-            try:
-                header = self.rpc.call("getblockheader", [receipt["block"], True])
-            except RuntimeError:
-                header = {}
-            if header.get("confirmations", -1) >= 1:
-                save(folder / "network-acceptance.json", dict(receipt, audited=True,
-                     exact_gap_verified=True, monetary_accepted=True))
-                return "accepted"
-        work = self.rpc.call("getpgnscientificwork", [request, details_root])
-        target = int(work["target_numerator"]) / int(work["target_denominator"])
-        candidates = [record for record in sealed["body"]["computed"]["best"] if int(record["gap"]) >= target * math.log(int(record["lower_prime"])) * (1 - 1e-12)]
-        if not candidates:
-            return "no_gold"
-        record = max(candidates, key=lambda r: int(r["gap"]) / math.log(int(r["lower_prime"])))
-        evidence = build_gap_proof(self.args.proof_builder, work, sealed["body"]["computed"], record["lower_prime"])
-        if evidence["details_root"] != details_root:
-            raise ValueError("Gold evidence does not match audited report details")
-        signature = self.rpc.call("signmessage", [self.address(), work["challenge"]], wallet=True)
-        script = assemble_gold_proof(work, evidence, signature)
-        candidate = self.rpc.call("getpgnscientifictemplate", [script])
-        if candidate.get("work_verified") is not True or int(candidate["winner_atomic"]) <= 0:
-            raise ValueError("Gold candidate has no verified positive reward")
-        intent = dict(binding, schema="PGN_HORIZON_GOLD_PUBLICATION_V2",
-                      block=candidate["hash"], winner_atomic=candidate["winner_atomic"])
-        save(folder / "gold-publication-intent.json", intent)
-        result = self.rpc.call("submitblock", [candidate["block"]])
-        if result is not None:
-            raise RuntimeError("Gold candidate was not accepted: " + str(result))
-        header = self.rpc.call("getblockheader", [candidate["hash"], True])
-        if header.get("confirmations", -1) < 1:
-            raise RuntimeError("Gold is not yet on the active chain; report retained")
-        save(folder / "network-acceptance.json", dict(intent, audited=True, exact_gap_verified=True, monetary_accepted=True))
-        return "accepted"
+        from horizon_gold_publications import publish
+        return publish(self, request, sealed, details_root, save, build_gap_proof, assemble_gold_proof)
 
     def acquire_device(self):
         if getattr(self, 'cpu_only', False):
