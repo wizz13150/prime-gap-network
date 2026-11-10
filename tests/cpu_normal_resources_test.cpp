@@ -51,6 +51,14 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
   check(automatic.restoreAfterUpdate(endpoint.deviceId,3),"CPU update restore was not dispatched");
   check(until([&]{return latest.value("requested_threads")==3;}),"CPU update restore rounded the saved budget back to the 100-percent value");
   check(automatic.requestClose()||until([&]{return automatic.allStopped();}),"CPU host and endpoints did not close together");
+  check(!automatic.restoreAfterUpdate(endpoint.deviceId,3),"closed CPU fleet consumed a pending resume choice");
+  check(automatic.reopenAfterAbortedUpdate(),"drained CPU channels did not reopen after aborted update");
+  check(until([&]{return automatic.restoreAfterUpdate(endpoint.deviceId,3);}),"reopened CPU inventory never accepted saved choice");
+  check(until([&]{return latest.value("enabled")==true&&latest.value("requested_threads")==3;}),"saved CPU budget did not resume after update abort");
+  check(automatic.control(endpoint.deviceId,"after-abort-off",false,75),"manual OFF after abort was not routed");
+  check(automatic.updateResumeChoices().isEmpty(),"unacknowledged manual OFF remained eligible for update resume");
+  check(until([&]{return lastRequest=="after-abort-off"&&latest.value("enabled")==false;}),"manual OFF lost to stale CPU ON");
+  check(automatic.requestClose()||until([&]{return automatic.allStopped();}),"reopened CPU fleet did not drain normally");
  }
  std::cout<<"{\"PASS\":true,\"hosts\":2,\"distinct_workspaces\":true,\"normal_cycle_bound\":true,\"all_own_processes_exited\":true}"<<std::endl;return 0;
  }catch(const std::exception& error){std::cerr<<error.what()<<std::endl;return 1;}}
