@@ -24,7 +24,7 @@ int main(int argc,char** argv){
  auto* group=nav->findChild<QButtonGroup*>();if(!group||group->buttons().size()!=5)return 4;
  for(int i=0;i<5;++i){group->button(i)->click();app.processEvents();if(outer->currentIndex()!=i)return 5;}
  const QStringList expected{"Wallet","Explorer","Vanity","Difficulty history","Audits"};for(int i=0;i<expected.size();++i)if(outer->tabText(i)!=expected[i])return 11;
- auto* network=view->findChild<QTabWidget*>("pgn-wallet-network-tabs");if(!network||network->count()!=2||network->tabText(0)!="Blocks"||network->tabText(1)!="Peers"||!network->findChild<QTableWidget*>("pgn-wallet-peers"))return 12;
+ auto* network=view->findChild<QTabWidget*>("pgn-wallet-network-tabs");if(!network||network->count()!=3||network->tabText(0)!="Blocks"||network->tabText(1)!="Peers"||network->tabText(2)!="Console"||!network->findChild<QTableWidget*>("pgn-wallet-peers")||!network->findChild<QLineEdit*>("pgn-console-method")||!network->findChild<QPushButton*>("pgn-console-execute"))return 12;
  bool placeholder=false;for(auto* label:account->findChildren<QLabel*>())if(label->text()==QString::fromUtf8("— PGN"))placeholder=true;
  if(!placeholder||QFileInfo::exists(empty.path()+"/data/runtime/wallet-owned.json"))return 6;
  for(auto* input:account->findChildren<QLineEdit*>())if(input->placeholderText().contains("Select an address")&&!input->isReadOnly())return 7;
