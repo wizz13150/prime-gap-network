@@ -4392,7 +4392,7 @@ private:
                                compactAbsoluteRate(shownProcessed),QStringLiteral("gaps/s"),QColor(QStringLiteral("#69efc5"))});
                 const auto rawYield=lane.raw.value("pgn_retained_gaps_per_billion_positions");
                 const std::optional<double> yield=(rawYield.isDouble()?std::optional<double>(rawYield.toDouble()):std::nullopt);
-                meters.append({yield,updatePeak(m_devicePairRatePeaks,key+"-yield",yield),yield?QString::number(*yield,'f',3):QStringLiteral("—"),QStringLiteral("gaps/Gpos"),QColor("#b58cff")});
+                meters.append({yield,updatePeak(m_devicePairRatePeaks,key+"-yield",yield),pgn::ui::fixedMetricCaption(yield,3),QStringLiteral("gaps/Gpos"),QColor("#b58cff")});
             }
         }
         if(deviceKind=="CPU"&&lane.raw.value("pgn_cpu_inventory").isObject()){const auto cpu=pgn::ui::cpuCardMetrics(lane.raw.value("pgn_cpu_status").toObject(),lane.raw.value("pgn_cpu_control").toBool(),false,color);meters.clear();for(const auto& metric:cpu)meters.append({metric.value,metric.scale,metric.text,metric.label,metric.color});auto states=property("pgn_cpu_card_metrics").toJsonObject();states.insert(stableDeviceId,pgn::ui::cpuMetricSnapshot(cpu));setProperty("pgn_cpu_card_metrics",states);}
@@ -4820,7 +4820,7 @@ private:
                            QColor(QStringLiteral("#69efc5"))});
             const auto rawYield=lane.raw.value("pgn_retained_gaps_per_billion_positions");
             const std::optional<double> yield=(rawYield.isDouble()?std::optional<double>(rawYield.toDouble()):std::nullopt);
-            meters.append({yield,peakScale(m_devicePairRatePeaks,controlId+"-yield",yield),yield?QString::number(*yield,'f',3):QStringLiteral("—"),QStringLiteral("gaps/Gpos"),
+            meters.append({yield,peakScale(m_devicePairRatePeaks,controlId+"-yield",yield),pgn::ui::fixedMetricCaption(yield,3),QStringLiteral("gaps/Gpos"),
                 QStringLiteral("Retained output per billion input positions over the same active-time counter window, up to 60 seconds. Undefined at zero input. Compare equal bit length/threshold/verification settings only; not independently certified gaps."),QColor("#b58cff")});
         }
         const bool keepLastPgnSample = lane.raw.value(QStringLiteral("pgn_process_running")).toBool(false);
@@ -5134,7 +5134,7 @@ private:
             const bool compact=!expanded;
             const auto geometry = FrontierGaugeGeometryForCard(pod.left(), pod.width(), i, values.size(), bands.centerY,bands.radius);
             const QString caption = i == 3 && values[i]
-                ? QString::number(*values[i], 'f', 3) : pgn::ui::compactMetricCaption(values[i]);
+                ? pgn::ui::fixedMetricCaption(values[i],3) : pgn::ui::compactMetricCaption(values[i]);
             drawGauge(painter, QPointF(geometry.centerX,bands.centerY), geometry.radius,
                       rateGaugeFraction("@total:"+labels[i],sum.displayClockIdentity,sum.sourceTimeNs,values[i]),
                       accent, caption, labels[i], geometry.meterWidth - 4.0, accent);

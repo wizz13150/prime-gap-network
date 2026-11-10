@@ -21,21 +21,21 @@ int main()
     check(telemetryAgeCaption(247,true)==QStringLiteral("≥247ms"),"certified lower-bound caption preserved");
     struct Example { double raw; const char* text; };
     for (const auto& example : std::array{
-        Example{0, "0"}, Example{0.001, "<0.01"}, Example{0.125, "0.13"},
+        Example{0, "0"}, Example{0.001, "<0.01"}, Example{0.125, "≈0.13"},
         Example{1, "1"}, Example{12.5, "12.5"}, Example{999, "999"},
-        Example{999.5, "1K"}, Example{1e3, "1K"}, Example{1e6, "1M"},
+        Example{999.5, "≈1K"}, Example{1e3, "1K"}, Example{1e6, "1M"},
         Example{746e6, "746M"}, Example{224e9, "224G"}, Example{240e9, "240G"},
-        Example{999.5e6, "1G"}, Example{1.4e12, "1.4T"}, Example{1e15, "1P"},
-        Example{1e18, "1E"}, Example{1e21, "1Z"}, Example{1e24, "1Y"}, Example{1e27, "1e27"}}) {
+        Example{999.5e6, "≈1G"}, Example{1.4e12, "1.4T"}, Example{1e15, "1P"},
+        Example{1e18, "1E"}, Example{1e21, "1Z"}, Example{1e24, "≈1Y"}, Example{1e27, "≈1e27"}}) {
         const std::optional<double> raw{example.raw};
-        check(compactMetricCaption(raw) == QString::fromLatin1(example.text), "common caption vector");
+        check(compactMetricCaption(raw) == QString::fromUtf8(example.text), "common caption vector");
         check(raw && *raw == example.raw, "presentation never changes raw rate");
     }
     for (const auto invalid : {-1.0, std::numeric_limits<double>::infinity(),
                                std::numeric_limits<double>::quiet_NaN()})
         check(compactMetricCaption(invalid) == QStringLiteral("—"), "invalid is unavailable, not positive/zero");
     check(compactMetricCaption(std::nullopt) == QStringLiteral("—"), "missing remains unavailable");
-    check(compactMetricCaption(std::numeric_limits<double>::max()).size() <= 6, "extreme caption bounded");
+    check(compactMetricCaption(std::numeric_limits<double>::max()).size() <= 8, "extreme caption bounded");
 
     QHash<QString, QColor> colors;
     const QColor total = HorizonDeviceVisuals::totalCardAccent();

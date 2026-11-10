@@ -98,7 +98,7 @@ inline QVector<CpuCardMetric> cpuCardMetrics(const QJsonObject& status,bool conn
  const CpuCardMetric throughput{rate,0.,rateText,"pos/s","Mean of closed native position counts; confirmed idle/pause is zero. Not a primality-test count.",QColor("#b58cff")};
  const CpuCardMetric testRate{tests,0.,compactMetricCaption(tests),"tests/s","Mean native candidate tests over the same active-time counter window as gap statistics. Missing producer samples stay unavailable.",QColor("#46c8ee")};
  const CpuCardMetric gapRate{gaps,0.,compactMetricCaption(gaps),"gaps/s","Mean retained gap counts above the assigned minimum, over up to 60 seconds of active computation. Display counters do not imply network acceptance.",QColor("#69efc5")};
- const CpuCardMetric gapYield{yield,0.,yield?QString::number(*yield,'f',3):QString("—"),"gaps/Gpos","Retained gap delta per billion positions in the same active-time window. Zero positions is undefined. Compare equal bit/minimum/verification settings.",QColor("#b58cff")};
+ const CpuCardMetric gapYield{yield,0.,fixedMetricCaption(yield,3),"gaps/Gpos","Retained gap delta per billion positions in the same active-time window. Zero positions is undefined. Compare equal bit/minimum/verification settings.",QColor("#b58cff")};
  if(!expanded)return {activity,throughput,testRate,gapYield};
  return {activity,{load,100.,percent(load),"HOST LOAD","Total machine CPU utilization, including other applications.",accent},
   {memoryFraction,1.,memoryFraction?QString::number(*memoryFraction*100.,'f',0)+"%":QString("—"),"HOST RAM","Physical RAM used by all applications / total physical RAM.",QColor("#62cfff")},
