@@ -31,6 +31,7 @@ from pgn_paths import state_path
 from pgn_statistics import statistics_state
 from pgn_threshold_policy import at_position, verify_pin
 from pgn_work_pieces import next_piece
+from pgn_index import SessionIndexWalBudgetExceeded
 
 from horizon_engine_capabilities import NATIVE_SOURCE, IMAGES, qualified_workers
 
@@ -388,7 +389,8 @@ class EngineService:
                     return archived
             store = SessionStore.load(folder) if SessionStore.exists(folder) else SessionStore.create(
                 folder, configuration, {"uuid": self.gpu_uuid, "model": "controller-observed GPU"})
-            if store.meta["configuration"] != configuration:
+            from horizon_ticket_archive import same_computation
+            if not same_computation(store.meta["configuration"], configuration):
                 raise ValueError("Ticket configuration changed")
             return (self._run(store, maximum_piece) if should_yield is None else
                     self._run(store, maximum_piece, should_yield))
@@ -575,6 +577,16 @@ class EngineService:
             atomic_bytes(store.folder / "report.json", (json.dumps(report, indent=2) + "\n").encode())
             self.publish(store, "COMPUTED", report_sha256=report["sha256"])
             return report
+        except SessionIndexWalBudgetExceeded:
+            # A pinned reader is temporary backpressure, not corrupt arithmetic.
+            # Close the exact native owner normally. Its unacknowledged output
+            # and the journal remain available to the ordinary recovery path.
+            self.manager.shutdown()
+            try:
+                store.closed("PAUSED", active, paused, instance_closed=True)
+            except SessionIndexWalBudgetExceeded:
+                pass  # No new journal event was admitted; reopen/replay later.
+            raise
         except BaseException:
             self.manager.shutdown(force=True)
             store.closed("FAILED", active, paused)

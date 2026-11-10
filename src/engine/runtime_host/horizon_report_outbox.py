@@ -111,3 +111,8 @@ class ReportOutbox:
     def capacity_available(self):
         with self.lock:
             return len(self._read()) < self.maximum
+
+    def has_parked_reports(self):
+        from horizon_report_reconciliation import _index
+        with self.lock:
+            return bool(_index(self)['items'])

@@ -40,8 +40,17 @@ def _validate(value,configuration,computed):
 def retain(folder,configuration,audit,part,computed):
     i=next((i for i,p in enumerate(audit['ranges'])if p==part),None)
     if i is None or i>=len(audit['counts']):raise ValueError('Audit count must be recorded before its handoff')
+    # The retained result keeps its original Gold display target. The public
+    # audit answer commits exact counts/ranges, not that mutable classification.
+    # Range, pointwise policy, report root, attempt and payload remain checked
+    # by _validate; never rewrite an older handoff to the current Gold target.
+    classification=configuration.get('target_merit_q16')
+    if (type(classification)is not int or not 0<classification<1<<31
+            or configuration.get('target_merit')!=classification/65536):
+        raise ValueError('Retained audit classification is not canonical')
+    retained_audit=dict(audit,target_merit_q16=classification)
     value=dict(schema='PGN_LOCAL_AUDIT_PARTITION_RESULT_V1',
-        audit={k:audit[k]for k in ('request_id','ticket','report_root','slot','attempt','target_merit_q16')},
+        audit={k:retained_audit[k]for k in ('request_id','ticket','report_root','slot','attempt','target_merit_q16')},
         partition=dict(part),count=audit['counts'][i],computed_sha256=computed['sha256'],
         configuration_sha256=hashlib.sha256(canonical_bytes(configuration)).hexdigest())
     _validate(value,configuration,computed);raw=canonical_bytes(value)+b'\n'

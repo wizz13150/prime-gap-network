@@ -19,6 +19,12 @@ import horizon_ticket_archive as archive
 
 
 class AuditPartitionArchiveTests(unittest.TestCase):
+    def test_gold_retarget_does_not_rewrite_or_block_exact_count_handoff(self):
+        self.audit.process_one();self.compact();before=(self.folder/NAME).read_bytes()
+        path=self.root/'audits/current.json';value=json.loads(path.read_bytes());value['target_merit_q16']-=12345;path.write_text(json.dumps(value))
+        self.assertEqual(self.audit.process_one(),'paused')
+        self.assertEqual(self.computations,1);self.assertEqual((self.folder/NAME).read_bytes(),before)
+        self.assertEqual(len(self.acked),2)
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
         old,cfg,_=provider_fixture.PreparationProviderTests.brian_fixture()

@@ -5,6 +5,21 @@ from unittest.mock import patch
 P=Path(__file__).resolve().parents[1];sys.path[:0]=[str(P/'src/engine/runtime_host'),str(P/'src/protocol')]
 import horizon_ticket_archive as archive
 class TicketArchiveTests(unittest.TestCase):
+ def test_uncompacted_session_keeps_original_configuration_for_same_computation(self):
+  from types import SimpleNamespace
+  from horizon_engine_host import EngineService
+  self.cfg.update(target_merit_q16=1810202,target_merit=1810202/65536)
+  (self.folder/'session.json').write_bytes(archive.canonical(self.meta));closed=[]
+  store=SimpleNamespace(meta=self.meta,close=lambda:closed.append(True))
+  service=EngineService.__new__(EngineService)
+  def execute(actual,limit):
+   self.assertIs(actual,store);self.assertEqual(actual.meta['configuration'],self.cfg);return self.report
+  service._run=execute
+  current=dict(self.cfg,target_merit_q16=1791729,target_merit=1791729/65536)
+  with patch('horizon_engine_host.SessionStore.exists',return_value=True),patch('horizon_engine_host.SessionStore.load',return_value=store):
+   self.assertEqual(service._run_reserved_ticket(self.folder,current,10**12),self.report)
+   with self.assertRaises(ValueError):service._run_reserved_ticket(self.folder,dict(current,emit_min_gap=976),10**12)
+  self.assertEqual(len(closed),2)
  def test_changed_gold_classification_reuses_exact_computation_without_rewriting_archive(self):
   self.cfg.update(target_merit_q16=1810202,target_merit=1810202/65536)
   (self.folder/'session.json').write_bytes(archive.canonical(self.meta));self.compact()

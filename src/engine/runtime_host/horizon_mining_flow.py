@@ -512,6 +512,9 @@ class MiningFlow:
             done, total = len(counts), len(ranges)
             if not 0 <= done <= total:
                 continue
+            if getattr(lane, 'last_error', None):
+                self.worker.message('Audit ' + str(position+1) + ': ' + lane.last_error, 'Needs attention')
+                return
             stage = ('verifying computed results' if done < total else 'result publication pending')
             pending.append('Audit ' + str(position + 1) + '/' + str(len(lanes))
                            + ': ' + stage)
@@ -541,10 +544,12 @@ class MiningFlow:
             try:
                 self.drain_recovered_report()
                 if time.monotonic() >= next_orphan_recheck:
-                    from horizon_report_reconciliation import retry_one_parked_report
                     began = time.monotonic()
-                    with self.worker.network_lock:
-                        retry_one_parked_report(self.worker, self.outbox)
+                    pending = getattr(self.outbox, 'has_parked_reports', None)
+                    if callable(pending) and pending():
+                        from horizon_report_reconciliation import retry_one_parked_report
+                        with self.worker.network_lock:
+                            retry_one_parked_report(self.worker, self.outbox)
                     next_orphan_recheck = time.monotonic() + max(5.0, 3.0 * (time.monotonic()-began))
                 if time.monotonic() >= next_recheck:
                     next_recheck = time.monotonic() + 2
@@ -651,6 +656,7 @@ class MiningFlow:
             try:
                 pending = self.cycles.pending(position, retry_permissions=True)
                 outcome = audit.process_one()
+                audit.last_error = None
                 if outcome == "none":
                     proposal = audit.last_unavailable or {}
                     # A prefetch during another calculation cannot waive the
@@ -678,6 +684,7 @@ class MiningFlow:
                 if self.worker.quitting.is_set():
                     break
                 self.worker.network_notice = str(error)[:400]
+                audit.last_error = str(error)[:300]
                 self.worker.quitting.wait(2)
 
     def run(self):

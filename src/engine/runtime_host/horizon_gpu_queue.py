@@ -6,6 +6,7 @@ import threading
 import copy
 import time
 from horizon_audit_pressure import AuditPressure, WeightedService
+from pgn_index import SessionIndexWalBudgetExceeded
 
 @dataclass
 class GpuJob:
@@ -14,6 +15,8 @@ class GpuJob:
     maximum_piece: int
     future: Future = field(default_factory=Future)
     view_sequence: int | None = None
+    storage_retry_after: float = 0.0
+    storage_retries: int = 0
 
 class ResidentGpuQueue:
     minimum_service_ns = 1_000_000_000
@@ -81,6 +84,8 @@ class ResidentGpuQueue:
             return view
 
     def admitted(self, job):
+        if time.monotonic() < job.storage_retry_after:
+            return False
         allowed = True if self.may_start is None else self.may_start(job)
         if type(allowed) is not bool:
             raise ValueError("Explicit local workflow admission required")
@@ -189,6 +194,17 @@ class ResidentGpuQueue:
                 job.future.set_result(result)
                 with self.condition:
                     self.jobs.pop(job.ticket["ticket_id"], None)
+            except SessionIndexWalBudgetExceeded as error:
+                # Keep the same Future, identity and retained output. Only this
+                # database waits; independently ready jobs may still run. An
+                # explicit OFF remains OFF and shutdown still owns cancellation.
+                job.storage_retries += 1
+                job.storage_retry_after = time.monotonic() + min(2.0, .25 * 2 ** min(job.storage_retries - 1, 3))
+                job.view_sequence = None
+                with self.condition:
+                    (self.search if job.context["role"] == "search" else self.audits).appendleft(job)
+                self.on_error(error)
+                self.last_completed = None
             except Exception as error:
                 # Retain this bound job until an explicit restart. Never skip
                 # failed work, invent completion or select another arithmetic.

@@ -130,10 +130,12 @@ class GapIndex(MutableMapping):
             return
         # Never remove a WAL file by hand. SQLite may checkpoint/truncate only
         # when every reader permits it. A pinned reader yields immediate, typed
-        # backpressure instead of unbounded growth or a five-second busy wait.
+        # backpressure instead of unbounded growth. Allow a short snapshot to
+        # finish before treating the reader as pinned; a zero-time checkpoint
+        # turns ordinary presentation reads into a fatal-looking storage error.
         timeout = int(self.db.execute('PRAGMA busy_timeout').fetchone()[0])
         try:
-            self.db.execute('PRAGMA busy_timeout=0')
+            self.db.execute('PRAGMA busy_timeout=100')
             try:
                 self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
             except sqlite3.OperationalError as error:
@@ -555,11 +557,13 @@ def _read_metadata_snapshot(path, keys):
         rows = connection.execute(
             "SELECT k,v FROM meta WHERE k IN (" + placeholders + ")", keys
         ).fetchall()
-        result = {}
-        for key, value in rows:
-            if len(value) > 1048576:
-                raise ValueError("Oversized committed session metadata")
-            result[key] = json.loads(value)
-        return result
     finally:
         connection.close()
+    # Rows already form one committed snapshot. Decoding does not need to pin
+    # a SQLite read transaction or prevent the writer recycling its WAL.
+    result = {}
+    for key, value in rows:
+        if len(value) > 1048576:
+            raise ValueError("Oversized committed session metadata")
+        result[key] = json.loads(value)
+    return result
