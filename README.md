@@ -34,7 +34,7 @@ The Network Work scene is preloaded during application startup. Names are center
 Startup diagnostics retain a bounded structured failure through process exit and into an export started afterwards: startup stage, failing resource basename, OS error and relevant call sites. This path has been tested using the actual frozen host through native process capture and ZIP export. It does not establish the cause of Robert's machine-specific startup failure. Diagnostics are optional and are never a prerequisite for mining.
 
 
-[Download Windows x64](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Windows-x64.zip) · [Download Ubuntu x86_64](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet-updates-epoch2/PGN-Horizon-testnet-Ubuntu-x86_64.tar.gz) · [Release and checksums](https://github.com/wizz13150/prime-gap-network/releases/tag/horizon-testnet-updates-epoch2) · [Tester guide](docs/TESTING.md)
+[Download Windows x64](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet/PGN-Horizon-testnet-Windows-x64.zip) · [Download Ubuntu x86_64](https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet/PGN-Horizon-testnet-Ubuntu-x86_64.tar.gz) · [Release and checksums](https://github.com/wizz13150/prime-gap-network/releases/tag/horizon-testnet) · [Tester guide](docs/TESTING.md)
 
 This is the current portable Windows preview for supervised tests on the PGN testnet. Use this epoch's package when joining; older alpha packages belong to an older test network.
 
