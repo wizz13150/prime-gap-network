@@ -221,6 +221,15 @@ class WorkCycleJournal:
         Old cycle/report identities remain immutable in retirement storage.
         The caller must durably record a recovery intent before this operation.
         """
+        return self.replace_inactive_assignment(previous, work, native_service, evidence,
+                                                completed_only=True)
+
+    def replace_inactive_assignment(self, previous, work, native_service, evidence, *, completed_only=False):
+        """Replace an allocation after the caller has stopped its executor.
+
+        This also retains prepared/partial cycles across startup recovery. It
+        never marks their scientific computation complete or moves its results.
+        """
         old_work, new_work = self.work_identity(previous), self.work_identity(work)
         if (work.get('genesis') != self.value['genesis'] or old_work['request_id'] != new_work['request_id']
                 or old_work['ticket'] == new_work['ticket']):
@@ -240,8 +249,8 @@ class WorkCycleJournal:
                 return False
             if current is None:
                 current = self.history.retired_assignment(request,old_work['ticket'])
-            if current is None or current['work'] != old_work or current['stage'] != 'completed':
-                raise ValueError('Only the exact completed old allocation can be replaced')
+            if current is None or current['work'] != old_work or completed_only and current['stage'] != 'completed':
+                raise ValueError('Only the exact retained old allocation can be replaced')
             self.history.retire_assignment(current,evidence)
             candidate = copy.deepcopy(self.value)
             cycles = candidate['cycles']

@@ -30,6 +30,8 @@ def prove_reassignment(worker, work):
         if any(fresh.get(k) != work.get(k) for k in ('start', 'length', 'segments')):
             raise ValueError('An unchanged ticket cannot change its scientific interval')
         return None
+    if fresh['parent'] == work['parent']:
+        raise ValueError('One allocation parent cannot authenticate different tickets')
     for key in ('start', 'length', 'ticket_number', 'target_numerator', 'target_denominator'):
         text = fresh.get(key)
         if (type(text) is not str or not text.isascii() or not text.isdecimal()

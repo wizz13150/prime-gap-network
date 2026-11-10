@@ -1,6 +1,6 @@
 """Write-ahead handoff from an orphaned allocation to its current allocation.
 
-Records retain the original completed report and cycle. Only the small ready
+Records retain the original report or inactive partial cycle. Only the small ready
 index changes; adopting another ticket never retags scientific results.
 """
 from copy import deepcopy
@@ -78,6 +78,24 @@ class ReassignmentQueue:
     def finish(self, value):
         """Idempotent roll-forward after an interrupted write-ahead handoff."""
         flow=self.flow;entry=value['entry']
+        if value.get('retention')=='inactive_assignment':
+            # The immutable ticket directory, session index, WAL, partitions
+            # and any unsealed results keep their old ticket identity.
+            session=value.get('retained_session')
+            if session is not None:
+                path=flow.worker.root/'tickets'/value['previous']['ticket']/'session.json'
+                if hashlib.sha256(path.read_bytes()).hexdigest()!=session:
+                    raise ValueError('Retained partial session changed during reassignment')
+            old=value['previous_cycle']
+            if old is None:
+                if flow.cycles.contains(value['previous']['request_id']):
+                    current=flow.cycles.snapshot(value['previous']['request_id'])
+                    if current['work']!=flow.cycles.work_identity(value['work']):
+                        raise ValueError('Another cycle appeared during startup reassignment')
+                flow.cycles.prepare(value['work'],native_service=value['native_service'])
+            else:
+                flow.cycles.replace_inactive_assignment(value['previous'],value['work'],value['native_service'],value['evidence'])
+            return
         if hashlib.sha256(_report(flow.outbox,entry)).hexdigest()!=value['retained_report_sha256']:
             raise ValueError('Retained scientific report changed during reassignment')
         flow.cycles.replace_completed_assignment(value['previous'],value['work'],value['native_service'],value['evidence'])
@@ -88,12 +106,74 @@ class ReassignmentQueue:
                 if old!=entry:raise ValueError('Another report cannot be retired by this handoff')
                 flow.outbox._save([r for r in rows if r!=entry]);flow.outbox.condition.notify_all()
 
+    def stage_inactive(self, previous):
+        """Startup-only recovery; never retire a queued/running GPU job."""
+        flow=self.flow;gpu=flow.gpu
+        if gpu.active is not None or gpu.jobs or any(t.ident is not None for t in flow.audit_threads):
+            raise RuntimeError('Partial assignment recovery requires an unstarted execution lane')
+        if any(getattr(flow,name).ident is not None for name in ('report_thread','owner_report_thread','pressure_thread')):
+            raise RuntimeError('Partial assignment recovery requires unstarted publication lanes')
+        return self._stage_inactive(previous)
+
+    def stage_unstarted(self, previous):
+        """A ready recovery can itself be reorganized before GPU adoption."""
+        flow=self.flow
+        with flow.gpu.condition:
+            if previous['ticket'] in flow.gpu.jobs:
+                raise RuntimeError('Reassigned range is already owned by the executor')
+        # Only the preparation writer obtains this recovery before it publishes
+        # ready work. Never hold the GPU scheduling condition over Core I/O.
+        cycle=flow.cycles.snapshot(previous['request_id'])
+        if cycle['stage']!='prepared' or cycle['work']!=flow.cycles.work_identity(previous):
+            raise RuntimeError('Only an unstarted prepared replacement can be reconciled')
+        return self._stage_inactive(previous)
+
+    def _stage_inactive(self, previous):
+        flow=self.flow
+        proof=prove_reassignment(flow.worker,previous)
+        if proof is None:return False
+        fresh=proof['work']
+        with self.lock:
+            cycle=flow.cycles.snapshot(previous['request_id']) if flow.cycles.contains(previous['request_id']) else None
+            if cycle is not None and cycle['work']!=flow.cycles.work_identity(previous):
+                raise ValueError('Partial assignment differs from its retained cycle')
+            native=observe(flow.worker.rpc,fresh,flow.worker.args.genesis,None if cycle is None else cycle.get('native_service'))
+            if native is None:raise ValueError('Startup reassignment requires confirmed native service accounting')
+            session=flow.worker.root/'tickets'/previous['ticket']/'session.json'
+            if session.exists() and session.stat().st_size>262144:raise ValueError('Retained partial session exceeds budget')
+            key=hashlib.sha256(canonical_bytes([fresh['request_id'],previous['ticket'],fresh['ticket']])).hexdigest()
+            path=self.folder/'records'/(key+'.json')
+            value=dict(schema='PGN_REASSIGNMENT_HANDOFF_V1',retention='inactive_assignment',
+                previous=previous,work=fresh,entry=None,previous_cycle=cycle,native_service=native,
+                evidence=proof['evidence'],retained_session=hashlib.sha256(session.read_bytes()).hexdigest()if session.exists()else None)
+            raw=canonical_bytes(value)+b'\n'
+            if len(raw)>65536:raise ValueError('Startup reassignment handoff exceeds budget')
+            ids=self.read()
+            if key not in ids and len(ids)>=4:raise BufferError('Reassignment queue is full; old work remains retained')
+            if path.exists():
+                prior=self.record(key)
+                if prior!=value:raise ValueError('Immutable startup reassignment receipt changed')
+            else:
+                path.parent.mkdir(parents=True,exist_ok=True);atomic_bytes(path,raw)
+            if key not in ids:atomic_bytes(self.index,canonical_bytes([*ids,key])+b'\n')
+            self.finish(value)
+            return True
+
     def next_work(self):
         with self.lock:
-            ids=self.read()
-            if not ids:return None
-            value=self.record(ids[0]);self.finish(value)
-            return deepcopy(value['work'])
+            # Bound one turn even if the active branch keeps changing. The
+            # durable index retains the next successor for a later retry.
+            for _ in range(4):
+                ids=self.read()
+                if not ids:return None
+                value=self.record(ids[0]);self.finish(value)
+                if prove_reassignment(self.flow.worker,value['work']) is None:
+                    return deepcopy(value['work'])
+                if not self.stage_unstarted(value['work']):
+                    raise RuntimeError('Replacement changed while its new allocation was observed')
+                current=self.read()
+                atomic_bytes(self.index,canonical_bytes([key for key in current if key!=ids[0]])+b'\n')
+            raise RuntimeError('Assignment changed repeatedly; recovery retained for a fresh stable view')
 
     def adopted(self, work):
         with self.lock:

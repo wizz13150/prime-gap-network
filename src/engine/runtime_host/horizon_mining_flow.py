@@ -718,7 +718,9 @@ class MiningFlow:
             entry=next((e for e in self.outbox._read()if
                 e['work'].get('request_id')==old.get('request_id')and
                 e['work'].get('ticket')==old.get('ticket')),None)
-            if entry is None or not self.reassignments.stage(entry):raise
+            recovered=(self.reassignments.stage(entry) if entry is not None
+                       else self.reassignments.stage_inactive(old))
+            if not recovered:raise
             return self.reassignments.next_work(),True
 
     def run(self):

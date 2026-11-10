@@ -150,5 +150,101 @@ class ReassignmentQueueTests(unittest.TestCase):
         self.assertEqual(flow.reassignments.next_work(),self.fresh)
         self.assertEqual(self.out._read(),[]);self.assert_retained()
 
+    def partial_flow(self, stage='running', *, with_cycle=True):
+        self.cycles.close()
+        self.partial_serial=getattr(self,'partial_serial',0)+1
+        self.cycles=WorkCycleJournal(self.root/('partial-cycles-'+str(self.partial_serial)),self.old['genesis'])
+        if with_cycle:
+            self.cycles.prepare(self.old,native_service=self.service)
+            if stage=='running':self.cycles.advance(self.old['request_id'],'running')
+        self.oldcycle=self.cycles.snapshot(self.old['request_id']) if with_cycle else None
+        self.out._save([])
+        session=self.report.parent/'session.json';session.write_bytes(b'{"state":"RUNNING","positions":"123456"}\n')
+        self.session_bytes=session.read_bytes()
+        flow=object.__new__(MiningFlow)
+        flow.worker=self.worker;flow.cycles=self.cycles;flow.outbox=self.out
+        flow.gpu=SimpleNamespace(active=None,jobs={})
+        flow.audit_threads=[threading.Thread()]
+        for name in ('report_thread','owner_report_thread','pressure_thread'):setattr(flow,name,threading.Thread())
+        flow.reassignments=ReassignmentQueue(flow)
+        return flow
+
+    def test_restart_retires_partial_cycle_without_completing_or_retagging_results(self):
+        flow=self.partial_flow()
+        def changed(**_):raise ValueError('Saved ticket no longer matches its live computation lease')
+        self.worker.assign=changed
+        (self.root/'controller.json').write_bytes(canonical_bytes(dict(stage='ASSIGNED',work=self.old)))
+        work,recovered=flow.startup_work()
+        self.assertTrue(recovered);self.assertEqual(work,self.fresh)
+        self.assert_retained()
+        self.assertEqual(self.cycles.history.retired_assignment(self.old['request_id'],self.old['ticket'])['stage'],'running')
+        self.assertEqual((self.report.parent/'session.json').read_bytes(),self.session_bytes)
+        self.assertEqual(self.cycles.snapshot(self.old['request_id'])['stage'],'prepared')
+
+    def test_startup_recovers_prepared_assignment_and_missing_cycle(self):
+        for with_cycle in (True,False):
+            with self.subTest(with_cycle=with_cycle):
+                # Each case uses its own journal and immutable receipt folder.
+                flow=self.partial_flow('prepared',with_cycle=with_cycle)
+                flow.reassignments.folder=self.root/('restart-'+str(with_cycle))
+                flow.reassignments.index=flow.reassignments.folder/'ready.json'
+                self.assertTrue(flow.reassignments.stage_inactive(self.old))
+                self.assertEqual(flow.reassignments.next_work(),self.fresh)
+                flow.reassignments.adopted(self.fresh)
+                self.assertEqual(self.report.read_bytes(),self.report_bytes)
+
+    def test_partial_recovery_cannot_retire_a_queued_or_running_executor(self):
+        flow=self.partial_flow();self.calls.clear()
+        for active,jobs in ((object(),{}),(None,{'old':object()})):
+            flow.gpu.active=active;flow.gpu.jobs=jobs
+            with self.assertRaisesRegex(RuntimeError,'unstarted execution'):flow.reassignments.stage_inactive(self.old)
+        self.assertEqual(self.calls,[])
+        self.assertEqual(self.cycles.snapshot(self.old['request_id']),self.oldcycle)
+
+    def test_partial_retirement_replays_after_interrupted_hot_journal_write(self):
+        import horizon_work_cycle as module
+        flow=self.partial_flow();real=module.atomic_bytes
+        def fail(path,data):
+            if Path(path)==self.cycles.file:raise OSError('Injected partial hot write')
+            return real(path,data)
+        with patch.object(module,'atomic_bytes',side_effect=fail):
+            with self.assertRaisesRegex(OSError,'Injected'):flow.reassignments.stage_inactive(self.old)
+        folder=self.cycles.file.parent
+        self.cycles.close();self.cycles=WorkCycleJournal(folder,self.old['genesis']);flow.cycles=self.cycles
+        self.assertEqual(flow.reassignments.next_work(),self.fresh);self.assert_retained()
+        self.assertEqual((self.report.parent/'session.json').read_bytes(),self.session_bytes)
+
+    def test_partial_session_change_after_recovery_intent_does_not_get_ignored(self):
+        flow=self.partial_flow()
+        with patch.object(flow.reassignments,'finish',side_effect=OSError('Injected before retirement')):
+            with self.assertRaisesRegex(OSError,'Injected'):flow.reassignments.stage_inactive(self.old)
+        (self.report.parent/'session.json').write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError,'partial session changed'):flow.reassignments.next_work()
+        self.assertEqual(self.cycles.snapshot(self.old['request_id']),self.oldcycle)
+
+    def test_second_reorganization_before_adoption_keeps_both_retired_generations(self):
+        self.assertTrue(self.queue.stage(self.entry))
+        first=deepcopy(self.fresh);firstcycle=self.cycles.snapshot(first['request_id'])
+        self.flow.gpu=SimpleNamespace(jobs={},condition=threading.Condition())
+        self.fresh.update(ticket='9'*64,parent='d'*64,start=str(int(first['start'])+int(first['length'])),ticket_number='6')
+        self.fresh['native_audit_service']['view_parent']='d'*64
+        original=self.worker.rpc.call
+        def current(name,args=None):
+            if name=='getbestblockhash':return 'd'*64
+            result=original(name,args)
+            if name=='getpgnworkview':result['state']['bestblockhash']='d'*64
+            return result
+        self.worker.rpc.call=current
+        self.assertEqual(self.queue.next_work(),self.fresh)
+        self.assertEqual(self.cycles.history.retired_assignment(first['request_id'],first['ticket']),firstcycle)
+        self.assert_retained()
+        self.assertEqual(len(self.queue.read()),1)
+        self.queue.adopted(self.fresh);self.assertIsNone(self.queue.next_work())
+
+    def test_second_reorganization_cannot_replace_an_already_queued_range(self):
+        self.assertTrue(self.queue.stage(self.entry))
+        self.flow.gpu=SimpleNamespace(jobs={self.fresh['ticket']:object()},condition=threading.Condition())
+        with self.assertRaisesRegex(RuntimeError,'already owned'):self.queue.stage_unstarted(self.fresh)
+
 
 if __name__=='__main__':unittest.main()

@@ -59,14 +59,14 @@ class WorkCycleHistory:
         finally:
             db.close()
 
-    def decode(self, row):
+    def decode(self, row, *, retired=False):
         if row is None:
             return None
         if row[0] is None:
             raise ValueError('Archived work-cycle exceeds its payload budget')
         cycle = json.loads(row[0], object_pairs_hook=self.unique_object)
         self.validate(dict(schema='PGN_WORK_CYCLES_V1',genesis=self.genesis,cycles=[cycle]))
-        if cycle['stage'] != 'completed':
+        if not retired and cycle['stage'] != 'completed':
             raise ValueError('Only completed cycles can enter cold history')
         return cycle
 
@@ -120,14 +120,14 @@ class WorkCycleHistory:
                     db.execute('INSERT INTO audit_refs VALUES(?,?,?,?,?)',(task['request'],task['slot'],task['attempt'],request,position))
 
     def retire_assignment(self, cycle, evidence):
-        """Retain a completed old allocation before freeing its request index.
+        """Retain an old allocation before freeing its request index.
 
         The request can survive a reorganization of its later allocation seed.
         This changes local scheduling metadata only, never an audit verdict.
         The caller supplies a previously authenticated own-Core transition.
         """
         raw = canonical_bytes(cycle)
-        self.decode((raw,))
+        self.decode((raw,), retired=True)
         request, ticket = cycle['work']['request_id'], cycle['work']['ticket']
         if (evidence.get('request_id') != request or evidence.get('previous_ticket') != ticket
                 or evidence.get('reason') != 'matured_assignment_reorganized'):
@@ -156,7 +156,7 @@ class WorkCycleHistory:
             if db is None or not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='retired_assignments'").fetchone():
                 return None
             return self.decode(db.execute('SELECT CASE WHEN length(payload)<=32768 THEN payload END FROM retired_assignments WHERE request=? AND ticket=?',
-                                          (request,ticket)).fetchone())
+                                          (request,ticket)).fetchone(), retired=True)
 
     def bound(self, request, slot, attempt, position):
         with self.database() as db:
