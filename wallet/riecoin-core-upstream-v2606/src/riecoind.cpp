@@ -140,7 +140,7 @@ static bool ProcessInitCommands(interfaces::Init& init, ArgsManager& args)
 {
     // Process help and version before taking care about datadir
     if (HelpRequested(args) || args.GetBoolArg("-version", false)) {
-        std::string strUsage = CLIENT_NAME " daemon version " + FormatFullVersion();
+        std::string strUsage = "PGN Core daemon version " + FormatFullVersion();
         if (const char* exe_name{init.exeName()}) {
             strUsage += " ";
             strUsage += exe_name;
@@ -151,7 +151,7 @@ static bool ProcessInitCommands(interfaces::Init& init, ArgsManager& args)
             strUsage += FormatParagraph(LicenseInfo());
         } else {
             strUsage += "\n"
-                "The " CLIENT_NAME " daemon (riecoind) is a headless program that connects to the Bitcoin network to validate and relay transactions and blocks, as well as relaying addresses.\n\n"
+                "The PGN Core daemon (pgn-core) is a headless program that connects to the Prime Gap Network to validate and relay transactions and blocks, as well as relaying addresses.\n\n"
                 "It provides the backbone of the Bitcoin network and its RPC, REST and ZMQ services can provide various transaction, block and address-related services.\n\n"
                 "There is an optional wallet component which provides transaction services.\n\n"
                 "It can be used in a headless environment or as part of a server setup.\n"
@@ -210,7 +210,7 @@ static bool AppInit(NodeContext& node)
 
         if (args.GetBoolArg("-daemon", DEFAULT_DAEMON) || args.GetBoolArg("-daemonwait", DEFAULT_DAEMONWAIT)) {
 #if HAVE_DECL_FORK
-            tfm::format(std::cout, CLIENT_NAME " starting\n");
+            tfm::format(std::cout, "PGN Core starting\n");
 
             // Daemonize
             switch (fork_daemon(1, 0, daemon_ep)) { // don't chdir (1), do close FDs (0)

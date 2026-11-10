@@ -14,14 +14,14 @@ BEGIN
     BEGIN
         BLOCK "040904E4" // U.S. English - multilingual (hex)
         BEGIN
-            VALUE "CompanyName",        CLIENT_NAME " project"
-            VALUE "FileDescription",    "riecoind (Riecoin node with a JSON-RPC server)"
+            VALUE "CompanyName",        "Prime Gap Network project"
+            VALUE "FileDescription",    "PGN Core (Prime Gap Network node; based on Riecoin Core)"
             VALUE "FileVersion",        CLIENT_VERSION_STRING
-            VALUE "InternalName",       "riecoind"
+            VALUE "InternalName",       "pgn-core"
             VALUE "LegalCopyright",     COPYRIGHT_STR
             VALUE "LegalTrademarks1",   "Distributed under the MIT software license, see the accompanying file COPYING or http://www.opensource.org/licenses/mit-license.php."
-            VALUE "OriginalFilename",   "riecoind.exe"
-            VALUE "ProductName",        "riecoind"
+            VALUE "OriginalFilename",   "pgn-core.exe"
+            VALUE "ProductName",        "PGN Core"
             VALUE "ProductVersion",     CLIENT_VERSION_STRING
         END
     END
