@@ -132,11 +132,25 @@ def _audit_attribution(folder,body):
     return False
 
 
+def same_computation(left, right):
+    if left == right:
+        return True
+    # Gold classification does not enter the native command: count/detail
+    # thresholds, pointwise policy, range and retained result limits do.
+    # Keep those exact and retain both original configurations unchanged.
+    for value in (left, right):
+        target = value.get('target_merit_q16')
+        if type(target) is not int or not 0 < target < 1 << 31 or value.get('target_merit') != target / 65536:
+            return False
+    return ({k:v for k,v in left.items() if k not in ('target_merit','target_merit_q16')}
+            == {k:v for k,v in right.items() if k not in ('target_merit','target_merit_q16')})
+
+
 def result(folder, configuration):
     body = load(folder)
     if body is None:
         return None
-    if body["configuration"] != configuration:
+    if not same_computation(body["configuration"], configuration):
         raise ValueError("Issued work differs from the immutable completed ticket")
     return body["report"]
 

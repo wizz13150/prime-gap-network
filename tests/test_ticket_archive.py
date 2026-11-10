@@ -5,6 +5,28 @@ from unittest.mock import patch
 P=Path(__file__).resolve().parents[1];sys.path[:0]=[str(P/'src/engine/runtime_host'),str(P/'src/protocol')]
 import horizon_ticket_archive as archive
 class TicketArchiveTests(unittest.TestCase):
+ def test_changed_gold_classification_reuses_exact_computation_without_rewriting_archive(self):
+  self.cfg.update(target_merit_q16=1810202,target_merit=1810202/65536)
+  (self.folder/'session.json').write_bytes(archive.canonical(self.meta));self.compact()
+  before={p.name:p.read_bytes()for p in self.folder.iterdir()if p.is_file()}
+  current=dict(self.cfg,target_merit_q16=1791729,target_merit=1791729/65536)
+  self.assertEqual(archive.result(self.folder,current),self.report)
+  self.assertEqual({p.name:p.read_bytes()for p in self.folder.iterdir()if p.is_file()},before)
+  for key,value in [('start','150000000000000000001'),('min_gap',956),('preseal_required',True),('report_top',99)]:
+   with self.subTest(key=key),self.assertRaises(ValueError):archive.result(self.folder,dict(current,**{key:value}))
+  with self.assertRaises(ValueError):archive.result(self.folder,dict(current,target_merit=21))
+ def test_scientific_finalization_keeps_original_configuration_binding_after_gold_retarget(self):
+  from horizon_engine_host import EngineService
+  self.cfg.update(target_merit_q16=1810202,target_merit=1810202/65536)
+  (self.folder/'session.json').write_bytes(archive.canonical(self.meta));self.compact()
+  value=dict(schema='PGN_SCOPED_SOURCE_FINALIZATION_V1',ticket_id=self.folder.name,
+   configuration_sha256=hashlib.sha256(archive.canonical(self.cfg)).hexdigest(),
+   original_report_sha256=self.report['sha256'],corrected_report=self.report)
+  raw=archive.canonical(value);(self.folder/'source-finalization.json').write_bytes(raw);(self.folder/'source-finalization.sha256').write_bytes(hashlib.sha256(raw).hexdigest().encode()+b'\n')
+  service=EngineService.__new__(EngineService);current=dict(self.cfg,target_merit_q16=1791729,target_merit=1791729/65536)
+  self.assertEqual(service._cached_finalization(self.folder,current,self.report),self.report)
+  self.assertEqual((self.folder/'source-finalization.json').read_bytes(),raw)
+  with self.assertRaises(ValueError):service._cached_finalization(self.folder,dict(current,min_gap=976),self.report)
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.folder=Path(self.tmp.name)/'tickets'/('1'*64);self.folder.mkdir(parents=True)
   self.cfg=dict(ticket_id=self.folder.name,start='150000000000000000000',end='150000200000000000000',threshold_policy=dict(sha256='a'*64))

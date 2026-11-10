@@ -157,8 +157,17 @@ class EngineService:
         if regular(checksum,65)!=hashlib.sha256(raw).hexdigest().encode()+b'\n':
             raise ValueError('Retained scientific finalization checksum changed')
         value=json.loads(raw)
+        expected_configuration = configuration
+        expected_digest = hashlib.sha256(json.dumps(configuration,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+        if value.get('configuration_sha256') != expected_digest:
+            from horizon_ticket_archive import load as archived_ticket, same_computation
+            archived = archived_ticket(folder)
+            retained = archived['configuration'] if archived is not None else read_session_metadata(folder)['configuration']
+            if not same_computation(retained,configuration):
+                raise ValueError('Retained scientific finalization belongs to another computation')
+            expected_configuration = retained
         if (value.get('schema')!='PGN_SCOPED_SOURCE_FINALIZATION_V1'or value.get('ticket_id')!=folder.name
-                or value.get('configuration_sha256')!=hashlib.sha256(json.dumps(configuration,
+                or value.get('configuration_sha256')!=hashlib.sha256(json.dumps(expected_configuration,
                     sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()):
             raise ValueError('Retained scientific finalization belongs to another configuration')
         corrected=value['corrected_report'];work=dict(ticket=folder.name,start=configuration['start'],
