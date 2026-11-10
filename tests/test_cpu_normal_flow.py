@@ -51,6 +51,17 @@ class MiningFlowCycleTests(unittest.TestCase):
                 def __init__(self): self.assigned = 0; self.jobs = {}; self.serial = 0; self.denials = 0
                 def call(self, method, args=None, wallet=False):
                     args = args or []
+                    if method == 'validateaddress':
+                        return dict(isvalid=True, scriptPubKey='0014' + '1' * 40)
+                    if method == 'getpgnworkview':
+                        # The normal-flow fixture has no pre-existing assigned
+                        # audits. It must answer the same anchored recovery read
+                        # as Core before the controller requests new service.
+                        return dict(schema='PGN_WORK_VIEW_V1', kind='audits',
+                                    offset=args[1], limit=args[2],
+                                    state=dict(genesis=work['genesis'],
+                                               bestblockhash='a' * 64, height=100),
+                                    reports=[], audits=[])
                     if method == 'signmessage': return 'fixture-signature'
                     if method == 'getpgnauditevent':
                         action = args[0]

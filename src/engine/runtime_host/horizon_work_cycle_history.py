@@ -119,6 +119,45 @@ class WorkCycleHistory:
                 if 'native_service'not in cycle and task and task['stage'] in ('assigned','committed'):
                     db.execute('INSERT INTO audit_refs VALUES(?,?,?,?,?)',(task['request'],task['slot'],task['attempt'],request,position))
 
+    def retire_assignment(self, cycle, evidence):
+        """Retain a completed old allocation before freeing its request index.
+
+        The request can survive a reorganization of its later allocation seed.
+        This changes local scheduling metadata only, never an audit verdict.
+        The caller supplies a previously authenticated own-Core transition.
+        """
+        raw = canonical_bytes(cycle)
+        self.decode((raw,))
+        request, ticket = cycle['work']['request_id'], cycle['work']['ticket']
+        if (evidence.get('request_id') != request or evidence.get('previous_ticket') != ticket
+                or evidence.get('reason') != 'matured_assignment_reorganized'):
+            raise ValueError('Assignment retirement proof differs from its cycle')
+        proof = canonical_bytes(evidence)
+        if len(proof) > 4096:
+            raise ValueError('Assignment retirement proof exceeds budget')
+        with self.database(create=True) as db:
+            db.execute('CREATE TABLE IF NOT EXISTS retired_assignments(request TEXT NOT NULL,ticket TEXT NOT NULL,payload BLOB NOT NULL CHECK(length(payload)<=32768),evidence BLOB NOT NULL CHECK(length(evidence)<=4096),PRIMARY KEY(request,ticket)) WITHOUT ROWID')
+            prior = db.execute('SELECT payload FROM retired_assignments WHERE request=? AND ticket=?',
+                               (request,ticket)).fetchone()
+            if prior is not None and prior[0] != raw:
+                raise ValueError('Immutable retired assignment cycle changed')
+            old = self.decode(db.execute('SELECT CASE WHEN length(payload)<=32768 THEN payload END FROM cycles WHERE request=?',
+                                         (request,)).fetchone())
+            if old is not None and old != cycle:
+                raise ValueError('Archived cycle differs from assignment retirement')
+            db.execute('INSERT OR IGNORE INTO retired_assignments VALUES(?,?,?,?)',
+                       (request,ticket,raw,proof))
+            # The retained row and removal of the old live index are one FULL
+            # SQLite transaction. The report and all scientific data stay put.
+            db.execute('DELETE FROM cycles WHERE request=?',(request,))
+
+    def retired_assignment(self, request, ticket):
+        with self.database() as db:
+            if db is None or not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='retired_assignments'").fetchone():
+                return None
+            return self.decode(db.execute('SELECT CASE WHEN length(payload)<=32768 THEN payload END FROM retired_assignments WHERE request=? AND ticket=?',
+                                          (request,ticket)).fetchone())
+
     def bound(self, request, slot, attempt, position):
         with self.database() as db:
             row = None if db is None else db.execute('SELECT cycle FROM audit_refs WHERE request=? AND slot=? AND attempt=? AND position=?',(request,slot,attempt,position)).fetchone()

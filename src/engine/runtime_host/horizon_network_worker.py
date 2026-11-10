@@ -445,6 +445,10 @@ class NetworkWorker:
         if self.args.wallet not in self.rpc.call("listwallets"):
             self.rpc.call("loadwallet", [self.args.wallet])
         saved = json.loads(journal.read_bytes()) if journal.is_file() else {}
+        if saved.get('stage')=='REQUEST_SIGNED':
+            from horizon_ticket_request import retire_orphaned_signed_request
+            if retire_orphaned_signed_request(self,journal,saved):
+                saved=json.loads(journal.read_bytes())
         if saved.get("stage") == "REQUEST_SIGNED":
             request = saved["request"]
             self.sequence = int(saved["sequence"])

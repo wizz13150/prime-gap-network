@@ -215,6 +215,52 @@ class WorkCycleJournal:
     permission_holds = frozenset('Audit permission pending: ' + code for code in
                                  ('auditor_not_registered', 'audit_permission_disabled'))
 
+    def replace_completed_assignment(self, previous, work, native_service, evidence):
+        """Adopt another proved allocation of the same still-confirmed request.
+
+        Old cycle/report identities remain immutable in retirement storage.
+        The caller must durably record a recovery intent before this operation.
+        """
+        old_work, new_work = self.work_identity(previous), self.work_identity(work)
+        if (work.get('genesis') != self.value['genesis'] or old_work['request_id'] != new_work['request_id']
+                or old_work['ticket'] == new_work['ticket']):
+            raise ValueError('Explicit different allocation of the same request required')
+        from horizon_native_work_duty import context, tasks
+        native_service = context(native_service, new_work)
+        replacement = dict(work=new_work, stage='prepared', audits=tasks(native_service,new_work),
+                           hold='',native_service=native_service)
+        request = new_work['request_id']
+        with self.lock:
+            if self.owner.fd is None:
+                raise RuntimeError('Work-cycle writer is closed')
+            current = next((c for c in self.value['cycles'] if c['work']['request_id']==request),None)
+            if current is None:
+                current = self.history.get(request)
+            if current is not None and current['work'] == new_work:
+                return False
+            if current is None:
+                current = self.history.retired_assignment(request,old_work['ticket'])
+            if current is None or current['work'] != old_work or current['stage'] != 'completed':
+                raise ValueError('Only the exact completed old allocation can be replaced')
+            self.history.retire_assignment(current,evidence)
+            candidate = copy.deepcopy(self.value)
+            cycles = candidate['cycles']
+            cycles[:] = [c for c in cycles if c['work']['request_id'] != request]
+            while len(cycles) >= self.maximum_cycles:
+                old = next((c for c in cycles if c['stage']=='completed' and not c['hold']),None)
+                if old is None:
+                    raise BufferError('Retained work cycles need reconciliation first')
+                self.history.put(old);cycles.remove(old)
+            cycles.append(replacement)
+            self.validate(candidate)
+            self.history.check_many(cycles)
+            raw = canonical_bytes(candidate)+b'\n'
+            if len(raw)>self.maximum_bytes:
+                raise BufferError('Replacement work-cycle exceeds budget')
+            atomic_bytes(self.file,raw)
+            self.value=candidate
+            return True
+
     def attach(self, request, position, task, *, permission_verified=False):
         if type(position) is not int or position not in (0, 1):
             raise ValueError('Audit stage zero or one required')

@@ -7,12 +7,14 @@ from pgn_session import atomic_bytes
 from report_commitment import canonical_bytes
 
 class TicketPrefetch:
-    def __init__(self, allocator, enabled, stopping, network_lock, on_ready=None):
+    def __init__(self, allocator, enabled, stopping, network_lock, on_ready=None, *, recovery=None, on_recovered=None):
         self.allocator = allocator
         self.enabled = enabled
         self.stopping = stopping
         self.network_lock = network_lock
         self.on_ready = on_ready
+        self.recovery, self.on_recovered = recovery, on_recovered
+        self.ready_recovered = False
         self.condition = threading.Condition()
         self.ready = None
         self.error = None
@@ -31,9 +33,12 @@ class TicketPrefetch:
                 continue
             try:
                 with self.network_lock:
-                    work = self.allocator.assign()
+                    work = self.recovery() if callable(self.recovery) else None
+                    recovered = work is not None
+                    if work is None:work = self.allocator.assign()
                 with self.condition:
                     self.ready = work
+                    self.ready_recovered = recovered
                     self.error = None
                     self.condition.notify_all()
                 if self.on_ready is not None:
@@ -58,6 +63,13 @@ class TicketPrefetch:
             if self.ready is None:
                 return None
             work = self.ready
+            if self.ready_recovered:
+                promote(work)
+                if not callable(self.on_recovered):raise ValueError('Reassignment adoption callback required')
+                self.on_recovered(work)
+                self.ready=None;self.ready_recovered=False
+                self.condition.notify_all()
+                return work
             journal = self.allocator.root / "controller.json"
             value = json.loads(journal.read_bytes())
             if value.get("work", {}).get("ticket") != work["ticket"]:

@@ -129,7 +129,10 @@ class MiningFlow:
         allocator.state_lock = threading.RLock()
         allocator.network_lock = worker.network_lock
         self.allocator = allocator
-        self.prefetch = TicketPrefetch(allocator, worker.running, worker.quitting, worker.network_lock, self.prepared)
+        from horizon_reassignment_queue import ReassignmentQueue
+        self.reassignments = ReassignmentQueue(self)
+        self.prefetch = TicketPrefetch(allocator, worker.running, worker.quitting, worker.network_lock, self.prepared,
+            recovery=self.reassignments.next_work,on_recovered=self.reassignments.adopted)
         self.audit_lanes = []
         self.legacy_audit_publishers = []
         from horizon_assigned_audit_recovery import AssignedAuditRecovery
@@ -576,6 +579,12 @@ class MiningFlow:
                         if self.report_ready(entry):
                             try:
                                 self.worker.submit(None, work=entry["work"])
+                            except ValueError as error:
+                                if ('Report proposal no longer matches completed work: ticket' not in str(error)
+                                        or not self.reassignments.stage(entry)):
+                                    raise
+                                self.worker.network_notice='Reorganized allocation retained; preparing the current ticket of the same request'
+                                entry=None
                             except CoreRpcError as error:
                                 from horizon_report_reconciliation import park_orphaned_report
                                 if (error.code != -8 or 'Request has no current authenticated automatic ticket' not in str(error)
@@ -698,10 +707,24 @@ class MiningFlow:
                 audit.last_error = str(error)[:300]
                 self.worker.quitting.wait(2)
 
+    def startup_work(self):
+        work=self.reassignments.next_work()
+        if work is not None:return work,True
+        try:return self.worker.assign(recover_only=True),False
+        except ValueError as error:
+            if str(error)!='Saved ticket no longer matches its live computation lease':raise
+            saved=read(self.worker.root/'controller.json',262144)
+            old=saved.get('work',{})
+            entry=next((e for e in self.outbox._read()if
+                e['work'].get('request_id')==old.get('request_id')and
+                e['work'].get('ticket')==old.get('ticket')),None)
+            if entry is None or not self.reassignments.stage(entry):raise
+            return self.reassignments.next_work(),True
+
     def run(self):
         worker = self.worker
         with worker.network_lock:
-            work = worker.assign(recover_only=True)
+            work,reassigned=self.startup_work()
             resumed = work is not None
             if work is not None:
                 session = worker.root / "tickets" / work["ticket"] / "session.json"
@@ -720,6 +743,7 @@ class MiningFlow:
             if not legacy_assignment:
                 self.prepare_cycle(work)
             self.promote(work, self.view_sequence)
+            if reassigned:self.reassignments.adopted(work)
             journal = self.allocator.root / "controller.json"
             if journal.exists():
                 value = read(journal)
