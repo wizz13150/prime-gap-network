@@ -1244,6 +1244,12 @@ find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     # Normal-cycle CPU resources: deterministic synthetic tests need no private
     # fixtures, installed worker, GPU, SSH, wallet, peers or network enrollment.
+    add_executable(pgn-mining-update-abort-resume-test tests/mining_update_abort_resume_test.cpp)
+    target_include_directories(pgn-mining-update-abort-resume-test PRIVATE src)
+    target_compile_features(pgn-mining-update-abort-resume-test PRIVATE cxx_std_20)
+    target_link_libraries(pgn-mining-update-abort-resume-test PRIVATE Qt6::Core)
+    add_test(NAME mining-update-abort-resume COMMAND pgn-mining-update-abort-resume-test "${Python3_EXECUTABLE}")
+    set_tests_properties(mining-update-abort-resume PROPERTIES TIMEOUT 30 LABELS "updates;synthetic")
     add_executable(pgn-cpu-normal-resources-test tests/cpu_normal_resources_test.cpp src/mining/cpu_controller_client.cpp)
     add_executable(pgn-mining-frame-selection-test tests/mining_frame_selection_test.cpp)
     target_include_directories(pgn-mining-frame-selection-test PRIVATE src)
