@@ -55,7 +55,7 @@ int main(int argc,char** argv){
    diagnostic.intent(true);diagnostic.launching("network");process.start(QCoreApplication::applicationFilePath(),{"--process-failure"});
    QElapsedTimer until;until.start();while((process.state()!=QProcess::NotRunning||!canvas.property("pgn_worker_process_state").toJsonObject().contains("exit_code"))&&until.elapsed()<5000){app.processEvents();QThread::msleep(2);}
    const auto captured=pgn::ui::diagnosticMiningStartup(&canvas);const auto state=captured["process"].toObject();const auto raw=QJsonDocument(captured).toJson();
-   if(state["exit_code"]!=7||state["exit_kind"]!="normal"||!state["stderr_tail"].toString().contains("missing_runtime_module")||raw.contains("private-folder")||raw.contains("INERT-SENSITIVE")||captured["events"].toArray().size()<4)return 16;
+   if(state["exit_code"]!=7||state["exit_kind"]!="error"||state["native_exit_kind"]!="normal"||!state["stderr_tail"].toString().contains("missing_runtime_module")||raw.contains("private-folder")||raw.contains("INERT-SENSITIVE")||captured["events"].toArray().size()<4)return 16;
    // A subsequent launch must not erase the preceding failure before a user
    // can start recording. Event storage remains bounded under repeated retries.
    for(int i=0;i<40;++i)diagnostic.intent(true);diagnostic.launching("network");
