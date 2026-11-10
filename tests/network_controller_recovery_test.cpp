@@ -1,4 +1,5 @@
 #include "mining/network_controller_recovery.h"
+#include "mining/worker_control_arguments.h"
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QThread>
@@ -9,7 +10,13 @@
 static void need(bool okay,const char* why){if(!okay)throw std::runtime_error(why);}
 int main(int argc,char** argv){
  if(argc>1&&QString::fromLocal8Bit(argv[1])=="--transport"){std::string line;while(std::getline(std::cin,line))if(line=="quit")return 255;return 0;}
- QCoreApplication app(argc,argv);QProcess process;bool allowed=true;std::vector<bool> launches;int disconnected=0;
+ QCoreApplication app(argc,argv);
+ const QStringList original{"-o","StrictHostKeyChecking=yes","-o","ServerAliveInterval=0","user@host","remote-program","--network"};
+ const auto hardened=pgn::mining::workerControlArguments("C:\\Windows\\System32\\OpenSSH\\ssh.exe",original);
+ need(hardened==QStringList({"-o","ServerAliveInterval=5","-o","ServerAliveCountMax=2","-o","ConnectTimeout=5"})+original,"SSH timeout arguments changed command/authentication boundary");
+ need(pgn::mining::workerControlArguments("/usr/bin/ssh",original)==hardened,"Linux SSH did not receive protocol probes");
+ need(pgn::mining::workerControlArguments("C:/PGN/horizon-engine-host.exe",original)==original,"Local worker arguments changed");
+QProcess process;bool allowed=true;std::vector<bool> launches;int disconnected=0;
  pgn::mining::NetworkControllerRecovery recovery(&process,nullptr,20,100);
  recovery.mayReconnect=[&]{return allowed;};recovery.disconnected=[&]{++disconnected;};
  recovery.reconnect=[&](bool wanted){launches.push_back(wanted);recovery.launching();process.setProgram(QCoreApplication::applicationFilePath());process.setArguments({"--transport"});process.start();};
@@ -20,6 +27,13 @@ int main(int argc,char** argv){
  recovery.phase("Needs attention",true);process.write("quit\n");wait([&]{return process.state()==QProcess::NotRunning;});QElapsedTimer quiet;quiet.start();while(quiet.elapsed()<160){app.processEvents();QThread::msleep(2);}need(launches.size()==3&&!recovery.retryPending(),"Scientific or terminal fault was silently retried");
  recovery.intent(true);allowed=false;need(!recovery.restartIfClosed()&&launches.size()==3,"Another owner/closing guard was ignored");allowed=true;need(recovery.restartIfClosed(),"Explicit retry did not clear a terminal fault");wait([&]{return process.state()==QProcess::Running;});need(launches.size()==4,"Manual retry duplicated launch");
  recovery.close();process.write("quit\n");wait([&]{return process.state()==QProcess::NotRunning;});need(!recovery.retryPending(),"Closing restarted a control process");
+ QProcess silent;pgn::mining::NetworkControllerRecovery silence(&silent,nullptr,20,100,60);int silences=0,starts=0;
+ silence.onSilent=[&]{++silences;};silence.reconnect=[&](bool){++starts;silence.launching();silent.start(QCoreApplication::applicationFilePath(),{"--transport"});};
+ silence.intent(true);need(silence.restartIfClosed(),"Silent fixture could not start");wait([&]{return silent.state()==QProcess::Running;});
+ silence.phase("Searching",true);wait([&]{return silences==1;});
+ need(starts==1&&silent.state()==QProcess::Running&&silence.wanted(),"Silence duplicated or killed a worker / lost ON");
+ silence.phase("Paused",true);silence.intent(false);wait([&]{return silences==2;});need(!silence.wanted()&&starts==1,"Silence overrode manual OFF");
+ silence.close();silent.write("quit\n");wait([&]{return silent.state()==QProcess::NotRunning;});
  QProcess absent;pgn::mining::NetworkControllerRecovery failed(&absent,nullptr,20,100);int failedStarts=0;failed.reconnect=[&](bool){++failedStarts;failed.launching();absent.setProgram(QCoreApplication::applicationFilePath()+".missing");absent.start();};failed.intent(true);need(failed.restartIfClosed(),"Failed-start fixture not dispatched");wait([&]{return failed.needsAttention();});need(failedStarts==1&&!failed.retryPending(),"Missing executable entered a retry loop");failed.close();
  for(const bool wanted:{true,false}){
   QProcess contended;pgn::mining::NetworkControllerRecovery waiting(&contended,nullptr,20,100);int attempts=0;std::vector<bool> intents;

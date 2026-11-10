@@ -8,6 +8,7 @@
 #include "mining/cpu_normal_resources.h"
 #include "ui/mining_frame_selection.h"
 #include "mining/network_controller_recovery.h"
+#include "mining/worker_control_arguments.h"
 #include "mining/network_control_phase.h"
 #include <QElapsedTimer>
 #include "ui/vanity_view.h"
@@ -18,6 +19,7 @@
 #include "ui/mining_ticket_progress.h"
 #include "ui/mining_worker_close_guard.h"
 #include "ui/mining_worker_close_attempt.h"
+#include "ui/mining_update_abort_resume.h"
 #include "ui/record_submission_view.h"
 #include "ui/diagnostic_capture_view.h"
 #include "ui/mining_startup_status.h"
@@ -157,6 +159,7 @@ int main(int argc,char** argv) {
  std::function<QJsonObject()> maintenanceOwned,updateOwned;
  std::function<QJsonArray()> captureMiningUpdate;
  std::function<void()> closeOwned;
+ auto pendingUpdateResume=std::make_shared<QJsonArray>();
  QLocalServer lifecycle;lifecycle.setSocketOptions(QLocalServer::UserAccessOption);
  struct OwnedIpcAudit {unsigned events{};qsizetype bytes{};quint64 connections{};} ownedIpcAudit;
  const bool ownedIpcTiming=app.arguments().contains("--native-timing-audit");
@@ -365,21 +368,21 @@ int main(int argc,char** argv) {
  new pgn::ui::MiningWorkerCloseGuard(&window,[&window,&inspectWallet,closeOwned,coreUpdate]{
   if(!window.property("pgn_update_shutdown").toBool()||coreUpdate->ready)return true;
   if(!coreUpdate->pending){
-   coreUpdate->pending=true;const QPointer<QWidget> alive(&window);
-   pgn::ui::stopWalletCoreForUpdate(inspectWallet,[alive,closeOwned,coreUpdate](QString error){
-    coreUpdate->pending=false;if(!alive)return;
+   coreUpdate->pending=true;const QPointer<QWidget> alive(&window);const auto epoch=window.property("pgn_worker_close_epoch").toULongLong();
+   pgn::ui::stopWalletCoreForUpdate(inspectWallet,[alive,closeOwned,coreUpdate,epoch](QString error){
+    if(!alive||epoch!=alive->property("pgn_worker_close_epoch").toULongLong()||!alive->property("pgn_update_shutdown").toBool())return;coreUpdate->pending=false;
     if(!error.isEmpty()){pgn::ui::abortMiningUpdateShutdown(alive.data(),error);return;}
-    coreUpdate->ready=true;QTimer::singleShot(0,alive.data(),closeOwned);
+    coreUpdate->ready=true;QTimer::singleShot(0,alive.data(),[alive,closeOwned,epoch]{if(alive&&epoch==alive->property("pgn_worker_close_epoch").toULongLong()&&alive->property("pgn_update_shutdown").toBool())closeOwned();});
    });
   }
   return false;
  });
- updateOwned=[&window,&inspectWallet,&captureMiningUpdate,closeOwned,coreUpdate]{
+ updateOwned=[&window,&inspectWallet,&captureMiningUpdate,pendingUpdateResume,closeOwned,coreUpdate]{
   if(!inspectWallet)return QJsonObject{{"accepted",false},{"error","Wallet lifecycle is not ready"}};
   if(!window.property("pgn_update_shutdown").toBool()){
-   try{pgn::update::saveMiningUpdateResume(window.property("pgn_update_data_root").toString(),window.property("pgn_update_genesis").toString(),captureMiningUpdate?captureMiningUpdate():QJsonArray{});}
+   try{const auto choices=captureMiningUpdate?captureMiningUpdate():QJsonArray{};pgn::update::saveMiningUpdateResume(window.property("pgn_update_data_root").toString(),window.property("pgn_update_genesis").toString(),choices);*pendingUpdateResume=choices;window.setProperty("pgn_update_abort_resume_ready",true);}
    catch(const std::exception& error){return QJsonObject{{"accepted",false},{"error",QString::fromUtf8(error.what())}};}
-   coreUpdate->ready=false;window.setProperty("pgn_update_shutdown_error",QString{});window.setProperty("pgn_update_shutdown",true);
+   coreUpdate->pending=false;coreUpdate->ready=false;window.setProperty("pgn_update_shutdown_error",QString{});window.setProperty("pgn_update_shutdown",true);
    QTimer::singleShot(50,&window,closeOwned);
   }
   return QJsonObject{{"accepted",true},{"scope","ORDERED_MINING_DRAIN_THEN_OWNED_CORE_STOP"}};
@@ -508,13 +511,12 @@ int main(int argc,char** argv) {
  }
  cpuInventoryProfile.close();
  auto* cpuFleet=new pgn::mining::CpuNormalResources(&window);
- auto pendingUpdateResume=std::make_shared<QJsonArray>();
  try{*pendingUpdateResume=pgn::update::takeMiningUpdateResume(pgn::app::mutableDataRoot(root),pgn::wallet::installedCoreGenesis(root),startupArguments.contains("--update-healthcheck"));}
  catch(const std::exception& error){window.setProperty("pgn_update_resume_error",QString::fromUtf8(error.what()));}
- captureMiningUpdate=[canvas,cpuFleet]{
+ captureMiningUpdate=[canvas,cpuFleet,pendingUpdateResume]{
   auto result=cpuFleet->updateResumeChoices();const auto devices=canvas->property("pgn_update_gpu_intents").toJsonObject();
   for(auto i=devices.begin();i!=devices.end();++i){const auto entry=i.value().toObject();if(entry.value("wanted").toBool()&&entry.value("running").toBool()&&entry.value("phase")!="Needs attention"&&entry.value("phase")!="Paused")result.append(QJsonObject{{"kind","gpu"},{"device",i.key()}});}
-  return result;
+  return pgn::ui::mergeMiningUpdateChoices(*pendingUpdateResume,result);
  };
  const bool localCpuOnly=!QFileInfo::exists(pgn::app::mutableDataRoot(root)+"/testnet/ui-runtime/cpu-controllers.json");
  const auto discoverCpus=[cpuEndpoints,canvas,pgn,cpuFleet,localCpuOnly,root,&window]{
@@ -539,8 +541,11 @@ int main(int argc,char** argv) {
  QObject::connect(cpuDiscoveryTimer,&QTimer::timeout,&window,discoverCpus);cpuDiscoveryTimer->start();
  cpuFleet->onTelemetry=[canvas,pgn](const QString&,const QJsonObject& inventory,const QJsonObject& status,bool connected){pgn::ui::presentCpuController(canvas,inventory,status,connected);pgn->present(pgn::ui::miningCardStates(canvas));};
  cpuFleet->onControl=[canvas,pgn](const QString& device,const QString& request,bool applied,const QString& detail){pgn::ui::resolveDeviceControl(canvas,device,request,applied,detail);pgn->present(pgn::ui::miningCardStates(canvas));};
- cpuFleet->onCloseReady=[&window,closeOwned]{QTimer::singleShot(0,&window,closeOwned);};
- new pgn::ui::MiningWorkerCloseGuard(&window,[cpuFleet]{return cpuFleet->requestClose();});
+ cpuFleet->onCloseReady=[&window,closeOwned,cpuFleet]{
+  const auto epoch=window.property("pgn_worker_close_epoch").toULongLong();
+  QTimer::singleShot(0,&window,[&window,closeOwned,cpuFleet,epoch]{if(epoch==window.property("pgn_worker_close_epoch").toULongLong()&&window.property("pgn_closing").toBool()&&cpuFleet->allStopped())closeOwned();});
+ };
+ new pgn::ui::MiningWorkerCloseGuard(&window,[cpuFleet,&window]{window.setProperty("pgn_closing",true);return cpuFleet->requestClose();});
  QFile cpuControllers(pgn::app::mutableDataRoot(root)+"/testnet/ui-runtime/cpu-controllers.json");
  if(testnetMode&&cpuControllers.open(QIODevice::ReadOnly)&&cpuControllers.size()<=32768){
   const auto endpoints=QJsonDocument::fromJson(cpuControllers.readAll()).object().value("endpoints").toArray();
@@ -1017,8 +1022,16 @@ int main(int argc,char** argv) {
   auto gpuControls=std::make_shared<QHash<QString,GpuControl>>();
   auto* updateResumeTimer=new QTimer(&window);updateResumeTimer->setInterval(500);
   const auto updateResumeStarted=std::make_shared<QElapsedTimer>();updateResumeStarted->start();
-  QObject::connect(updateResumeTimer,&QTimer::timeout,&window,[pendingUpdateResume,gpuControls,cpuFleet,canvas,status,updateResumeTimer,updateResumeStarted,&window]{
-   if(window.property("pgn_closing").toBool()){updateResumeTimer->stop();return;}
+  const auto reopenCpuAfterAbort=std::make_shared<bool>(false);
+  QObject::connect(updateResumeTimer,&QTimer::timeout,&window,[pendingUpdateResume,gpuControls,cpuFleet,canvas,status,updateResumeTimer,updateResumeStarted,reopenCpuAfterAbort,&window]{
+   if(window.property("pgn_closing").toBool()||window.property("pgn_update_shutdown").toBool()){updateResumeTimer->stop();return;}
+   if(*reopenCpuAfterAbort){
+    if(!cpuFleet->reopenAfterAbortedUpdate()){
+     if(updateResumeStarted->elapsed()>120000){updateResumeTimer->stop();const QString error="Previous CPU controllers have not closed; automatic update recovery is waiting for their owners.";status->setText(error);window.setProperty("pgn_update_resume_error",error);}
+     return;
+    }
+    *reopenCpuAfterAbort=false;
+   }
    for(qsizetype index=pendingUpdateResume->size();index-->0;){const auto row=pendingUpdateResume->at(index).toObject();const auto device=row.value("device").toString();
     if(row.value("kind")=="cpu"){if(cpuFleet->restoreAfterUpdate(device,row.value("threads").toInt()))pendingUpdateResume->removeAt(index);}
     else{const auto control=gpuControls->constFind(device.toLower());if(control!=gpuControls->cend()&&canvas->property("pgn_vanity_gpu_lease").toString().isEmpty()){pendingUpdateResume->removeAt(index);(*control)("update-resume:"+QUuid::createUuid().toString(QUuid::Id128),true);}}
@@ -1027,6 +1040,16 @@ int main(int argc,char** argv) {
    if(pendingUpdateResume->isEmpty())updateResumeTimer->stop();
    else if(updateResumeStarted->elapsed()>120000){updateResumeTimer->stop();const QString error="Some devices could not resume after the update. Check their cards and start them manually.";status->setText(error);window.setProperty("pgn_update_resume_error",error);}
   });
+  auto* abortResume=new pgn::ui::MiningUpdateAbortResume(&window);
+  abortResume->onAbort=[pendingUpdateResume,canvas,status,updateResumeTimer,updateResumeStarted,reopenCpuAfterAbort,&window]{
+   if(!window.property("pgn_update_abort_resume_ready").toBool())return;
+   window.setProperty("pgn_update_abort_resume_ready",false);
+   try{
+    const auto recorded=pgn::update::takeMiningUpdateResume(window.property("pgn_update_data_root").toString(),window.property("pgn_update_genesis").toString(),true);
+    for(const auto& choice:*pendingUpdateResume)if(!recorded.contains(choice))throw std::runtime_error("Update recovery choices no longer match their saved scope");
+   }catch(const std::exception& error){*pendingUpdateResume={};const auto message=QString::fromUtf8(error.what());status->setText(message);window.setProperty("pgn_update_resume_error",message);return;}
+   canvas->setProperty("pgn_update_resume_pending",*pendingUpdateResume);*reopenCpuAfterAbort=true;updateResumeStarted->restart();updateResumeTimer->start();
+  };
   if(!pendingUpdateResume->isEmpty())updateResumeTimer->start();
   auto ownedGpuSelected=std::make_shared<bool>(false);
   auto frameSelection=std::make_shared<pgn::ui::MiningFrameSelection>();
@@ -1042,7 +1065,7 @@ int main(int argc,char** argv) {
 #ifdef _WIN32
    &bridge,&hardwareMonitor,
 #endif
-   canvas,miningStartupNotice,hardwareNotice,cpuFleet,ticketProgressRail,miningResults,records,testnetSummary,testnetProgress,pgn,status,gpuControls,inspectWallet,toolsButton,frameSelection](const QJsonObject& profile,QPushButton* miningToggle){
+   canvas,miningStartupNotice,hardwareNotice,cpuFleet,ticketProgressRail,miningResults,records,testnetSummary,testnetProgress,pgn,status,gpuControls,inspectWallet,toolsButton,frameSelection,pendingUpdateResume](const QJsonObject& profile,QPushButton* miningToggle){
    const auto device=profile.value("gpu_uuid").toString();
    if(device.isEmpty()||gpuControls->contains(device.toLower()))return;
    pgn::ui::registerMiningSourceDevice(canvas,device);
@@ -1069,7 +1092,7 @@ int main(int argc,char** argv) {
    });
    canvas->setProperty("pgn_local_gpu_profiles",gpuControls->size());
    pgn::ui::presentMiningStartup(canvas,miningStartupNotice,"ready","Prepared; computation waits for user ON");
-   stream->setProgram(profile.value("program").toString());stream->setArguments(arguments);stream->setProcessChannelMode(QProcess::SeparateChannels);
+   stream->setProgram(profile.value("program").toString());stream->setArguments(pgn::mining::workerControlArguments(stream->program(),arguments));stream->setProcessChannelMode(QProcess::SeparateChannels);
    const auto sendPublicProfile=[stream,networkMode,toolsButton]{
     if(!*networkMode||stream->state()!=QProcess::Running||!toolsButton->property("pgn_public_profile_saved").toBool())return;
     const auto command=pgn::ui::publicProfileControl(toolsButton->property("pgn_public_name").toString());
@@ -1094,7 +1117,7 @@ int main(int argc,char** argv) {
      const bool showTicket=frameSelection->gpu(canvas->property("pgn_network_desired_on").toBool());
      if(packet.value("schema")!="PGN_HORIZON_MINING_VIEW_V1"){if(showTicket){auto phaseFrame=canvas->property("pgn_network_ticket_frame").toJsonObject();phaseFrame.insert("phase",packet.value("phase").toString("Starting"));ticketProgressRail->present(phaseFrame);}if(controlPhase.acknowledgeOff){*stopRequested=false;const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);if(!pendingCard->isEmpty()&&pendingCard->at(2)=="off"){pgn::ui::resolveDeviceControl(canvas,pendingCard->at(0),pendingCard->at(1),true,"GPU released after checkpoint");pendingCard->clear();}}if(showTicket)testnetSummary->setText(packet.value("message").toString("Starting · waiting for the first coherent worker checkpoint"));if(packet.value("phase")=="Needs attention"){const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);miningToggle->setText("Start mining");*stopRequested=false;if(!pendingCard->isEmpty()){pgn::ui::resolveDeviceControl(canvas,pendingCard->at(0),pendingCard->at(1),false,packet.value("message").toString());pendingCard->clear();}}continue;}
      if(packet.value("title").toString().isEmpty())packet.insert("title","Network ticket");
-     if(showTicket){pgn::ui::presentMiningTicketData(miningResults,packet);pgn::ui::presentRecordTicketData(records,packet);}const auto phase=packet.value("phase").toString();const bool active=phase=="Searching";if(active&&!packet.value("source_stale").toBool()){miningStartupNotice->hide();const QString connected="Mining controller connected · Core verifies network state";if(status->text()!=connected)status->setText(connected);}if(*networkMode){const QSignalBlocker block(miningToggle);if(*stopRequested&&phase!="Paused"){miningToggle->setChecked(false);miningToggle->setEnabled(false);miningToggle->setText("Stopping…");}else{*stopRequested=false;miningToggle->setEnabled(true);const bool on=phase!="Paused"&&phase!="Needs attention";miningToggle->setChecked(on);miningToggle->setText(on?"Stop mining":"Start mining");}}const auto rate=[](QJsonValue value){return value.isDouble()?QString::number(value.toDouble()/1e9,'f',0)+" Gpos/s":QString("—");};
+     if(showTicket){pgn::ui::presentMiningTicketData(miningResults,packet);pgn::ui::presentRecordTicketData(records,packet);}const auto phase=packet.value("phase").toString();const bool active=phase=="Searching";if((active||phase=="Paused")&&!packet.value("source_stale").toBool()){miningStartupNotice->hide();const QString connected=active?QString("Mining controller connected · Core verifies network state"):QString("Mining paused");if(status->text()!=connected)status->setText(connected);}if(*networkMode){const QSignalBlocker block(miningToggle);if(*stopRequested&&phase!="Paused"){miningToggle->setChecked(false);miningToggle->setEnabled(false);miningToggle->setText("Stopping…");}else{*stopRequested=false;miningToggle->setEnabled(true);const bool on=phase!="Paused"&&phase!="Needs attention";miningToggle->setChecked(on);miningToggle->setText(on?"Stop mining":"Start mining");}}const auto rate=[](QJsonValue value){return value.isDouble()?QString::number(value.toDouble()/1e9,'f',0)+" Gpos/s":QString("—");};
      if(showTicket){canvas->setProperty("pgn_network_ticket_frame",packet);ticketProgressRail->present(packet);}
      FrontierTelemetrySnapshot lane;lane.authoritative=true;lane.stale=packet.value("source_stale").toBool();lane.sequence=++*presentationSequence;lane.observedUtc=QDateTime::fromString(packet.value("observed_utc").toString(),Qt::ISODateWithMs);lane.runId=packet.value("ticket_id").toString();lane.sourceMode="live";lane.state=active?"running":phase=="Report ready"?"complete":"stopped";lane.terminalSealed=phase=="Report ready";lane.gpuUuid=profile.value("gpu_uuid").toString();lane.gpuName=profile.value("device_name").toString();lane.domainStart=packet.value("start").toString();lane.domainEnd=packet.value("end").toString();lane.domainCurrent=packet.value("current").toString();lane.rowsCompleted=packet.value("positions").toString();lane.rowsTotal=packet.value("positions_total").toString();lane.numberBits=packet.value("bits").toInt();lane.cumulativeGapCandidates=QString::number(packet.value("scopes").toObject().value("ticket").toObject().value("statistics").toObject().value("count_total").toInteger());
      if(active){if(packet.value("speed_rate").isDouble())lane.e2ePositionsPerSecond=packet.value("speed_rate").toDouble();if(packet.value("average_rate").isDouble())lane.e2eWindowPositionsPerSecond=packet.value("average_rate").toDouble();if(packet.value("compute_tests_rate").isDouble())lane.powmPerSecond=packet.value("compute_tests_rate").toDouble();}lane.raw.insert("pgn_work_role",packet.value("work_role"));lane.raw.insert("pgn_cumulative_tests",packet.value("tests"));lane.raw.insert("pgn_source_time_ns",packet.value("compute_time_ns"));lane.raw.insert("pgn_clock_namespace",packet.value("ticket_id"));lane.raw.insert("pgn_compute_epoch",packet.value("compute_epoch"));bool ageOk=false;const auto sourceAge=packet.value("source_age_ns").toString().toULongLong(&ageOk);if(ageOk)pgn::mining::stampSourceAge(lane.raw,sourceAge,0,pgn::mining::receiptMonotonicNs());bool positionOk=false,timeOk=false;const auto position=packet.value("positions").toString().toULongLong(&positionOk),computeNs=packet.value("compute_time_ns").toString().toULongLong(&timeOk);const auto count=packet.value("scopes").toObject().value("ticket").toObject().value("statistics").toObject().value("count_total").toInteger();const auto mean=gapRates->observe(packet.value("ticket_id").toString().toStdString(),active&&positionOk&&timeOk,computeNs,position,quint64(std::max(qint64(0),count)));lane.raw.insert("pgn_cumulative_processed_gaps",QString::number(count));if(mean){lane.gapPairsTestedPerSecond=mean->perSecond;lane.raw.insert("pgn_retained_gaps_per_billion_positions",mean->perBillionPositions);lane.raw.insert("pgn_processed_gaps_per_second",mean->perSecond);lane.raw.insert("pgn_retained_gaps_per_second",mean->perSecond);lane.raw.insert("pgn_gap_window_positions_per_second",mean->positionsPerSecond);lane.raw.insert("pgn_gap_window_ns",QString::number(mean->spanNs));lane.raw.insert("pgn_source_interval_ns",QString::number(mean->spanNs));}lane.raw.insert("pgn_device_enabled",*networkMode&&miningToggle->isChecked()&&phase!="Paused"&&phase!="Needs attention");lane.raw.insert("pgn_process_running",active);lane.raw.insert("pgn_native_min_gap",QString::number(packet.value("minimum_gap").toInt()));pgn::ui::presentDevice(canvas,lane);canvas->update();
@@ -1105,7 +1128,7 @@ int main(int argc,char** argv) {
     }
    });
    QObject::connect(stream,&QProcess::readyReadStandardError,&window,[stream,status,processDiagnostics]{const auto error=stream->readAllStandardError();if(!error.isEmpty()){processDiagnostics->standardError(error);status->setText(pgn::ui::diagnosticStatusText(QString::fromUtf8(error).right(600)));}});
-   const auto startNetwork=[stream,buffer,profile,cpuFleet,networkMode,pendingNetwork,testnetSummary,connectionRecovery,stopRequested,processDiagnostics]{if(stream->state()!=QProcess::NotRunning)return;connectionRecovery->launching();*stopRequested=!connectionRecovery->wanted();buffer->clear();QStringList args;for(const auto& value:profile.value("network_arguments").toArray())args.append(value.toString());if(args.isEmpty()){testnetSummary->setText("Mining controller is not configured");return;}*networkMode=true;*pendingNetwork=false;cpuFleet->attachMiner(stream);stream->setArguments(args);processDiagnostics->launching("network");stream->start();testnetSummary->setText("Starting · requesting an automatic network ticket");};
+   const auto startNetwork=[stream,buffer,profile,cpuFleet,networkMode,pendingNetwork,testnetSummary,connectionRecovery,stopRequested,processDiagnostics]{if(stream->state()!=QProcess::NotRunning)return;connectionRecovery->launching();*stopRequested=!connectionRecovery->wanted();buffer->clear();QStringList args;for(const auto& value:profile.value("network_arguments").toArray())args.append(value.toString());if(args.isEmpty()){testnetSummary->setText("Mining controller is not configured");return;}*networkMode=true;*pendingNetwork=false;cpuFleet->attachMiner(stream);stream->setArguments(pgn::mining::workerControlArguments(stream->program(),args));processDiagnostics->launching("network");stream->start();testnetSummary->setText("Starting · requesting an automatic network ticket");};
    QObject::connect(stream,&QProcess::finished,&window,[testnetSummary,pgn,canvas,pendingNetwork,startNetwork,miningToggle,networkMode,connectionRecovery,cpuFleet,stream](int,QProcess::ExitStatus){cpuFleet->disconnected(stream);*networkMode=false;if(*pendingNetwork){startNetwork();return;}testnetSummary->setText(connectionRecovery->needsAttention()?QString("Mining controller needs attention · checkpoint retained"):QString("Reconnecting · saved ticket retained"));pgn->present(pgn::ui::miningCardStates(canvas));const QSignalBlocker block(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);miningToggle->setText("Start mining");});
    *applyMiningIntent=[stream,networkMode,pendingNetwork,startNetwork,testnetSummary,miningToggle,stopRequested,canvas,connectionRecovery,device,processDiagnostics](bool on){
      processDiagnostics->intent(on);
@@ -1118,15 +1141,16 @@ int main(int argc,char** argv) {
     if(on&&!*networkMode){*pendingNetwork=true;if(stream->state()==QProcess::NotRunning)startNetwork();else{processDiagnostics->replacingObserver();stream->kill();}return;}
     if(*networkMode&&stream->state()==QProcess::Running){stream->write(on?"{\"action\":\"resume\"}\n":"{\"action\":\"pause\"}\n");testnetSummary->setText(on?"Starting · resuming the saved checkpoint":"Stopping · saving the current checkpoint");}
    };
-   QObject::connect(miningToggle,&QPushButton::toggled,&window,[applyMiningIntent](bool on){(*applyMiningIntent)(on);});
+   QObject::connect(miningToggle,&QPushButton::toggled,&window,[applyMiningIntent,pendingUpdateResume,device](bool on){for(qsizetype i=pendingUpdateResume->size();i-->0;)if(pendingUpdateResume->at(i).toObject().value("device").toString().compare(device,Qt::CaseInsensitive)==0)pendingUpdateResume->removeAt(i);(*applyMiningIntent)(on);});
    if(!*ownedGpuSelected){
     *ownedGpuSelected=true;
     // The same normal controller as the visible ON/OFF control, with no
     // navigation, synthetic mouse event, focus change or CPU control.
-    const auto requestMining=[&window,canvas,miningToggle,applyMiningIntent,device](const QString& id,bool on){
+    const auto requestMining=[&window,canvas,miningToggle,applyMiningIntent,device,pendingUpdateResume](const QString& id,bool on){
      if(window.property("pgn_closing").toBool())return QJsonObject{{"request_delivered",false},{"error","Application is closing"}};
      if(on&&!canvas->property("pgn_vanity_gpu_lease").toString().isEmpty())return QJsonObject{{"request_delivered",false},{"error","GPU reserved by vanity search"}};
      if(on&&!miningToggle->isEnabled())return QJsonObject{{"request_delivered",false},{"error","Mining control transition is pending"}};
+     for(qsizetype i=pendingUpdateResume->size();i-->0;)if(pendingUpdateResume->at(i).toObject().value("device").toString().compare(device,Qt::CaseInsensitive)==0)pendingUpdateResume->removeAt(i);
      (*applyMiningIntent)(on);
      return QJsonObject{{"request_id",id},{"request_delivered",canvas->property("pgn_network_desired_on").toBool()==on},
        {"device_id",device},{"requested_enabled",on},{"scope","DELIVERED_TO_NORMAL_MINER_NOT_PHYSICAL_ACK"}};
@@ -1137,6 +1161,12 @@ int main(int argc,char** argv) {
    connectionRecovery->mayReconnect=[&window,canvasGuard=QPointer<QWidget>(canvas)]{return canvasGuard&&!window.property("pgn_closing").toBool()&&canvasGuard->property("pgn_vanity_gpu_lease").toString().isEmpty();};
    connectionRecovery->reconnect=[startNetwork,canvas](bool wanted){canvas->setProperty("pgn_network_desired_on",wanted);canvas->setProperty("pgn_worker_reconnect_count",canvas->property("pgn_worker_reconnect_count").toInt()+1);startNetwork();};
    connectionRecovery->onWaiting=[canvas,testnetSummary,ticketProgressRail](int delay){canvas->setProperty("pgn_worker_reconnect_delay_ms",delay);testnetSummary->setText("Reconnecting · saved ticket retained");auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase","Reconnecting");canvas->setProperty("pgn_network_ticket_frame",frame);ticketProgressRail->present(frame);};
+   connectionRecovery->onSilent=[canvas,testnetSummary,ticketProgressRail]{
+    canvas->setProperty("pgn_worker_stream_phase","Waiting for connection");
+    auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase","Waiting for connection");frame.insert("source_stale",true);
+    canvas->setProperty("pgn_network_ticket_frame",frame);ticketProgressRail->present(frame);
+    testnetSummary->setText("Waiting for live miner data · checkpoint retained");
+   };
    connectionRecovery->disconnected=[canvas,profile,miningToggle,pendingCard,ticketProgressRail,connectionRecovery,presentationSequence]{
     canvas->setProperty("pgn_worker_stream_phase","Disconnected");auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase","Disconnected");frame.insert("source_stale",true);canvas->setProperty("pgn_network_ticket_frame",frame);ticketProgressRail->present(frame);
     FrontierTelemetrySnapshot stale;stale.sequence=++*presentationSequence;stale.observedUtc=QDateTime::currentDateTimeUtc();stale.sourceMode="live";stale.runId=frame.value("ticket_id").toString();stale.authoritative=true;stale.stale=true;stale.gpuUuid=profile.value("gpu_uuid").toString();stale.gpuName=profile.value("device_name").toString();stale.state="stopped";stale.raw.insert("pgn_device_enabled",false);stale.raw.insert("pgn_process_running",false);pgn::ui::presentDevice(canvas,stale);
