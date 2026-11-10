@@ -72,7 +72,7 @@ public:
         setObjectName(compact?"pgn-network-metrics-overview":"pgn-network-metrics-history");
         setMinimumHeight(compact?220:260);setMouseTracking(true);
         auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,0);
-        auto* row=new QHBoxLayout;status_=new QLabel("Network metrics Â· waiting for verified Core data");status_->setWordWrap(true);row->addWidget(status_,1);
+        auto* row=new QHBoxLayout;status_=new QLabel("Network metrics · waiting for verified Core data");status_->setWordWrap(true);row->addWidget(status_,1);
         auto* choices=new QButtonGroup(this);choices->setExclusive(true);
         if(!compact)for(const auto& choice:std::vector<std::pair<QString,int>>{{"1 h",3600},{"24 h",86400},{"7 d",604800}}){
             auto* button=new QPushButton(choice.first);button->setCheckable(true);button->setChecked(choice.second==hub_->span());
@@ -88,8 +88,8 @@ public:
             if(guard->snapshot_!=value)guard->clearHover();
             guard->snapshot_=value;guard->error_=error;
             for(const auto& choice:guard->buttons_)choice.second->setChecked(choice.first==guard->hub_->span());
-            QString caption=error.isEmpty()?QString("Network Â· ledger %1 Â· 10-minute chain-time estimate").arg(value.value("height").toInteger()):
-                QString("Network metrics unavailable Â· %1%2").arg(error,value.isEmpty()?QString{}:QString(" Â· last verified snapshot retained"));
+            QString caption=error.isEmpty()?QString("Network · ledger %1 · 10-minute chain-time estimate").arg(value.value("height").toInteger()):
+                QString("Network metrics unavailable · %1%2").arg(error,value.isEmpty()?QString{}:QString(" · last verified snapshot retained"));
             if(guard->status_->text()!=caption)guard->status_->setText(caption);
             const QString style=error.isEmpty()?"color:#9bdacf":"color:#ffbd69";if(guard->status_->styleSheet()!=style)guard->status_->setStyleSheet(style);
             guard->setProperty("pgn_network_metrics_snapshot",value);guard->setProperty("pgn_network_metrics_error",error);
@@ -110,7 +110,7 @@ protected:
             painter.setPen(QColor("#256573"));painter.setBrush(QColor("#061b22"));painter.drawRoundedRect(card.adjusted(1,1,-1,-1),8,8);
             QFont titleFont("Segoe UI");titleFont.setPixelSize(compact_?11:13);titleFont.setWeight(QFont::DemiBold);painter.setFont(titleFont);painter.setPen(QColor("#bfece3"));
             painter.drawText(card.adjusted(12,5,-10,-5),Qt::AlignLeft|Qt::AlignTop,
-                chart==0?(compact_?"DIFFICULTY Â· merit":"NETWORK DIFFICULTY Â· target merit"):(compact_?"NETWORK HASHRATE Â· pos/s":"NETWORK HASHRATE Â· search positions/s"));
+                chart==0?(compact_?"DIFFICULTY · merit":"NETWORK DIFFICULTY · target merit"):(compact_?"NETWORK HASHRATE · pos/s":"NETWORK HASHRATE · search positions/s"));
             QRectF plot=card.adjusted(68,55,-16,-32);plots_[chart]=plot;
             if(plot.width()<8||plot.height()<8)continue;
             if(points.isEmpty()){
@@ -175,13 +175,13 @@ protected:
                     painter.setPen(QPen(chart==0?QColor("#ffd166"):QColor("#65e6c2"),2));painter.setBrush(QColor("#061b22"));painter.drawEllipse(selected,3.5,3.5);painter.restore();
                 }
             }
-            chartGeometry.append(QJsonObject{{"title",chart==0?"Difficulty Â· target merit":"Network hashrate Â· search positions/s"},{"x",plot.x()},{"y",plot.y()},{"width",plot.width()},{"height",plot.height()},{"vertical_ticks",verticalTicks},{"horizontal_ticks",horizontalTicks},{"samples",points.size()},{"axis_font_px",11}});
+            chartGeometry.append(QJsonObject{{"title",chart==0?"Difficulty · target merit":"Network hashrate · search positions/s"},{"x",plot.x()},{"y",plot.y()},{"width",plot.width()},{"height",plot.height()},{"vertical_ticks",verticalTicks},{"horizontal_ticks",horizontalTicks},{"samples",points.size()},{"axis_font_px",11}});
             const auto latest=points.last().toObject();const double seconds=latest.value("window_seconds").toDouble();
             painter.setPen(chart==0?QColor("#ffd166"):QColor("#65e6c2"));
             const QString current=chart==0?meritTargetText(latest.value("merit_target_q16").toInteger()):
                 seconds>0?reportedRateText(latest.value("reported_positions").toString(),latest.value("window_seconds").toInteger()):QString("Not enough chain time");
-            painter.drawText(QRectF(card.left()+12,card.top()+23,card.width()-24,16),Qt::AlignLeft,current+(chart==1&&!compact_?QString(" Â· reported; audited in blue"):QString{}));
-            painter.setPen(QColor("#83aaa9"));const QString caption=chart==0?QString("%1 chain samples").arg(points.size()):QString("%1 chain samples Â· %2 min window").arg(points.size()).arg(seconds/60.,0,'g',3);
+            painter.drawText(QRectF(card.left()+12,card.top()+23,card.width()-24,16),Qt::AlignLeft,current+(chart==1&&!compact_?QString(" · reported; audited in blue"):QString{}));
+            painter.setPen(QColor("#83aaa9"));const QString caption=chart==0?QString("%1 chain samples").arg(points.size()):QString("%1 chain samples · %2 min window").arg(points.size()).arg(seconds/60.,0,'g',3);
             painter.drawText(QRectF(card.left()+12,card.top()+39,card.width()-24,14),Qt::AlignLeft,caption);
             setProperty(chart==0?"pgn_merit_plot_bounds":"pgn_rate_plot_bounds",QVariantList{left,right,low,high});
         }
@@ -196,7 +196,7 @@ protected:
             for(const auto& value:points){const auto point=value.toObject();const auto delta=std::abs(time-point.value("time").toDouble());if(delta<distance){distance=delta;nearest=point;nearestIndex=index;}++index;}
             const auto seconds=nearest.value("window_seconds").toDouble();
             const auto label=QDateTime::fromSecsSinceEpoch(nearest.value("time").toInteger()).toLocalTime().toString("dd/MM HH:mm:ss");
-            QString text=label+QString(" Â· ledger %1\nTarget merit: %2").arg(nearest.value("height").toInteger()).arg(meritTargetText(nearest.value("merit_target_q16").toInteger()));
+            QString text=label+QString(" · ledger %1\nTarget merit: %2").arg(nearest.value("height").toInteger()).arg(meritTargetText(nearest.value("merit_target_q16").toInteger()));
             text+="\nExact target: "+QString::number(nearest.value("merit_target_q16").toInteger())+"/65536";
             if(seconds>0)text+="\nReported: "+reportedRateText(nearest.value("reported_positions").toString(),nearest.value("window_seconds").toInteger())+"\nAudited: "+reportedRateText(nearest.value("audited_positions").toString(),nearest.value("window_seconds").toInteger());
             text+="\nSearch positions from report confirmations over chain time. Audits are excluded from throughput; historical audit qualification is evaluated at the current snapshot tip.";

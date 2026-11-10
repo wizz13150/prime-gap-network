@@ -222,10 +222,10 @@ class NetworkWorker:
                 frame.update(phase="Starting", speed_rate=None, average_rate=None, compute_tests_rate=None, eta_rate=None)
             if event.get("phase") == "PAUSED_ACK":
                 frame.update(phase="Paused", controller_state="off", speed_rate=None, average_rate=None, compute_tests_rate=None, eta_rate=None)
-            frame["validation_state"] = "Coordination pilot Â· independently audited acceptance remains separate"
+            frame["validation_state"] = "Coordination pilot · independently audited acceptance remains separate"
             self.emit(frame)
         except (OSError, ValueError, KeyError):
-            self.message("Checkpoint saved; GPU released" if event.get("phase") == "PAUSED_ACK" else "Starting Â· preparing the first coherent checkpoint", "Paused" if event.get("phase") == "PAUSED_ACK" else "Starting")
+            self.message("Checkpoint saved; GPU released" if event.get("phase") == "PAUSED_ACK" else "Starting · preparing the first coherent checkpoint", "Paused" if event.get("phase") == "PAUSED_ACK" else "Starting")
 
     def configure_cpu_resource(self, control):
         device = control.get("device_id", "")

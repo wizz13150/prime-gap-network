@@ -104,7 +104,7 @@ inline QJsonObject networkBitCoverage(const QJsonObject& metrics,const QString& 
     }catch(const std::exception&){return missing;}
 }
 inline QString coveragePercent(qint64 ppb,bool positive=false){
-    if(ppb<0||ppb>1000000000)return "â€”";
+    if(ppb<0||ppb>1000000000)return "—";
     if(ppb==0)return positive?"<0.0000001%":"0%";
     QString value=QString::number(double(ppb)/10000000.,'f',7);
     while(value.endsWith('0'))value.chop(1);if(value.endsWith('.'))value.chop(1);return value+"%";
