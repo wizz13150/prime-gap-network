@@ -10,4 +10,13 @@ check(close.valid&&close.start.decimal!=close.end.decimal);check(!pgn::ui::posit
 check(positionFormats("12345678901234567890123456789").human.startsWith("≈ "));
 check(positionFormats("123000000000000").human=="123 T");
 check(positionFormats("2000000000001").human.startsWith("≈ "));
+check(positionFormats("999995").decimal=="≈ 1.0000e6");
+check(positionFormats("999994").decimal=="≈ 9.9999e5");
+check(positionFormats("123445000000000000000").decimal=="≈ 1.2345e20");
+check(positionFormats("18446744073709551616").binary=="2^64");
+check(positionFormats("18446744073709551615").binary=="≈ 1 × 2^64");
+check(positionFormats("110680464442257309696").binary=="1.5 × 2^66");
+check(positionFormats("1000000000000000000000000000000000000000").human=="1000000000000000000000 E");
+check(positionFormats("1000000000000000000000000000000000000001").human=="≈ 1000000000000000000000 E");
+check(positionFormats("9999950000000000000000000000000000000000").decimal=="≈ 1.0000e40");
 std::cout<<"PASS "<<n<<" position notation checks\n";}
