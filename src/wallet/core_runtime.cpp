@@ -1,3 +1,4 @@
+#include "wallet/core_console_rpc.h"
 #include "wallet/public_work_snapshot.h"
 #include "wallet/audit_activity_snapshot.h"
 #include "wallet/ticket_atlas_snapshot.h"
@@ -293,8 +294,22 @@ void CoreRuntime::begin(bool allowNew){
  }));
 }
 void CoreRuntime::rpc(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume,bool wallet,int timeoutMs,const QString& walletName){
+ rpcWire(method,QJsonDocument(params).toJson(QJsonDocument::Compact),[consume=std::move(consume)](CoreRpcResult result,QByteArray){consume(result.value,result.error);},wallet,timeoutMs,walletName);
+}
+void CoreRuntime::consoleRequest(const QString& method,const QByteArray& params,bool displayedWallet,std::function<void(QByteArray,QString)> consume){
+ const auto validation=validateConsoleCommand(method,params);if(!validation.isEmpty()){consume({},validation);return;}
+ if(stopping_||!connected_||!processAlive()||(displayedWallet&&!displayWalletReady())){consume({},"Verified Core connection required");return;}
+ const auto owner=epoch();const auto display=walletManager_->displayGeneration();const auto name=walletManager_->displayWallet();
+ if(displayedWallet&&!walletManager_->holdDisplayOperation()){consume({},"Wait for the current wallet operation to finish");return;}
+ rpcWire(method,params,[this,owner,display,displayedWallet,consume=std::move(consume)](CoreRpcResult result,QByteArray raw){
+  if(displayedWallet)walletManager_->finishDisplayOperation(display);
+  if(stopping_||!owner.matches(epoch())||!connected_||!processAlive()||(displayedWallet&&display!=walletManager_->displayGeneration())){consume({},"Core or displayed wallet changed; check the command outcome before retrying");return;}
+  consume(raw,result.error);
+ },displayedWallet,30000,name.isNull()?QString(""):name);
+}
+void CoreRuntime::rpcWire(const QString& method,const QByteArray& params,std::function<void(CoreRpcResult,QByteArray)> consume,bool wallet,int timeoutMs,const QString& walletName){
  QFile cookie(profile_.networkDataDirectory()+"/.cookie");
- if(!cookie.open(QIODevice::ReadOnly)||cookie.size()>4096){consume({},"Core RPC cookie is not ready");return;}
+ if(!cookie.open(QIODevice::ReadOnly)||cookie.size()>4096){consume({{},"Core RPC cookie is not ready"},{});return;}
  const QString endpoint=wallet?walletRpcPath(walletName.isNull()?profile_.walletName:walletName):QString("/");
  QNetworkRequest request(QUrl::fromEncoded(("http://127.0.0.1:"+QString::number(profile_.rpcPort)+endpoint).toUtf8()));
  request.setHeader(QNetworkRequest::ContentTypeHeader,"application/json");
@@ -302,14 +317,13 @@ void CoreRuntime::rpc(const QString& method,const QJsonArray& params,std::functi
  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::ManualRedirectPolicy);
  request.setTransferTimeout(std::clamp(timeoutMs,1000,120000));
  const QString requestId=QUuid::createUuid().toString(QUuid::WithoutBraces);
- const QJsonObject call{{"jsonrpc","2.0"},{"id",requestId},{"method",method},{"params",params}};
- auto* reply=network_.post(request,QJsonDocument(call).toJson(QJsonDocument::Compact));
+ auto* reply=network_.post(request,consoleRpcEnvelope(requestId,method,params));
  readBoundedCoreRpcReply(reply,this,coreRpcResponseLimit(method),[reply,requestId,method,consume=std::move(consume)](QByteArray bytes,bool oversized){
   const auto error=reply->error();const auto http=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();const auto detail=reply->errorString().left(160);reply->deleteLater();
-  if(oversized){consume({},QString("Core RPC response exceeds %1 byte bound").arg(coreRpcResponseLimit(method)));return;}
+  if(oversized){consume({{},QString("Core RPC response exceeds %1 byte bound").arg(coreRpcResponseLimit(method))},{});return;}
   const auto decoded=decodeCoreRpcResponse(bytes,requestId,method);
-  if(error!=QNetworkReply::NoError&&!verifiedRpcHttpError(decoded,http)){consume({},QString("Core RPC read failed (%1): %2").arg(int(error)).arg(detail));return;}
-  consume(decoded.value,decoded.error);
+  if(error!=QNetworkReply::NoError&&!verifiedRpcHttpError(decoded,http)){consume({{},QString("Core RPC read failed (%1): %2").arg(int(error)).arg(detail)},{});return;}
+  consume(decoded,decoded.error.isEmpty()?bytes:QByteArray{});
  });
 }
 void CoreRuntime::walletRequest(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume){

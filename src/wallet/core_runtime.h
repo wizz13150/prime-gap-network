@@ -38,6 +38,7 @@ public:
  void readLocalConnection(std::function<void(QJsonObject,QString)>);
  void readNetworkSnapshot(std::function<void(QJsonObject,QString)>);
  void readPeerSnapshot(std::function<void(QJsonArray,QString)>);
+ void consoleRequest(const QString&,const QByteArray&,bool displayedWallet,std::function<void(QByteArray,QString)>);
  void readTicketPage(int offset,std::function<void(QJsonObject,QString)>);
  void readTicketDetails(const QString&,std::function<void(QJsonObject,QString)>);
  void readTicketAtlas(const QString& start,const QString& end,int bins,std::function<void(QJsonObject,QString)>);
@@ -80,6 +81,7 @@ private:
  bool recoverOwned();
  bool persistOwned();
  void rpc(const QString&,const QJsonArray&,std::function<void(QJsonValue,QString)>,bool wallet=false,int timeoutMs=3000,const QString& walletName={});
+ void rpcWire(const QString&,const QByteArray&,std::function<void(CoreRpcResult,QByteArray)>,bool wallet,int timeoutMs,const QString& walletName);
  WalletManager* walletManager_{};
  QString root_,runtimeDirectory_;CoreProfile profile_;QNetworkAccessManager network_;
  qint64 pid_{};void* processHandle_{};
