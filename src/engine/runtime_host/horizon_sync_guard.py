@@ -1,6 +1,20 @@
 """Network readiness before requesting work; never creates a private fork."""
 import re,time
 
+def _completed_inbound_header_exchange(peer):
+ # Core leaves the PGN height hint absent after an empty HEADERS response.
+ # Absence is not a height of zero or evidence of a pending native body. The
+ # native handler records a height before queuing bodies for nonempty headers.
+ # Require the completed handshake and actual header exchange, never just a
+ # TCP connection. This fallback is used only by a fully validated seed below.
+ if not isinstance(peer,dict)or peer.get('connection_type')!='inbound'or peer.get('inbound')is not True:return False
+ if 'pgn_announced_height'in peer or 'pgn_syncing'in peer:return False
+ if type(peer.get('version'))is not int or peer['version']<=0 or peer.get('inflight')!=[]:return False
+ sent=peer.get('bytessent_per_msg');received=peer.get('bytesrecv_per_msg')
+ if not isinstance(sent,dict)or not isinstance(received,dict):return False
+ return all(type(value)is int and value>0 for value in
+            (sent.get('verack'),received.get('verack'),received.get('headers')))
+
 def synchronized(rpc,height,expected_hash):
  if type(height)is not int or height<1 or not isinstance(expected_hash,str)or not re.fullmatch('[0-9a-f]{64}',expected_hash):
   raise ValueError('Explicit testnet bootstrap checkpoint required')
@@ -28,9 +42,15 @@ def synchronized(rpc,height,expected_hash):
                    and peer.get('connection_type')=='inbound'and peer.get('inbound')is True
                    and type(peer.get('pgn_announced_height'))is int and peer['pgn_announced_height']>=0
                    and type(peer.get('pgn_syncing'))is bool]
- if not bootstrap_peers:return False
- if any(type(peer.get('pgn_announced_height'))is not int or peer['pgn_announced_height']<0 or type(peer.get('pgn_syncing'))is not bool for peer in bootstrap_peers):return False
- if blocks<max(peer['pgn_announced_height']for peer in bootstrap_peers)or any(peer['pgn_syncing']for peer in bootstrap_peers):return False
+ if not bootstrap_peers:
+  # At equal tips a reconnecting follower sends no new headers. A native seed
+  # already outside IBD must not wait forever for a nonempty announcement.
+  # This does not admit an IBD node, bypass a manual bootstrap peer, or treat
+  # an unverified announced height as accepted chain state.
+  if chain['initialblockdownload']is not False or not any(_completed_inbound_header_exchange(peer)for peer in announcements):return False
+ else:
+  if any(type(peer.get('pgn_announced_height'))is not int or peer['pgn_announced_height']<0 or type(peer.get('pgn_syncing'))is not bool for peer in bootstrap_peers):return False
+  if blocks<max(peer['pgn_announced_height']for peer in bootstrap_peers)or any(peer['pgn_syncing']for peer in bootstrap_peers):return False
  if rpc.call('getblockhash',[height])!=expected_hash:raise ValueError('Connected chain differs from the approved testnet checkpoint')
  return True
 

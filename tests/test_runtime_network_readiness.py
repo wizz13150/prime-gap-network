@@ -52,6 +52,29 @@ class ReadinessTests(unittest.TestCase):
   rpc=ReadyRpc();original=rpc.call
   rpc.call=lambda method,params=None: [dict(connection_type='inbound',inbound=True)] if method=='getpeerinfo'else original(method,params)
   self.assertFalse(synchronized(rpc,1242,'a'*64))
+ def empty_header_seed(self,**changes):
+  rpc=ReadyRpc();original=rpc.call
+  peer=dict(connection_type='inbound',inbound=True,version=260600,inflight=[],
+            bytessent_per_msg={'verack':33},bytesrecv_per_msg={'verack':33,'headers':22})
+  peer.update(changes)
+  rpc.call=lambda method,params=None:[peer]if method=='getpeerinfo'else original(method,params)
+  return rpc
+ def test_ready_seed_recovers_after_equal_tip_empty_headers_exchange(self):
+  self.assertTrue(synchronized(self.empty_header_seed(),1242,'a'*64))
+ def test_empty_headers_seed_still_requires_native_validation_and_checkpoint(self):
+  for field,value in [('ibd',True),('headers',1243),('blocks',1241),('peers',0)]:
+   with self.subTest(field=field):
+    rpc=self.empty_header_seed();setattr(rpc,field,value);self.assertFalse(synchronized(rpc,1242,'a'*64))
+  with self.assertRaisesRegex(ValueError,'checkpoint'):synchronized(self.empty_header_seed(),1242,'b'*64)
+ def test_empty_headers_fallback_rejects_incomplete_handshake_and_malformed_hints(self):
+  for changes in [dict(version=True),dict(version=0),dict(inflight=[1243]),dict(bytessent_per_msg={}),
+                  dict(bytesrecv_per_msg={'verack':33}),dict(bytesrecv_per_msg={'verack':33,'headers':True}),
+                  dict(pgn_announced_height=None),dict(pgn_syncing=None),dict(connection_type='manual')]:
+   with self.subTest(changes=changes):self.assertFalse(synchronized(self.empty_header_seed(**changes),1242,'a'*64))
+ def test_empty_headers_fallback_does_not_override_announced_pending_work(self):
+  for height,syncing in [(1243,False),(1242,True)]:
+   rpc=self.empty_header_seed(pgn_announced_height=height,pgn_syncing=syncing)
+   self.assertFalse(synchronized(rpc,1242,'a'*64))
  def test_inbound_topology_cannot_override_core_ibd(self):
   rpc=self.inbound_rpc();rpc.ibd=True;self.assertFalse(synchronized(rpc,1242,'a'*64))
  def test_inbound_topology_preserves_native_and_checkpoint_guards(self):
