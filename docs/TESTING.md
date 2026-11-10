@@ -1,6 +1,11 @@
-# Current Windows testnet tester guide
+# Current Windows and Ubuntu testnet tester guide
 
-Download the current r69 Windows portable archive from the release, extract the complete folder, and launch PGN-Horizon.exe. Do not launch a component-update ZIP as the application. Older alpha packages use an older testnet epoch.
+Download the complete archive for your operating system from the [current testnet release](https://github.com/wizz13150/prime-gap-network/releases/tag/horizon-testnet), then extract the complete folder.
+
+- Windows: launch `PGN-Horizon/PGN-Horizon.exe`.
+- Ubuntu: launch `PGN-Horizon-Ubuntu/Horizon/launch-horizon.sh`. To compile from source, follow [BUILDING.md](BUILDING.md).
+
+Do not launch a component-update ZIP as the application. Older alpha packages use an older testnet epoch.
 
 1. With no wallet configured, Horizon selects Wallet and opens Wallet management automatically. Create a new testnet wallet or open an existing Core data folder there. Existing configured wallets reopen normally.
 2. Wait for synchronization through the integrated encrypted connection. No VPN or exposed wallet RPC port is required.
@@ -21,7 +26,7 @@ Never send wallet.dat, private keys, authentication cookies, private audit answe
 
 CPU mining may stay OFF while GPU mining is ON. Recording Diagnostics is optional and is never a prerequisite for starting either device. The network may allocate audit service before a new search ticket; audit computation is real GPU work in the same resident worker. Follow the device role and progress rather than the “Records to submit” comparison area, whose waiting message concerns external record checking.
 
-One connected peer can be enough for synchronization; the peer count is not a count of other miners. Core 2026.11.8.5 and GPU runtime 2026.11.8.34 remove the manual approval prerequisite. The common testnet difficulty transition occurs at height3456; update Core before then. Earlier chain history and wallet data are retained.
+One connected peer can be enough for synchronization; the peer count is not a count of other miners. The current packages require no manual miner approval. Use the delivered Core component so native work validation matches the current testnet rules. Normal updates retain existing chain history and wallet data.
 
 If a device returns from Starting to OFF, copy the status text and export a diagnostic ZIP. The current process diagnostics retain bounded launch failures, stderr and exit information from before recording started; do not send wallet files, private keys or authentication cookies. Physical SM120 startup remains subject to the tester's actual result.
 
