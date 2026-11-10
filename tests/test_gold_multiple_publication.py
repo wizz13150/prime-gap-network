@@ -73,6 +73,15 @@ class MultipleGoldTests(GoldPublicationRetryTests):
         self.sealed['body']['computed']['best'].append(self.sealed['body']['computed']['best'][0])
         with self.assertRaisesRegex(ValueError, 'Duplicate'): self.submit()
         self.assertEqual(self.sent, 0)
+    def test_rising_threshold_does_not_retire_unpublished_issued_gold(self):
+        self.sealed['body'].update(target_numerator='28',target_denominator='1')
+        original = self.call
+        class Raised:
+            def call(_,method,parameters=None,**kw):
+                if method=='getpgnscientificwork':return dict(target_numerator=50,target_denominator=1,challenge='sign')
+                return original(method,parameters,**kw)
+        self.worker.rpc=Raised();self.assertEqual(self.submit(),'pending_gold');self.assertEqual(self.sent,0)
+        self.worker.rpc=self;self.assertEqual(self.submit(),'pending_gold');self.assertEqual(self.submit(),'accepted');self.assertEqual(self.sent,2)
 
 
 class OwnerGoldMigrationTests(OwnerReportQueueTests):

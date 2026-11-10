@@ -163,8 +163,15 @@ def publish(worker, request, sealed, details_root, save, build, assemble):
     candidates = sorted((r for r in records if int(r['gap']) >=
         target*math.log(int(r['lower_prime']))*(1-1e-12)),
         key=lambda r: (-int(r['gap'])/math.log(int(r['lower_prime'])), int(r['lower_prime'])))
+    issued = int(body.get('target_numerator',work['target_numerator']))/int(body.get('target_denominator',work['target_denominator']))
+    required = {r['lower_prime'] for r in records if int(r['gap']) >=
+                issued*math.log(int(r['lower_prime']))*(1-1e-12)}
     pending = [r for r in candidates if r['lower_prime'] not in accepted]
-    if not pending: return 'accepted' if accepted else 'no_gold'
+    if not pending:
+        # A temporary rise in the current threshold must not retire a report
+        # whose discoveries met its issued target but have not been published.
+        if required-accepted: return 'pending_gold'
+        return 'accepted' if accepted else 'no_gold'
     # One attempt per maintenance visit preserves fairness across reports.
     cursor_file = folder/'gold-publication-cursor.json'; cursor = None
     if cursor_file.exists():
@@ -195,4 +202,4 @@ def publish(worker, request, sealed, details_root, save, build, assemble):
         raise RuntimeError('Gold is not yet on the active chain; report retained')
     receipt = dict(intent, audited=True, exact_gap_verified=True, monetary_accepted=True)
     save(journals/(lower+'.json'), receipt); save(folder/'network-acceptance.json', receipt)
-    return 'pending_gold' if len(pending) > 1 else 'accepted'
+    return 'pending_gold' if len(pending) > 1 or required-(accepted|{lower}) else 'accepted'
