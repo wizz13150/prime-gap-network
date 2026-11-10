@@ -8,6 +8,7 @@ sys.path[:0]=[str(ROOT/'src/engine/runtime_host'),str(ROOT/'src/protocol')]
 import pgn_index as index
 import pgn_session as session
 from pgn_native_contract import fields
+from pgn_paths import readonly_sqlite_uri
 
 
 class WalBudgetTests(unittest.TestCase):
@@ -20,7 +21,7 @@ class WalBudgetTests(unittest.TestCase):
         self.path=self.store.gaps.path
 
     def reader(self):
-        reader=sqlite3.connect(self.path.as_uri()+'?mode=ro',uri=True)
+        reader=sqlite3.connect(readonly_sqlite_uri(self.path),uri=True)
         reader.execute('BEGIN');reader.execute('SELECT v FROM meta LIMIT 1').fetchone()
         return reader
 

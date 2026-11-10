@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import uuid
+from pgn_paths import readonly_sqlite_uri
 
 NAME = 'scientific-gaps.jsonl.gz'
 SCHEMA = 'PGN_LOCAL_SCIENTIFIC_GAPS_V1'
@@ -132,7 +133,7 @@ def create(folder,configuration):
     if len(first)>MAX_HEADER:raise ValueError('Scientific gap collection policy exceeds its budget')
     count=0;raw_bytes=len(first)
     try:
-        with closing(sqlite3.connect(index.as_uri()+'?mode=ro',uri=True))as connection:
+        with closing(sqlite3.connect(readonly_sqlite_uri(index),uri=True))as connection:
             connection.execute('PRAGMA query_only=ON');connection.execute('BEGIN')
             value=connection.execute("SELECT v FROM meta WHERE k='binding'").fetchone()
             if value is None or json.loads(value[0]).get('configuration_hash')!=expected['configuration_sha256']:

@@ -9,6 +9,7 @@ import time
 from pgn_index import read_presentation_snapshot
 from pgn_statistics import statistics_state
 from pgn_threshold_policy import at_position
+from pgn_paths import io_path
 
 
 def rows(values, limit=30):
@@ -36,7 +37,7 @@ def active_position_fields(pin, position):
 
 
 def ticket_frame(folder, sequence=1, ticket_number=None):
-    folder = Path(folder)
+    folder = io_path(folder)
     from horizon_ticket_archive import frame as archived_frame
     archived = archived_frame(folder)
     if archived is not None:
@@ -121,7 +122,7 @@ def fresh_observer_frame(state_root):
     Never mask a missing controller once any durable state has been written.
     This read-only status grants no work, rates, progress or ticket identity.
     """
-    folder = Path(state_root)
+    folder = io_path(state_root)
     if folder.is_symlink() or (folder.exists() and (not folder.is_dir() or any(folder.iterdir()))):
         raise ValueError("Controller is missing from an existing nonempty worker profile")
     return dict(schema="PGN_HORIZON_MINING_STATUS_V1", phase="Paused",
@@ -137,6 +138,10 @@ def main():
     source.add_argument("--state-root", type=Path)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+    if args.state_root is not None:
+        args.state_root = io_path(args.state_root)
+    if args.ticket_folder is not None:
+        args.ticket_folder = io_path(args.ticket_folder)
     while True:
         try:
             folder, sequence = args.ticket_folder, 1

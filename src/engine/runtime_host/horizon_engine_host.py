@@ -27,6 +27,7 @@ from pgn_prime_proof import PrimeProof
 from pgn_publications import PublicationQueue, WorkRates
 from pgn_resident import Manager
 from pgn_session import SessionControllerLock, SessionStore, atomic_bytes
+from pgn_paths import state_path
 from pgn_statistics import statistics_state
 from pgn_threshold_policy import at_position, verify_pin
 from pgn_work_pieces import next_piece
@@ -103,7 +104,7 @@ def instance_alive(instance):
 class EngineService:
     def __init__(self, bundle, state_root, gpu_uuid, architecture, observer=emit, *, complement=None):
         self.bundle = Path(bundle).resolve(strict=True)
-        self.root = Path(state_root).resolve()
+        self.root = state_path(state_root)
         self.root.mkdir(parents=True, exist_ok=True)
         if not re.fullmatch(r"GPU-[0-9a-fA-F-]{36}", gpu_uuid):
             raise ValueError("Actual GPU UUID required")

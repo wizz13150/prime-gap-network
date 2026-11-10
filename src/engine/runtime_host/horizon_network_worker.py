@@ -27,6 +27,7 @@ from horizon_audit_progress import WholeAuditPresentation
 from horizon_testnet_admission import AdmissionMonitor
 from pgn_native_contract import fields
 from pgn_session import atomic_bytes, SessionControllerBusy
+from pgn_paths import state_path
 from report_commitment import seal_report, verify_report_reveal, hash_text, MAX_REPORT_BYTES
 from horizon_public_profile import PublicProfile
 
@@ -92,7 +93,7 @@ class NetworkWorker:
         self.output_lock = threading.Lock()
         self.network_notice = None
         self.args = args
-        self.root = args.state_root.resolve()
+        self.root = state_path(args.state_root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.startup_phase("loading_profile")
         self.public_profile = PublicProfile(self.root)

@@ -2,6 +2,7 @@
 from pathlib import Path,PureWindowsPath
 import datetime as dt
 import json,os,re,traceback,subprocess
+from pgn_paths import state_path
 
 def safe_text(value,limit=600):
     text=str(value)
@@ -40,6 +41,9 @@ def failed_executable(error):
     return None
 
 def failure_context(error,*,bundle=None,state_root=None,cookie=None,step='controller_startup'):
+    if state_root is not None:
+        try:state_root=state_path(state_root)
+        except OSError:pass
     if state_root is not None:
         phase=Path(state_root)/'runtime-startup.json'
         try:

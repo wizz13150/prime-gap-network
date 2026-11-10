@@ -8,6 +8,7 @@ import json
 import sqlite3
 import threading
 from pgn_projection import Projection
+from pgn_paths import state_path, readonly_sqlite_uri
 
 # SQLite enforces the main database page limit, including uncheckpointed pages.
 MAX_SESSION_INDEX_BYTES = 128 * 1024 * 1024
@@ -53,7 +54,7 @@ class GapIndex(MutableMapping):
     def __init__(self, path, session_id, configuration, configuration_hash):
         self._writer_thread = threading.get_ident()
         self.configuration = json.loads(json.dumps(configuration))
-        self.path = Path(path).resolve()
+        self.path = state_path(path)
         self.db = sqlite3.connect(str(self.path))
         try:
             self._initialize(session_id, configuration, configuration_hash)
@@ -541,11 +542,11 @@ def read_presentation_snapshot(path):
 def _read_metadata_snapshot(path, keys):
     from pathlib import Path
 
-    path = Path(path).resolve()
+    path = state_path(path)
     if not path.is_file():
         return {}
     connection = sqlite3.connect(
-        path.as_uri() + "?mode=ro", uri=True, timeout=0.1, isolation_level=None
+        readonly_sqlite_uri(path), uri=True, timeout=0.1, isolation_level=None
     )
     try:
         connection.execute("PRAGMA query_only=ON")

@@ -11,6 +11,7 @@ import uuid
 import shutil
 import threading, time, weakref, functools
 from pgn_index import GapIndex, read_metadata_snapshot
+from pgn_paths import state_path
 from pgn_native_contract import (
     PROTOCOL,
     require_new_configuration,
@@ -45,7 +46,7 @@ class SessionControllerLock:
     """One metadata/journal writer for a session; never inherited by a child."""
 
     def __init__(self, folder):
-        folder = Path(folder)
+        folder = state_path(folder)
         if not folder.is_dir():
             raise ValueError("Saved session folder does not exist")
         self.fd = os.open(folder / ".controller.lock", os.O_RDWR | os.O_CREAT, 0o600)
@@ -93,7 +94,7 @@ _writers = weakref.WeakValueDictionary()
 
 
 def folder_lock(folder):
-    key = os.path.normcase(str(Path(folder).resolve()))
+    key = os.path.normcase(str(state_path(folder)))
     with _locks_guard:
         lock = _folder_locks.get(key)
         if lock is None:
@@ -115,7 +116,7 @@ def coordinator_only(method):
 
 
 def atomic_bytes(path, data):
-    path = Path(path)
+    path = state_path(path)
     with folder_lock(path.parent):
         temporary = path.with_name(
             path.name
@@ -158,7 +159,7 @@ def atomic_bytes(path, data):
 
 def read_session_metadata(folder):
     """Committed read-only snapshot; never SessionStore/GapIndex construction."""
-    folder = Path(folder).resolve()
+    folder = state_path(folder)
     values = read_metadata_snapshot(folder / "session-index.sqlite3")
     metadata = values.get("session_metadata")
     if metadata is None:
@@ -209,7 +210,7 @@ class SessionStore:
     SCHEMA = "PGN68_DURABLE_SESSION_V1"
 
     def __init__(self, folder, metadata):
-        self.folder = Path(folder).resolve()
+        self.folder = state_path(folder)
         self.path = self.folder / "session.json"
         self.journal = self.folder / "session-events.jsonl"
         self.meta = metadata
@@ -257,7 +258,7 @@ class SessionStore:
     @classmethod
     def create(cls, folder, configuration, device, session_id=None):
         require_new_configuration(configuration)
-        folder = Path(folder).resolve()
+        folder = state_path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         if cls.exists(folder):
             raise FileExistsError("Session already exists; use resume explicitly")

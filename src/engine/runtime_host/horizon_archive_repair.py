@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import sqlite3
+from pgn_paths import readonly_sqlite_uri
 from pgn_gap_projection import MAX_PAIRS,checked_pairs,project,presentation
 from report_commitment import canonical_bytes,validate_computed_report
 
@@ -30,7 +31,7 @@ def primary_pairs(folder,configuration):
     if (not path.is_file()or path.is_symlink()or path.stat().st_size>MAX_SESSION_INDEX_BYTES
             or getattr(path.lstat(),'st_file_attributes',0)&0x400):
         raise ValueError('Complete original archive index is unavailable')
-    connection=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=.1,isolation_level=None)
+    connection=sqlite3.connect(readonly_sqlite_uri(path),uri=True,timeout=.1,isolation_level=None)
     try:
         connection.execute('PRAGMA query_only=ON');connection.execute('BEGIN')
         meta={}

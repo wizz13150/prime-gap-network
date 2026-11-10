@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import tempfile
+from pgn_paths import readonly_sqlite_uri
 
 MAX_BYTES=256*1024*1024
 MAX_RECORDS=1000000
@@ -80,7 +81,7 @@ def migrate_backup(source,target,*,expected_sha256,source_magic,target_magic,sou
     descriptor,name=tempfile.mkstemp(prefix='.pgn-wallet-epoch-',suffix='.sqlite',dir=target.parent)
     os.close(descriptor);temporary=Path(name);before=None;after=None
     try:
-        with closing(sqlite3.connect(source.as_uri()+'?mode=ro',uri=True))as original:
+        with closing(sqlite3.connect(readonly_sqlite_uri(source),uri=True))as original:
             before=_records(original)
             with closing(sqlite3.connect(temporary))as migrated:
                 original.backup(migrated)

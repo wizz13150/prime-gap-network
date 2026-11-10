@@ -1,12 +1,13 @@
 """Manual export of completed search results; no wallet or GPU access."""
 from pathlib import Path
 import argparse,csv,hashlib,io,json,shutil,sys,tempfile,zipfile
+from pgn_paths import state_path
 MAX_TICKETS=16384
 MAX_OUTPUT=512*1024*1024
 
 def export(root,genesis,output):
     from export_gap_observations import create
-    root=Path(root).resolve(strict=True);folders=[];unavailable=[]
+    root=state_path(root).resolve(strict=True);folders=[];unavailable=[]
     tickets=root/'tickets'
     if not tickets.is_dir():raise ValueError('No retained search tickets are available')
     for index,folder in enumerate(tickets.iterdir()):
