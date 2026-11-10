@@ -327,7 +327,7 @@ class NetworkWorker:
                         save(journal, previous)
                         if on_intent is not None and same_operation:
                             on_intent(previous)
-                        confirm_candidate(self.rpc, previous)
+                        confirm_candidate(self.rpc, previous, rebase=True)
                     previous['confirmed'] = True
                     save(journal, previous)
                     if same_operation:
@@ -349,7 +349,7 @@ class NetworkWorker:
         save(self.root / "coordination-intent.json", intent)
         if on_intent is not None:
             on_intent(intent)
-        confirm_candidate(self.rpc,intent)
+        confirm_candidate(self.rpc,intent,rebase=True)
         intent["confirmed"] = True
         save(self.root / "coordination-intent.json", intent)
         return dict(block_hash=intent["hash"], operation_sha256=operation)
@@ -435,14 +435,9 @@ class NetworkWorker:
         if not any(lease["request"] == request["request_id"] for lease in state["leases"]):
             from horizon_native_work_duty import gate
             duty=gate(self.rpc,self.address(),self.args.genesis)
-            intent = self.root / "coordination-intent.json"
-            if intent.is_file():
-                previous = json.loads(intent.read_bytes())
-                if not previous.get("confirmed"):
-                    confirm_candidate(self.rpc,previous)
-                    previous["confirmed"] = True
-                    save(intent, previous)
-                    state = self.request_state(request["request_id"])
+            # ledger owns exact-candidate reconciliation and archival. A
+            # direct confirmation here would endlessly retry an old parent
+            # before the current authorized request can reach that path.
             if not any(lease["request"] == request["request_id"] for lease in state["leases"]):
                 self.ledger([request["envelope"]])
         for _ in range(8):

@@ -130,22 +130,38 @@ class MiningFlow:
         self.allocator = allocator
         self.prefetch = TicketPrefetch(allocator, worker.running, worker.quitting, worker.network_lock, self.prepared)
         self.audit_lanes = []
+        self.legacy_audit_publishers = []
         from horizon_lab_audit_actors import load_lab_audit_actors
         lab_actors = load_lab_audit_actors(getattr(worker.args, 'controlled_lab_audit_actors', None),
                                          worker.rpc, worker.args.genesis,
                                          pilot_coordination=getattr(worker.args, 'pilot_coordination', False))
+        from horizon_audit_actor_transition import native_service_actors
+        native_actors = native_service_actors(worker, lab_actors)
+        if native_actors:
+            # Existing lab answers keep their original signer and durable
+            # catalogue. They may reveal already-computed answers only; all
+            # new computation/credits use the real miner identity below.
+            for index, actor in enumerate(lab_actors):
+                folder = worker.root / 'audit-lanes' / str(index)
+                folder.mkdir(parents=True, exist_ok=True)
+                legacy = SimpleNamespace(root=folder, args=worker.args, rpc=worker.rpc,
+                    running=worker.running, quitting=worker.quitting,
+                    network_lock=worker.network_lock, address=lambda actor=actor: actor,
+                    ledger=worker.ledger)
+                self.legacy_audit_publishers.append(NetworkAudits(legacy))
         for index in range(2):
-            folder = worker.root / "audit-lanes" / str(index)
+            folder = worker.root / ('service-audit-lanes' if native_actors else 'audit-lanes') / str(index)
             folder.mkdir(parents=True, exist_ok=True)
             proxy = AuditGpuProxy(self, index)
             lane = SimpleNamespace(root=folder, args=worker.args, rpc=worker.rpc,
                                    running=worker.running, quitting=worker.quitting, network_lock=worker.network_lock,
                                    source=proxy, address=worker.address, ledger=worker.ledger)
-            if lab_actors is not None:
+            if lab_actors is not None and not native_actors:
                 lane.address = lambda actor=lab_actors[index]: actor
             audit = NetworkAudits(lane,
                 on_assigned=lambda value, index=index: self.bind_audit_cycle(index, value),
                 on_reassigned=lambda value, block, index=index: self.reopen_audit_cycle(index, value, block),
+                on_retired=lambda value, anchor, index=index: self.retire_audit_cycle(index, value, anchor),
                 reassignment_needed=lambda value, index=index: self.audit_reassignment_needed(index, value),
                 on_committed=lambda value, block, index=index: self.audit_committed(index, value, block),
                 before_commit=lambda value, index=index: self.before_audit_commit(index, value))
@@ -153,12 +169,12 @@ class MiningFlow:
             self.audit_lanes.append(audit)
         self.audit_pressure_notice = None
         self.cycle_audit_positions = {}
-        self.controlled_lab_audit_actors = lab_actors is not None
+        self.controlled_lab_audit_actors = lab_actors is not None and not native_actors
         worker.audit_service_snapshot = self.audit_service_snapshot
         self.pressure_thread = threading.Thread(target=self.refresh_audit_pressure, name="audit-service-policy", daemon=True)
         self.report_thread = threading.Thread(target=self.publish_reports, name="report-publication", daemon=True)
         from horizon_report_poll import ReportPoller
-        self.report_poller = ReportPoller(worker.audits, self.audit_lanes)
+        self.report_poller = ReportPoller(worker.audits, [*self.audit_lanes, *self.legacy_audit_publishers])
         self.owner_report_thread = threading.Thread(target=self.report_poller.run_owner,
             args=(worker.quitting,), name="owner-report-maintenance", daemon=True)
         self.finalize_thread = (threading.Thread(target=self.finalize_reports, name="report-finalization", daemon=True)
@@ -281,6 +297,13 @@ class MiningFlow:
                 audit.pop('replay_previous_block', None)
             audit['work_cycle'] = cycle
             self.gpu.wake()
+
+    def retire_audit_cycle(self, position, audit, anchor):
+        cycle = audit.get('work_cycle') or self.cycles.bound_audit(audit['request_id'], audit['slot'], audit['attempt'], position)
+        if cycle:
+            self.cycles.retire_assignment(cycle, position, audit['request_id'], audit['slot'], audit['attempt'])
+        self.worker.network_notice = 'Changed audit assignment retained; requesting current independent work'
+        self.gpu.wake()
 
     @staticmethod
     def replaying_audit(state, position, audit):
@@ -513,22 +536,37 @@ class MiningFlow:
         if poller is None:
             poller = ReportPoller(self.worker.audits, self.audit_lanes)
         next_recheck = 0
+        next_orphan_recheck = 0
         while not self.worker.quitting.is_set():
             try:
                 self.drain_recovered_report()
+                if time.monotonic() >= next_orphan_recheck:
+                    from horizon_report_reconciliation import retry_one_parked_report
+                    began = time.monotonic()
+                    with self.worker.network_lock:
+                        retry_one_parked_report(self.worker, self.outbox)
+                    next_orphan_recheck = time.monotonic() + max(5.0, 3.0 * (time.monotonic()-began))
                 if time.monotonic() >= next_recheck:
                     next_recheck = time.monotonic() + 2
                     for cycle in self.cycles.reorg_held():
                         with self.worker.network_lock:
                             self.refresh_cycle_confirmations(cycle)
-                entry = self.outbox.first()
+                entry = getattr(self.outbox, "next_for_publication", self.outbox.first)()
                 if entry:
                     with self.worker.network_lock:
                         # A publication may have waited behind other network
                         # I/O. Recheck service after acquiring that lane, not
                         # before waiting for it. No journal lock spans RPC.
                         if self.report_ready(entry):
-                            self.worker.submit(None, work=entry["work"])
+                            try:
+                                self.worker.submit(None, work=entry["work"])
+                            except CoreRpcError as error:
+                                from horizon_report_reconciliation import park_orphaned_report
+                                if (error.code != -8 or 'Request has no current authenticated automatic ticket' not in str(error)
+                                        or not park_orphaned_report(self.worker, self.outbox, entry)):
+                                    raise
+                                self.worker.network_notice = 'Orphaned ticket report retained for reconciliation; publishing current reports'
+                                entry = None
                         else:
                             self.worker.network_notice = 'Audit confirmation repair pending; computed report retained'
                             entry = None

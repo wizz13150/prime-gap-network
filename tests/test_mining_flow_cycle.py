@@ -82,9 +82,13 @@ class MiningFlowCycleTests(unittest.TestCase):
     def test_native_initial_allocation_waits_for_audits_without_deadlocking_gpu(self):
         self.exercise('no_eligible_independent_work', should_search=True, have_audits=True, full_run=True, native=True)
 
-    def test_explicit_lab_actors_use_the_same_visible_resident_audit_queue(self):
+    def test_lab_actors_retire_from_computation_when_native_service_is_enforced(self):
         self.exercise('no_eligible_independent_work', should_search=True, have_audits=True,
                       full_run=True, native=True, lab=True)
+
+    def test_lab_actors_keep_legacy_computation_before_native_service(self):
+        self.exercise('no_eligible_independent_work', should_search=True, have_audits=True,
+                      full_run=True, native=False, lab=True)
 
     def test_native_no_eligible_work_bootstraps_without_fabricating_two_audits(self):
         self.exercise('no_eligible_independent_work', should_search=True, full_run=True, native=True)
@@ -115,7 +119,7 @@ class MiningFlowCycleTests(unittest.TestCase):
                     if method == 'getaddressinfo': return dict(ismine=args[0] in lab_actors)
                     if method == 'getpgnworkdutystatus':
                         return dict(schema='PGN_NATIVE_WORK_DUTY_STATUS_V1',genesis=work['genesis'],
-                            bestblockhash='a'*64,enforced=True,may_request=not held and
+                            bestblockhash='a'*64,enforced=native,may_request=not held and
                             (not have_audits or sum(v['state']=='committed'for v in self.jobs.values())==2),
                             status='audit_work_required')
                     if method == 'getblockheader':return dict(hash=args[0],height=16,confirmations=5)
@@ -205,7 +209,7 @@ class MiningFlowCycleTests(unittest.TestCase):
             worker.state_lock = threading.RLock(); worker.network_lock = threading.RLock()
             worker.sequence = 0; worker.device_lease = None; worker.audits = SimpleNamespace(presentation=None)
             flow = MiningFlow(worker, finalize=(lambda work, report: report) if preseal else None)
-            self.assertEqual([lane.worker.address()for lane in flow.audit_lanes],lab_actors if lab else ['fixture-auditor']*2)
+            self.assertEqual([lane.worker.address()for lane in flow.audit_lanes],lab_actors if lab and not native else ['fixture-auditor']*2)
             if preseal:self.assertTrue(worker.source.retention_required)
             if not full_run:
                 flow.prefetch.ready = work
@@ -231,8 +235,9 @@ class MiningFlowCycleTests(unittest.TestCase):
                 cycle = flow.cycles.snapshot(work['request_id']) if flow.cycles.contains(work['request_id'])else None
                 if should_search:
                     if lab:
-                        self.assertEqual(worker.rpc.audit_actors,set(lab_actors))
-                        service=flow.audit_service_snapshot();self.assertTrue(service['controlled_lab_identities']);self.assertFalse(service['independent_economic_auditors'])
+                        self.assertEqual(worker.rpc.audit_actors,set(lab_actors) if not native else {'fixture-auditor'})
+                        service=flow.audit_service_snapshot();self.assertEqual(service['controlled_lab_identities'],not native)
+                        if not native:self.assertFalse(service['independent_economic_auditors'])
                     if permission_recovers: self.assertGreater(worker.rpc.denials, 2)
                     self.assertEqual(len(worker.source.calls), 11 if have_audits else 1,
                                      (getattr(worker,'network_notice',None),flow.prefetch.error,worker.messages[-3:]))

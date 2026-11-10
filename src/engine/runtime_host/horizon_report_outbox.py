@@ -75,6 +75,28 @@ class ReportOutbox:
             entries = self._read()
             return entries[0] if entries else None
 
+    def next_for_publication(self):
+        # A retained invalid/temporarily orphaned head must not starve later
+        # independently valid reports. Selection never acknowledges a report.
+        with self.lock:
+            entries = self._read()
+            if not entries:
+                return None
+            cursor = self.root / 'report-publication-cursor.json'
+            previous = None
+            if cursor.exists():
+                if cursor.stat().st_size > 256:
+                    raise ValueError('Report publication cursor exceeds budget')
+                value = json.loads(cursor.read_bytes())
+                previous = value.get('next_request')
+                if not isinstance(previous, str) or len(previous) != 64 or any(c not in '0123456789abcdef' for c in previous):
+                    raise ValueError('Invalid report publication cursor')
+            index = next((i for i,e in enumerate(entries) if e['work']['request_id'] == previous), 0)
+            selected = entries[index]
+            successor = entries[(index + 1) % len(entries)]['work']['request_id']
+            atomic_bytes(cursor, canonical_bytes(dict(next_request=successor)) + b'\n')
+            return selected
+
     def acknowledge(self, request_id, confirmed_root):
         with self.condition:
             entries = self._read()

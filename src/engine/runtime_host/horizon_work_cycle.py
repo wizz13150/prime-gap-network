@@ -457,6 +457,24 @@ class WorkCycleJournal:
             return (any(cycle['work']['request_id'] == request for cycle in self.value['cycles'])
                     or self.history.get(request) is not None)
 
+    def retire_assignment(self, request, position, audit_request, slot, attempt):
+        if type(position) is not int or position not in (0,1):
+            raise ValueError('Exact local audit position required')
+        def apply(cycles):
+            cycle=self.find(cycles,request)
+            if 'native_service' in cycle:
+                return False # Core owns these immutable consumed credits.
+            task=cycle['audits'][position]
+            if not task or (task.get('request'),task.get('slot'),task.get('attempt'))!=(audit_request,slot,attempt):
+                raise ValueError('Retirement differs from the retained audit assignment')
+            if cycle['stage']=='prepared' and task['stage']=='assigned':
+                cycle['audits'][position]=None
+                return True
+            if not cycle['hold']:
+                cycle['hold']=self.reorg_hold
+            return False # Started computation/service is never retagged.
+        return self.update(apply,request)
+
     def pending(self, position, *, retry_permissions=False):
         if type(position) is not int or position not in (0, 1):
             raise ValueError('Audit stage zero or one required')

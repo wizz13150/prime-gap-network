@@ -29,17 +29,28 @@ def active_candidate(rpc,intent):
  if type(height)is not int or height<0 or type(confirmations)is not int:raise ValueError('Coordination confirmation metadata is invalid')
  return confirmations>0 and rpc.call('getblockhash',[height])==intent['hash']
 
-def confirm_candidate(rpc,intent,*,seconds=30,clock=time.monotonic,sleep=time.sleep):
+class CoordinationParentChanged(RuntimeError):
+ pass
+
+def confirm_candidate(rpc,intent,*,seconds=30,clock=time.monotonic,sleep=time.sleep,rebase=False):
  # A successful/duplicate submit reply is not proof of active-chain inclusion.
  # On an ambiguous transport error, inspect the exact hash before any retry.
  if active_candidate(rpc,intent):return
  deadline=clock()+seconds;last='No active-chain confirmation'
  while True:
+  # A new branch needs a newly Core-authorized operation. Retain this exact
+  # journal and release the shared publication lane instead of spending the
+  # entire confirmation timeout resubmitting an obsolete physical block.
+  if rebase and rpc.call('getbestblockhash')!=intent['parent']:
+   if active_candidate(rpc,intent):return
+   raise CoordinationParentChanged('Active parent changed; saved publication requires fresh Core authorization')
   try:outcome=rpc.call('submitblock',[intent['block']])
   except (OSError,RuntimeError)as error:
    if active_candidate(rpc,intent):return
    raise RuntimeError('Coordination submission outcome unresolved; exact candidate retained')from error
   if active_candidate(rpc,intent):return
+  if rebase and rpc.call('getbestblockhash')!=intent['parent']:
+   raise CoordinationParentChanged('Active parent changed after submission; exact candidate retained')
   if outcome not in (None,'time-too-new','duplicate','duplicate-inconclusive','inconclusive'):
    raise RuntimeError('Coordination record rejected; exact candidate retained: '+str(outcome)[:200])
   last=str(outcome)

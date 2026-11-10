@@ -25,7 +25,7 @@ def partition_ticket(audit, part):
                 threshold_policy=fields(start, end)['threshold_policy'], target_merit_q16=audit['target_merit_q16'])
 
 class NetworkAudits:
-    def __init__(self, worker, *, on_assigned=None, on_committed=None, before_commit=None, on_reassigned=None, reassignment_needed=None):
+    def __init__(self, worker, *, on_assigned=None, on_committed=None, before_commit=None, on_reassigned=None, reassignment_needed=None, on_retired=None):
         self.worker = worker
         self.folder = worker.root / "audits"
         self.folder.mkdir(exist_ok=True)
@@ -45,6 +45,7 @@ class NetworkAudits:
         self.before_commit = before_commit
         self.on_reassigned = on_reassigned
         self.reassignment_needed = reassignment_needed
+        self.on_retired = on_retired
 
     def event(self, action, request=None, slot=None, attempt=None, body=None):
         owner = self.worker.address()
@@ -366,6 +367,7 @@ class NetworkAudits:
             if journal.stat().st_size > 262144:
                 raise ValueError("Current audit exceeds budget")
             audit = json.loads(journal.read_bytes())
+            anchor = self.worker.rpc.call('getbestblockhash') if self.on_retired is not None else None
             current = self.state(audit["request_id"])
             job = next((j for j in current.get("jobs", []) if j["slot"] == audit["slot"] and j["attempt"] == audit["attempt"]), None)
             if not job or job["state"] != "assigned":
@@ -376,6 +378,10 @@ class NetworkAudits:
                     if (not job or job["state"] not in ("committed", "passed", "failed")
                             or job.get("commitment") != audit.get("answer", {}).get("commitment")
                             or not audit.get("publication_intent")):
+                        if self.on_retired is not None:
+                            from horizon_audit_recovery import retain_changed_assignment
+                            retain_changed_assignment(self.folder, audit, current, anchor, self.worker.rpc, self.on_retired)
+                            return 'retired'
                         raise RuntimeError("Audit assignment changed; private computation retained for reconciliation")
                     # The per-audit intent survives another lane overwriting the
                     # global publication journal before a crash or GUI restart.
