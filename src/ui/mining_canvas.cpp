@@ -1,3 +1,4 @@
+#include "ui/render/card_metric_caption.h"
 #include "telemetry.h"
 #include "ui/diagnostic_capture_view.h"
 #include "ui/mining_control_binding.h"
@@ -4295,7 +4296,7 @@ private:
                           stableDeviceId);
 
         const auto compactAbsoluteRate = [](const std::optional<double>& value) {
-            return pgn::ui::compactMetricCaption(value);
+            return pgn::ui::compactCardMetricCaption(value);
         };
         const QString key = stableDeviceId;
         const std::optional<double> positions = FrontierDisplayedRate(
@@ -4392,7 +4393,7 @@ private:
                                compactAbsoluteRate(shownProcessed),QStringLiteral("gaps/s"),QColor(QStringLiteral("#69efc5"))});
                 const auto rawYield=lane.raw.value("pgn_retained_gaps_per_billion_positions");
                 const std::optional<double> yield=(rawYield.isDouble()?std::optional<double>(rawYield.toDouble()):std::nullopt);
-                meters.append({yield,updatePeak(m_devicePairRatePeaks,key+"-yield",yield),pgn::ui::fixedMetricCaption(yield,3),QStringLiteral("gaps/Gpos"),QColor("#b58cff")});
+                meters.append({yield,updatePeak(m_devicePairRatePeaks,key+"-yield",yield),pgn::ui::fixedCardMetricCaption(yield),QStringLiteral("gaps/Gpos"),QColor("#b58cff")});
             }
         }
         if(deviceKind=="CPU"&&lane.raw.value("pgn_cpu_inventory").isObject()){const auto cpu=pgn::ui::cpuCardMetrics(lane.raw.value("pgn_cpu_status").toObject(),lane.raw.value("pgn_cpu_control").toBool(),false,color);meters.clear();for(const auto& metric:cpu)meters.append({metric.value,metric.scale,metric.text,metric.label,metric.color});auto states=property("pgn_cpu_card_metrics").toJsonObject();states.insert(stableDeviceId,pgn::ui::cpuMetricSnapshot(cpu));setProperty("pgn_cpu_card_metrics",states);}
@@ -4697,7 +4698,7 @@ private:
             QColor accent;
         };
         const auto compactGaugeRate = [](const std::optional<double>& value) {
-            return pgn::ui::compactMetricCaption(value);
+            return pgn::ui::compactCardMetricCaption(value);
         };
         const QString unavailable = QString::fromUtf8("—");
         const std::optional<double> gapRate = lane.gapPairsWindowPerSecond
@@ -4820,7 +4821,7 @@ private:
                            QColor(QStringLiteral("#69efc5"))});
             const auto rawYield=lane.raw.value("pgn_retained_gaps_per_billion_positions");
             const std::optional<double> yield=(rawYield.isDouble()?std::optional<double>(rawYield.toDouble()):std::nullopt);
-            meters.append({yield,peakScale(m_devicePairRatePeaks,controlId+"-yield",yield),pgn::ui::fixedMetricCaption(yield,3),QStringLiteral("gaps/Gpos"),
+            meters.append({yield,peakScale(m_devicePairRatePeaks,controlId+"-yield",yield),pgn::ui::fixedCardMetricCaption(yield),QStringLiteral("gaps/Gpos"),
                 QStringLiteral("Retained output per billion input positions over the same active-time counter window, up to 60 seconds. Undefined at zero input. Compare equal bit length/threshold/verification settings only; not independently certified gaps."),QColor("#b58cff")});
         }
         const bool keepLastPgnSample = lane.raw.value(QStringLiteral("pgn_process_running")).toBool(false);
@@ -5134,17 +5135,17 @@ private:
             const bool compact=!expanded;
             const auto geometry = FrontierGaugeGeometryForCard(pod.left(), pod.width(), i, values.size(), bands.centerY,bands.radius);
             const QString caption = i == 3 && values[i]
-                ? pgn::ui::fixedMetricCaption(values[i],3) : pgn::ui::compactMetricCaption(values[i]);
+                ? pgn::ui::fixedCardMetricCaption(values[i]) : pgn::ui::compactCardMetricCaption(values[i]);
             drawGauge(painter, QPointF(geometry.centerX,bands.centerY), geometry.radius,
                       rateGaugeFraction("@total:"+labels[i],sum.displayClockIdentity,sum.sourceTimeNs,values[i]),
                       accent, caption, labels[i], geometry.meterWidth - 4.0, accent);
         }
         painter.setFont(Font(7,QFont::Normal,true));painter.setPen(accent);
         if(expanded){std::optional<double> watts,temp;double gpuRate=0;bool hasRate=false;if(resourceSampleFresh())for(const auto& device:m_resourceTelemetry.devices)if(device.kind=="GPU"){if(device.powerWatts)watts=watts.value_or(0)+*device.powerWatts;if(device.temperatureC)temp=std::max(temp.value_or(0),*device.temperatureC);}for(const auto& card:cards)if(card.kind=="GPU"&&minerLaneLive(card.snapshot)&&card.snapshot.e2ePositionsPerSecond){gpuRate+=*card.snapshot.e2ePositionsPerSecond;hasRate=true;}const auto efficiency=watts&&*watts>0&&hasRate?std::optional<double>(gpuRate/ *watts/1e9):std::nullopt;painter.drawText(QRectF(pod.left()+12,pod.top()+126,pod.width()-24,12),Qt::AlignLeft,QString("GPU power %1 W · Max %2 °C").arg(watts?QString::number(*watts,'f',0):QString("—"),temp?QString::number(*temp,'f',0):QString("—")));painter.drawText(QRectF(pod.left()+12,pod.top()+140,pod.width()-24,12),Qt::AlignLeft,QString("GPU efficiency %1 Gpos/J").arg(efficiency?QString::number(*efficiency,'f',2):QString("—")));setProperty("pgn_total_gpu_watts",watts?QVariant(*watts):QVariant{});setProperty("pgn_total_gpu_efficiency",efficiency?QVariant(*efficiency):QVariant{});}
-        if(!expanded)painter.drawText(QPointF(pod.left() + 12, pod.bottom() - 16), property("pgn_network_ticket_frame").isValid()?QString("Ticket · ")+pgn::ui::positionFormats(property("pgn_network_ticket_frame").toJsonObject().value("positions").toString()).human+" · "+pgn::ui::positionFormats(property("pgn_network_ticket_frame").toJsonObject().value("positions").toString()).decimal:compactCard?QStringLiteral("Current device calculation rates"):"KNOWN POSITIONS · " + pgnKnownPositions(sum));
+        if(!expanded)painter.drawText(QPointF(pod.left() + 12, pod.bottom() - 16), property("pgn_network_ticket_frame").isValid()?QString("Ticket · ")+pgn::ui::cardMetricText(pgn::ui::positionFormats(property("pgn_network_ticket_frame").toJsonObject().value("positions").toString()).human)+" · "+pgn::ui::cardMetricText(pgn::ui::positionFormats(property("pgn_network_ticket_frame").toJsonObject().value("positions").toString()).decimal):compactCard?QStringLiteral("Current device calculation rates"):"KNOWN POSITIONS · " + pgnKnownPositions(sum));
         const auto count = m_nativeAllCatalog && m_nativeAllCatalog->ready()
             ? QString::number(m_nativeAllCatalog->lengthBounds().points) : QString("—");
-        if(!expanded)painter.drawText(QPointF(pod.left() + 12, pod.bottom() - 4), property("pgn_network_ticket_frame").isValid()?(expanded?QString("Network audits separate"):pgn::ui::positionFormats(property("pgn_network_ticket_frame").toJsonObject().value("positions").toString()).binary+" positions"):compactCard?QStringLiteral("Ticket results below"):"ARCHIVED SOURCE GAPS · " + count);
+        if(!expanded)painter.drawText(QPointF(pod.left() + 12, pod.bottom() - 4), property("pgn_network_ticket_frame").isValid()?(expanded?QString("Network audits separate"):pgn::ui::cardMetricText(pgn::ui::positionFormats(property("pgn_network_ticket_frame").toJsonObject().value("positions").toString()).binary)+" positions"):compactCard?QStringLiteral("Ticket results below"):"ARCHIVED SOURCE GAPS · " + count);
         m_uiTooltipHits.append({pod,sum.displayRateEstimate?QString("Total positions/s sums fresh search and CPU audit device rates, estimated over their own measurement windows. Search tests/s, gaps/s and gaps/Gpos describe search output only; CPU audits do not report these counters. Gap yield uses search positions only. Missing/stale readings remain unavailable; no absent CPU counter is treated as zero. Exact source-clock totals and original device observations are preserved."):QString("TOTAL integrates cumulative position, test and gap deltas over the displayed source-clock window, up to 60 seconds. Device observations, exact counts and source age are unchanged. Missing data never becomes zero.")});
         setProperty("pgn_total_card_first", true);
         setProperty("pgn_display_rate_caption",sum.rateCaption);

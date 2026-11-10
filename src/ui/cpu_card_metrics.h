@@ -1,6 +1,6 @@
 #pragma once
 #include "ui/position_formats.h"
-#include "ui/render/metric_caption.h"
+#include "ui/render/card_metric_caption.h"
 #include <QJsonArray>
 #include <QColor>
 #include <QJsonObject>
@@ -93,12 +93,12 @@ inline QVector<CpuCardMetric> cpuCardMetrics(const QJsonObject& status,bool conn
  if(stopped&&!mining.isEmpty()){tests=0.;gaps=0.;yield.reset();}
  const auto percent=[](std::optional<double> value){return value?QString::number(*value,'f',0)+"%":QString("—");};
  const auto memoryFraction=memoryUsed&&memoryTotal&&*memoryTotal>0?std::optional<double>(*memoryUsed/ *memoryTotal):std::nullopt;
- const QString rateText=rate?compactMetricCaption(rate):(connected&&state=="RUNNING"?QString("START"):QString("—"));
+ const QString rateText=rate?compactCardMetricCaption(rate):(connected&&state=="RUNNING"?QString("START"):QString("—"));
  const CpuCardMetric activity{busy,100.,percent(busy),"CPU BUSY","CPU time used by owned native workers / selected thread budget. Host load remains separate.",accent};
  const CpuCardMetric throughput{rate,0.,rateText,"pos/s","Mean of closed native position counts; confirmed idle/pause is zero. Not a primality-test count.",QColor("#b58cff")};
- const CpuCardMetric testRate{tests,0.,compactMetricCaption(tests),"tests/s","Mean native candidate tests over the same active-time counter window as gap statistics. Missing producer samples stay unavailable.",QColor("#46c8ee")};
- const CpuCardMetric gapRate{gaps,0.,compactMetricCaption(gaps),"gaps/s","Mean retained gap counts above the assigned minimum, over up to 60 seconds of active computation. Display counters do not imply network acceptance.",QColor("#69efc5")};
- const CpuCardMetric gapYield{yield,0.,fixedMetricCaption(yield,3),"gaps/Gpos","Retained gap delta per billion positions in the same active-time window. Zero positions is undefined. Compare equal bit/minimum/verification settings.",QColor("#b58cff")};
+ const CpuCardMetric testRate{tests,0.,compactCardMetricCaption(tests),"tests/s","Mean native candidate tests over the same active-time counter window as gap statistics. Missing producer samples stay unavailable.",QColor("#46c8ee")};
+ const CpuCardMetric gapRate{gaps,0.,compactCardMetricCaption(gaps),"gaps/s","Mean retained gap counts above the assigned minimum, over up to 60 seconds of active computation. Display counters do not imply network acceptance.",QColor("#69efc5")};
+ const CpuCardMetric gapYield{yield,0.,fixedCardMetricCaption(yield),"gaps/Gpos","Retained gap delta per billion positions in the same active-time window. Zero positions is undefined. Compare equal bit/minimum/verification settings.",QColor("#b58cff")};
  if(!expanded)return {activity,throughput,testRate,gapYield};
  return {activity,{load,100.,percent(load),"HOST LOAD","Total machine CPU utilization, including other applications.",accent},
   {memoryFraction,1.,memoryFraction?QString::number(*memoryFraction*100.,'f',0)+"%":QString("—"),"HOST RAM","Physical RAM used by all applications / total physical RAM.",QColor("#62cfff")},

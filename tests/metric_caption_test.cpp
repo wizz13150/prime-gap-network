@@ -1,3 +1,4 @@
+#include "ui/render/card_metric_caption.h"
 #include "ui/render/metric_caption.h"
 #include "ui/render/horizon_device_visuals.h"
 #include "ui/render/gauge_layout.h"
@@ -37,6 +38,14 @@ int main()
     check(compactMetricCaption(std::nullopt) == QStringLiteral("—"), "missing remains unavailable");
     check(compactMetricCaption(std::numeric_limits<double>::max()).size() <= 8, "extreme caption bounded");
 
+    for(const auto example:{Example{0.,"0.00"},Example{1.1e12,"1.10T"},Example{3.5,"3.50"},Example{999.5,"999.50"},Example{1e24,"1.00Y"}}){
+        const auto text=pgn::ui::compactCardMetricCaption(example.raw);
+        check(text==QString::fromUtf8(example.text),"card fixed two decimals with no approximation mark");
+        check(!text.contains(QChar(0x2248))&&!text.contains('~'),"no approximation mark on cards");
+    }
+    check(pgn::ui::fixedCardMetricCaption(.004)=="0.00","card yield retains two decimals");
+    check(pgn::ui::compactCardMetricCaption(std::nullopt)==QStringLiteral("—"),"missing card sample stays missing");
+    check(pgn::ui::cardMetricText(QString::fromUtf8("≈ 1.23 × 2^47"))==QString::fromUtf8("1.23 × 2^47"),"total-card footer has no approximation mark");
     QHash<QString, QColor> colors;
     const QColor total = HorizonDeviceVisuals::totalCardAccent();
     for (int i = 0; i < 1024; ++i) {

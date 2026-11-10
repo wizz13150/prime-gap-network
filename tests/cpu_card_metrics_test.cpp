@@ -14,7 +14,7 @@ int main(int argc,char** argv){
  auto paused=state;paused.insert("state","BUDGET_PAUSED");paused.insert("resident_workers",0);paused.insert("rate_positions_per_second",QJsonValue{});auto p=cpuCardMetrics(paused,true,true,QColor());
  require(p[4].value==0.&&p[5].value==0.&&p[6].value==0.&&!p[7].value);require(cpuActivityCaption(paused,true).contains("CPU load protection"));
  auto wait=paused;wait.insert("state","WAITING_AUDIT");wait.insert("total_positions","0");wait.insert("durable_completed_positions","0");auto w=cpuCardMetrics(wait,true,true,QColor());
- require(!w[7].value&&w[4].text=="0"&&w[3].value.has_value());require(cpuActivityCaption(wait,true).contains("waiting"));
+ require(!w[7].value&&w[4].text=="0.00"&&w[3].value.has_value());require(cpuActivityCaption(wait,true).contains("waiting"));
  auto starting=state;starting.insert("rate_positions_per_second",QJsonValue{});require(cpuCardMetrics(starting,true,true,QColor())[4].text=="START");
  auto disconnected=cpuCardMetrics(state,false,true,QColor());require(!disconnected[0].value&&!disconnected[4].value&&!disconnected[5].value&&!disconnected[6].value&&!disconnected[7].value);require(cpuActivityCaption(state,false).contains("unconfirmed"));
  auto bad=state;bad.insert("durable_completed_positions","-1");bad.insert("cpu_telemetry",QJsonObject{});auto b=cpuCardMetrics(bad,true,true,QColor());require(!b[3].value&&!b[7].value);
