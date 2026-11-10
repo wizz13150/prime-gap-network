@@ -61,7 +61,10 @@ int main(int argc,char** argv){
  std::unique_ptr<QWidget> canvas(pgn::ui::createMiningCanvas());canvas->resize(1380,900);
  const QString id="GPU-9b4a9af7-c0e9-a061-212b-9d31188a24ac";
  FrontierTelemetrySnapshot lane;lane.gpuUuid=id;lane.gpuName="NVIDIA GeForce RTX3090";lane.runId="qa-live";lane.sourceMode="live";
- lane.authoritative=true;lane.observedUtc=QDateTime::currentDateTimeUtc();lane.state="running";lane.producerStatus="running";lane.e2ePositionsPerSecond=1e11;lane.powmPerSecond=1e8;
+ // Keep both samples inside the same displayed decimal bin and with the
+ // same rounding marker. Exact100G ->100G+1 correctly changes to approximate
+ //100G and is a semantic text change, not a render-clock flicker.
+ lane.authoritative=true;lane.observedUtc=QDateTime::currentDateTimeUtc();lane.state="running";lane.producerStatus="running";lane.e2ePositionsPerSecond=1e11+1.;lane.powmPerSecond=1e8+1.;
  lane.raw.insert("legacy_miner_bound",true);pgn::ui::presentDevice(canvas.get(),lane);
  int calls=0;bool requested=true;QString request;bool canonicalRequests=true;QString previousRequest;
  pgn::ui::bindMiningControls(canvas.get(),[&](const QString& device,const QString& r,bool enabled){if(device==id){
@@ -99,6 +102,9 @@ int main(int argc,char** argv){
  for(int frame=0;frame<4;++frame){QThread::msleep(130);app.processEvents();
   lane.e2ePositionsPerSecond=*lane.e2ePositionsPerSecond+1.;lane.powmPerSecond=*lane.powmPerSecond+1.;
   pgn::ui::presentDevice(canvas.get(),lane);const auto current=canvas->grab().toImage();
+  const auto currentRects=canvas->property("pgn_values_audit_rects").toJsonArray();
+  if(currentRects.size()!=valueRects.size()){std::cerr<<"FAIL stable-value fixture changed gauge count\n";return 29;}
+  for(int i=0;i<valueRects.size();++i)if(valueRects[i].toObject()["value"]!=currentRects[i].toObject()["value"]){std::cerr<<"FAIL stable-value fixture crossed a displayed decimal/rounding boundary\n";return 30;}
   for(const auto entry:valueRects){const auto value=entry.toObject();const auto dpr=firstImage.devicePixelRatio();
    const QRect rectangle(qRound(value["x"].toDouble()*dpr),qRound(value["y"].toDouble()*dpr),qRound(value["w"].toDouble()*dpr),qRound(value["h"].toDouble()*dpr));
    if(firstImage.copy(rectangle)!=current.copy(rectangle)){std::cerr<<"FAIL unchanged value pixels flicker with render clock\n";return 6;}}
