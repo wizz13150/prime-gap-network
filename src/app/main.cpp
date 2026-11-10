@@ -17,6 +17,7 @@
 #include "ui/mining_results_view.h"
 #include "ui/mining_ticket_progress.h"
 #include "ui/mining_worker_close_guard.h"
+#include "ui/mining_worker_close_attempt.h"
 #include "ui/record_submission_view.h"
 #include "ui/diagnostic_capture_view.h"
 #include "ui/mining_startup_status.h"
@@ -367,7 +368,7 @@ int main(int argc,char** argv) {
    coreUpdate->pending=true;const QPointer<QWidget> alive(&window);
    pgn::ui::stopWalletCoreForUpdate(inspectWallet,[alive,closeOwned,coreUpdate](QString error){
     coreUpdate->pending=false;if(!alive)return;
-    if(!error.isEmpty()){alive->setProperty("pgn_update_shutdown_error",error);alive->setProperty("pgn_update_shutdown",false);return;}
+    if(!error.isEmpty()){pgn::ui::abortMiningUpdateShutdown(alive.data(),error);return;}
     coreUpdate->ready=true;QTimer::singleShot(0,alive.data(),closeOwned);
    });
   }
@@ -1177,13 +1178,20 @@ int main(int argc,char** argv) {
     canvas->setProperty("pgn_network_desired_on",true);miningToggle->setEnabled(true);miningToggle->setChecked(true);waitForGpu(true,lease,false,std::move(done));
    };
    pgn::ui::bindVanityGpu(inspectWallet,vanityGpu);
-   auto closeRequested=std::make_shared<bool>(false),closeAllowed=std::make_shared<bool>(false);
-   new pgn::ui::MiningWorkerCloseGuard(&window,[stream,networkMode,pendingNetwork,closeRequested,closeAllowed,testnetSummary,ticketProgressRail,canvas,inspectWallet,&window]{
+   auto* closeAttempt=new pgn::ui::MiningWorkerCloseAttempt(&window,stream);
+   closeAttempt->onReady=closeOwned;
+   closeAttempt->onWaiting=[pendingNetwork,testnetSummary,ticketProgressRail,canvas]{
+    *pendingNetwork=false;testnetSummary->setText("Closing · saving checkpoint and releasing GPU");auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase","Stopping");ticketProgressRail->present(frame);
+   };
+   closeAttempt->onFailure=[pendingNetwork,stopRequested,connectionRecovery,canvas,miningToggle,testnetSummary,ticketProgressRail](const QString& error){
+    *pendingNetwork=false;*stopRequested=false;connectionRecovery->intent(false);canvas->setProperty("pgn_network_desired_on",false);
+    const QSignalBlocker blocked(miningToggle);miningToggle->setChecked(false);miningToggle->setEnabled(true);miningToggle->setText("Start mining");testnetSummary->setText(error);
+    auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase","Needs attention");frame.insert("source_stale",true);canvas->setProperty("pgn_network_ticket_frame",frame);ticketProgressRail->present(frame);
+   };
+   new pgn::ui::MiningWorkerCloseGuard(&window,[closeAttempt,networkMode,inspectWallet,&window]{
     window.setProperty("pgn_closing",true);if(pgn::ui::drainVanityForClose(inspectWallet,[&window]{window.close();}))return false;
-    if(*closeAllowed||!*networkMode||stream->state()==QProcess::NotRunning)return true;
-    if(!*closeRequested){*closeRequested=true;*pendingNetwork=false;stream->write("{\"action\":\"quit\"}\n");testnetSummary->setText("Closing · saving checkpoint and releasing GPU");auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();frame.insert("phase","Stopping");ticketProgressRail->present(frame);}return false;
+    return closeAttempt->requestClose(*networkMode);
    });
-   QObject::connect(stream,&QProcess::finished,&window,[&window,closeOwned,closeRequested,closeAllowed](int code,QProcess::ExitStatus status){if(*closeRequested&&code==0&&status==QProcess::NormalExit){*closeAllowed=true;QTimer::singleShot(0,&window,closeOwned);}});
    QObject::connect(stream,&QProcess::started,&window,[stream,networkMode,stopRequested,canvas]{canvas->setProperty("pgn_worker_stream_error",QVariant{});if(*networkMode&&*stopRequested)stream->write("{\"action\":\"pause\"}\n");});
    processDiagnostics->launching("observer");stream->start();hardwareNotice->setText(profile.value("local").toBool()?"LOCAL · OPTIMIZED ENGINE":"REMOTE · OWNED OPTIMIZED ENGINE");status->setText("TESTNET · live worker presentation · Core verifies network state");
   };
