@@ -88,7 +88,8 @@ def legacy_lease(file):
 
 class NetworkWorker:
     def __init__(self, args):
-        self.network_lock = threading.RLock()
+        from horizon_network_lane import NetworkLane
+        self.network_lock = NetworkLane()
         self.state_lock = threading.RLock()
         self.output_lock = threading.Lock()
         self.network_notice = None
@@ -99,6 +100,7 @@ class NetworkWorker:
         self.public_profile = PublicProfile(self.root)
         self.rpc = CoreRpc(args.rpc_port, args.cookie, args.genesis, args.wallet)
         self.running, self.quitting = threading.Event(), threading.Event()
+        self.pause_acknowledged = threading.Event()
         self.running.set()
         self.current = None
         from horizon_scientific_bundle import DESCRIPTOR, create_engine
@@ -136,6 +138,24 @@ class NetworkWorker:
              phase=phase, pid=os.getpid(), observed_utc=time.time()))
 
     def emit(self, frame):
+        lane_snapshot = getattr(getattr(self, 'network_lock', None), 'snapshot', None)
+        if callable(lane_snapshot):
+            lane = lane_snapshot()
+            if lane['waiting'] or lane['held_seconds'] >= 1.0:
+                frame = dict(frame, network_serialization=lane)
+        rpc_snapshot = getattr(getattr(self, 'rpc', None), 'timing_snapshot', None)
+        if callable(rpc_snapshot):
+            activity = rpc_snapshot()
+            if any(item['seconds'] >= 1.0 for item in activity['active']):
+                frame = dict(frame, rpc_activity=activity)
+        paused = getattr(self, 'pause_acknowledged', None)
+        if (paused is not None and paused.is_set() and not self.running.is_set()
+                and frame.get('schema') in ('PGN_HORIZON_MINING_VIEW_V1', 'PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1')):
+            # Background report publication continues while OFF. Its result
+            # frames must never replace an observed physical pause with a new
+            # Starting/Report-ready state or strand another OFF acknowledgement.
+            frame = dict(frame, phase='Paused', controller_state='off',
+                         speed_rate=None, average_rate=None, compute_tests_rate=None, eta_rate=None)
         admission = getattr(self, "admission", None)
         if admission is not None:
             frame["network_admission"] = admission.snapshot()
@@ -272,9 +292,15 @@ class NetworkWorker:
                 if action in ("pause", "stop", "quit"):
                     self.running.clear()
                     atomic_bytes(self.root / "pause.request", b"user mining off\n")
+                    request_ack = getattr(self, 'request_pause_ack', None)
+                    if callable(request_ack):
+                        request_ack()
                     if action == "quit":
                         self.quitting.set()
                 elif action in ("resume", "start"):
+                    acknowledged = getattr(self, 'pause_acknowledged', None)
+                    if acknowledged is not None:
+                        acknowledged.clear()
                     (self.root / "pause.request").unlink(missing_ok=True)
                     self.running.set()
             except (ValueError, OSError):

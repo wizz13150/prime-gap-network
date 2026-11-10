@@ -42,6 +42,14 @@ class ResidentGpuQueue:
         self.service = WeightedService(self.audit_pressure.weights())
         self.last_completed = None
         self.timings = deque(maxlen=32)
+        self.pause_generation = 0
+
+    def request_pause_ack(self):
+        # Every explicit OFF is acknowledged by the execution thread, including
+        # an idempotent OFF after this lane was already physically released.
+        with self.condition:
+            self.pause_generation += 1
+            self.condition.notify_all()
 
     def submit(self, ticket, context, maximum_piece):
         identity = ticket["ticket_id"]
@@ -123,12 +131,15 @@ class ResidentGpuQueue:
 
     def run(self):
         announced_pause = False
+        announced_generation = -1
         waiting_since = None
         while not self.stopping.is_set():
             if not self.enabled.wait(.1):
-                if not announced_pause:
+                if not announced_pause or announced_generation != self.pause_generation:
+                    generation = self.pause_generation
                     self.on_paused()
                     announced_pause = True
+                    announced_generation = generation
                     self.last_completed = None
                 continue
             announced_pause = False

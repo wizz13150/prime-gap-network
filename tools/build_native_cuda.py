@@ -13,7 +13,7 @@ import shutil
 import subprocess
 
 
-SOURCE_ID = "512a3f83b873ab3014d8bf5b0bba81bb9507dbeefbac5623318bbc78aff6dddf"
+SOURCE_ID = "9716683bdd3050f92d1c9621746bfc33a163f06ad33c6dee8325632062c1a2ee"
 
 
 def digest(path):
@@ -22,6 +22,20 @@ def digest(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             value.update(block)
     return value.hexdigest()
+
+
+def authenticate_native_source(source):
+    manifest = source / "SCIENTIFIC-SOURCE-INPUTS.json"
+    if digest(manifest) != SOURCE_ID:
+        raise ValueError("Native input manifest differs from the qualified source")
+    for name, entry in json.loads(manifest.read_text(encoding="utf-8")).items():
+        path = source / name
+        if path.resolve().parent != source.resolve():
+            raise ValueError("Native input must be an immediate source file")
+        if path.stat().st_size != entry["bytes"] or digest(path) != entry["sha256"].lower():
+            raise ValueError("Native input authentication failed: " + name)
+
+    return SOURCE_ID
 
 
 def main():
@@ -34,15 +48,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args()
     source = Path(__file__).resolve().parents[1] / "src/engine/prime_gap_native"
-    manifest = source / "SCIENTIFIC-SOURCE-INPUTS.json"
-    if digest(manifest) != SOURCE_ID:
-        raise ValueError("Native input manifest differs from the qualified source")
-    for name, entry in json.loads(manifest.read_text(encoding="utf-8")).items():
-        path = source / name
-        if path.resolve().parent != source.resolve():
-            raise ValueError("Native input must be an immediate source file")
-        if path.stat().st_size != entry["bytes"] or digest(path) != entry["sha256"].lower():
-            raise ValueError("Native input authentication failed: " + name)
+    authenticate_native_source(source)
 
     proof = arguments.proof_runtime.resolve()
     proof_manifest = proof / "manifest.json"

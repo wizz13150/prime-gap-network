@@ -1,4 +1,5 @@
 #include "ui/mining_ticket_progress.h"
+#include "ui/mining_attention_status.h"
 #include "ui/mining_cycle_progress.h"
 #include "ui/gap_flow_motion.h"
 #include "ui/position_formats.h"
@@ -358,7 +359,9 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  QFont titleFont("Segoe UI");titleFont.setPixelSize(13);titleFont.setWeight(QFont::DemiBold);painter.setFont(titleFont);
  const QString title=frame_.contains("bits")?(cycle.known?cycle.title:frame_.value("title").toString(audit?"Network audit":"Network ticket"))+QString(" · %1 bits").arg(frame_.value("bits").toInt()):audit?QString("Network audit"):QString("Network work · awaiting assignment");
  const double rate=frame_.value("eta_rate").toDouble();const auto eta=active&&rate>0&&std::isfinite(rate)&&total>0?std::optional<double>(std::max(0.,total-done)/rate):std::nullopt;
- const QString status=displayPhase+(fraction?QString(" · ≈ %1%").arg(100* *fraction,0,'f',2):QString{});
+ const bool attention=frame_.value("phase")=="Needs attention";
+ const QString status=attention?miningAttentionStatus(frame_.value("message").toString()):
+      displayPhase+(fraction?QString(" · ≈ %1%").arg(100* *fraction,0,'f',2):QString{});
  const QString positions=frame_.contains("positions_total")?(audit?QString("Complete audit · "):QString{})+positionFormats(frame_.value("positions_total").toString()).inlineText()+" positions":QString{};
  QString remaining;
  if(eta&&std::isfinite(*eta)&&*eta<365.*86400){const auto value=qint64(std::ceil(*eta));remaining=QString("ETA ≈ %1:%2:%3").arg(value/3600,2,10,QChar('0')).arg(value/60%60,2,10,QChar('0')).arg(value%60,2,10,QChar('0'));}

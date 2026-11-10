@@ -395,12 +395,20 @@ class NetworkAudits:
             proposal = self.apply("assign")
             if not proposal.get("available"):
                 self.last_unavailable = proposal
-                return "none"
-            reports = self.worker.rpc.call("getpgnreports", [0, 1, proposal["request_id"]])
-            if len(reports) != 1:
-                raise ValueError("Assigned audit has no immutable report")
-            report = reports[0]
-            audit = dict(schema="PGN_HORIZON_ASSIGNED_AUDIT_V1", request_id=proposal["request_id"], ticket=report["ticket"], report_root=report["report_root"], slot=proposal["slot"], attempt=proposal["attempt"], ranges=proposal["ranges"], counts=[])
+                recover = getattr(self.worker, 'recover_assigned_audit', None)
+                if proposal.get('unavailable_reason') == 'no_eligible_independent_work' and callable(recover):
+                    audit, complete = recover(self.folder)
+                    if audit is None and not complete:
+                        self.last_unavailable = dict(proposal, unavailable_reason='assignment_recovery_pending',
+                            reason='Recovering existing assigned audits from the verified chain')
+                if audit is None:
+                    return "none"
+            else:
+                reports = self.worker.rpc.call("getpgnreports", [0, 1, proposal["request_id"]])
+                if len(reports) != 1:
+                    raise ValueError("Assigned audit has no immutable report")
+                report = reports[0]
+                audit = dict(schema="PGN_HORIZON_ASSIGNED_AUDIT_V1", request_id=proposal["request_id"], ticket=report["ticket"], report_root=report["report_root"], slot=proposal["slot"], attempt=proposal["attempt"], ranges=proposal["ranges"], counts=[])
             audit = self.restore_reassigned_answer(audit)
             save(journal, audit)
         elif audit.get('publication_intent') and self.reassignment_needed is not None and self.reassignment_needed(audit):

@@ -119,6 +119,7 @@ class MiningFlow:
         self.gpu = ResidentGpuQueue(worker.source, worker.running, worker.quitting,
                                     self.activate, self.completed, self.paused, self.failed, self.waiting,
                                     may_start=self.may_start_work)
+        worker.request_pause_ack = self.gpu.request_pause_ack
         allocator = object.__new__(type(worker))
         allocator.args, allocator.rpc = worker.args, worker.rpc
         allocator.root = worker.root / "prepared-ticket"
@@ -131,12 +132,15 @@ class MiningFlow:
         self.prefetch = TicketPrefetch(allocator, worker.running, worker.quitting, worker.network_lock, self.prepared)
         self.audit_lanes = []
         self.legacy_audit_publishers = []
+        from horizon_assigned_audit_recovery import AssignedAuditRecovery
         from horizon_lab_audit_actors import load_lab_audit_actors
         lab_actors = load_lab_audit_actors(getattr(worker.args, 'controlled_lab_audit_actors', None),
                                          worker.rpc, worker.args.genesis,
                                          pilot_coordination=getattr(worker.args, 'pilot_coordination', False))
         from horizon_audit_actor_transition import native_service_actors
         native_actors = native_service_actors(worker, lab_actors)
+        self.assigned_audit_recovery = AssignedAuditRecovery(worker,
+            'service-audit-lanes' if native_actors else 'audit-lanes')
         if native_actors:
             # Existing lab answers keep their original signer and durable
             # catalogue. They may reveal already-computed answers only; all
@@ -158,6 +162,8 @@ class MiningFlow:
                                    source=proxy, address=worker.address, ledger=worker.ledger)
             if lab_actors is not None and not native_actors:
                 lane.address = lambda actor=lab_actors[index]: actor
+            else:
+                lane.recover_assigned_audit = self.assigned_audit_recovery.claim
             audit = NetworkAudits(lane,
                 on_assigned=lambda value, index=index: self.bind_audit_cycle(index, value),
                 on_reassigned=lambda value, block, index=index: self.reopen_audit_cycle(index, value, block),
@@ -491,6 +497,11 @@ class MiningFlow:
 
     def paused(self):
         self.worker.release_device()
+        if self.worker.running.is_set():
+            return  # A newer ON superseded this older physical pause.
+        acknowledged = getattr(self.worker, 'pause_acknowledged', None)
+        if acknowledged is not None:
+            acknowledged.set()
         if self.worker.current is None and self.worker.audits.presentation is None:
             self.worker.message('Mining paused; no GPU task is running', 'Paused')
             return

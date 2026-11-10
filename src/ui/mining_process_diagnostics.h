@@ -34,10 +34,10 @@ public:
   connect(process_,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),this,[this](int code,QProcess::ExitStatus status){
    const auto finalError=process_->readAllStandardError();if(!finalError.isEmpty())standardError(finalError);
    const bool replaced=replacingObserver_&&role_=="observer";
-   state_.insert("running",false);state_.insert("exit_code",code);state_.insert("native_exit_kind",status==QProcess::NormalExit?"normal":"crash");state_.insert("exit_kind",replaced?"replaced":status==QProcess::NormalExit?"normal":"crash");
-   event(replaced?"observer_replaced":"exited",replaced?QString("Observer stopped for network handover; native exit %1").arg(code):QString("Exit %1 (%2)").arg(code).arg(status==QProcess::NormalExit?"normal":"crash"));
+   state_.insert("running",false);state_.insert("exit_code",code);state_.insert("native_exit_kind",status==QProcess::NormalExit?"normal":"crash");state_.insert("exit_kind",replaced?"replaced":status!=QProcess::NormalExit?"crash":code==0?"normal":"error");
+   event(replaced?"observer_replaced":"exited",replaced?QString("Observer stopped for network handover; native exit %1").arg(code):QString("Exit %1 (%2)").arg(code).arg(status!=QProcess::NormalExit?"crash":code==0?"normal":"error"));
    if(role_=="network"&&(code!=0||status!=QProcess::NormalExit)){
-    const auto reason=QString("Mining controller stopped: exit %1 (%2). %3").arg(code).arg(status==QProcess::NormalExit?"normal":"crash",state_.value("last_failure").toString());
+    const auto reason=QString("Mining controller interrupted: exit %1 (%2). %3").arg(code).arg(status==QProcess::NormalExit?"error":"crash",state_.value("last_failure").toString());
     canvas_->setProperty("pgn_worker_stream_error",reason);if(failure)failure(reason);
    }
   });

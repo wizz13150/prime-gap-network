@@ -11,10 +11,12 @@ namespace pgn::ui {
 struct ComponentVersionsContext {
  QMap<QString,QString> codeRoots;
  QMap<QString,QString> primaryPrograms;
- QString manifestPath,applicationRoot,mutableDataRoot,genesisHash;
+ QString manifestPath,applicationRoot,mutableDataRoot,genesisHash,coreProfilePath;
  bool testnet{},fetchOnOpen{true};
 };
 ComponentVersionsContext walletComponentVersionsContext(const QString& productRoot,const QString& runtimeDirectory,bool testnet);
+ComponentVersionsContext refreshComponentVersionsContext(ComponentVersionsContext);
+QByteArray componentProfileIdentity(const ComponentVersionsContext&);
 QJsonObject inspectLocalComponentVersions(const ComponentVersionsContext&);
 class ComponentVersionsDialog final:public QDialog {
 public:

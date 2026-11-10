@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'src/protocol'))
 sys.path.insert(0, str(ROOT / 'src/engine/runtime_host'))
 from horizon_mining_flow import MiningFlow, save
 from horizon_coordination import native_header_hash
+from horizon_network_lane import NetworkLane
 
 
 class MiningFlowCycleTests(unittest.TestCase):
@@ -50,7 +51,7 @@ class MiningFlowCycleTests(unittest.TestCase):
         from horizon_gpu_queue import ResidentGpuQueue
         stopped=threading.Event();enabled=threading.Event();ack=threading.Event();events=[]
         def message(text,phase):events.append(('status',phase));ack.set()
-        worker=SimpleNamespace(current=None,audits=SimpleNamespace(presentation=None),
+        worker=SimpleNamespace(current=None,running=enabled,audits=SimpleNamespace(presentation=None),
             release_device=lambda:events.append(('released',None)),message=message,
             progress=lambda value:self.fail('No current ticket exists to present'))
         flow=object.__new__(MiningFlow);flow.worker=worker
@@ -117,6 +118,10 @@ class MiningFlowCycleTests(unittest.TestCase):
                     args = args or []
                     if method == 'getblockchaininfo': return dict(chain='test')
                     if method == 'getaddressinfo': return dict(ismine=args[0] in lab_actors)
+                    if method == 'validateaddress':return dict(isvalid=True,scriptPubKey='0014'+'1'*40)
+                    if method == 'getpgnworkview':
+                        return dict(schema='PGN_WORK_VIEW_V1',kind='audits',offset=args[1],limit=args[2],
+                                    state=dict(genesis=work['genesis'],bestblockhash='a'*64,height=100),reports=[],audits=[])
                     if method == 'getpgnworkdutystatus':
                         return dict(schema='PGN_NATIVE_WORK_DUTY_STATUS_V1',genesis=work['genesis'],
                             bestblockhash='a'*64,enforced=native,may_request=not held and
@@ -206,7 +211,7 @@ class MiningFlowCycleTests(unittest.TestCase):
                 worker.args.controlled_lab_audit_actors=profile;worker.args.pilot_coordination=True
             worker.rpc = Rpc(); worker.source = Source(); worker.messages = []
             worker.running = threading.Event(); worker.running.set(); worker.quitting = threading.Event()
-            worker.state_lock = threading.RLock(); worker.network_lock = threading.RLock()
+            worker.state_lock = threading.RLock(); worker.network_lock = NetworkLane()
             worker.sequence = 0; worker.device_lease = None; worker.audits = SimpleNamespace(presentation=None)
             flow = MiningFlow(worker, finalize=(lambda work, report: report) if preseal else None)
             self.assertEqual([lane.worker.address()for lane in flow.audit_lanes],lab_actors if lab and not native else ['fixture-auditor']*2)

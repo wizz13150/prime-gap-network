@@ -76,4 +76,19 @@ class RpcTransportTests(unittest.TestCase):
   self.rpc._take_connection=take
   with self.assertRaises(RuntimeError):self.rpc.call('read')
   self.assertFalse(self.server.observed)
+ def test_slow_request_is_observable_without_logging_private_payload(self):
+  secret='private-argument-not-for-diagnostics';errors=[]
+  def slow():
+   try:self.rpc.call('slow',[secret])
+   except Exception as error:errors.append(error)
+  t=threading.Thread(target=slow);t.start();self.assertTrue(self.server.entered.wait(2))
+  value=self.rpc.timing_snapshot();self.assertEqual(value['active'][0]['method'],'slow')
+  self.assertNotIn(secret,json.dumps(value));self.assertNotIn('fixture:one',json.dumps(value))
+  self.server.release.set();t.join(2);self.assertFalse(t.is_alive());self.assertFalse(errors)
+  value=self.rpc.timing_snapshot();self.assertEqual(value['active'],[]);self.assertTrue(value['recent'][-1]['returned'])
+ def test_rpc_timing_history_is_bounded_and_retains_error_code(self):
+  for _ in range(35):self.rpc.call('read')
+  with self.assertRaises(CoreRpcError):self.rpc.call('semantic_error')
+  self.assertLessEqual(len(self.rpc._recent_calls),32)
+  last=self.rpc.timing_snapshot()['recent'][-1];self.assertEqual(last['rpc_error_code'],-8);self.assertFalse(last['returned'])
 if __name__=='__main__':unittest.main()

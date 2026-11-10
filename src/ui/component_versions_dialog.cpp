@@ -3,6 +3,7 @@
 #include "update/component_catalog.h"
 #include <QSignalBlocker>
 #include <QDateTime>
+#include <QCryptographicHash>
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
@@ -43,13 +44,30 @@ ComponentVersionsContext walletComponentVersionsContext(const QString& productRo
  ComponentVersionsContext context;context.testnet=testnet;const auto app=QCoreApplication::applicationDirPath();context.manifestPath=QDir(app).filePath("components.json");context.codeRoots.insert("ui",codeDirectory(app));context.primaryPrograms.insert("ui",QCoreApplication::applicationFilePath());
  context.applicationRoot=pgn::app::cleanApplicationRoot(productRoot);context.mutableDataRoot=pgn::app::mutableDataRoot(productRoot);
  const auto engine=QDir(app).filePath("EngineRuntime");context.codeRoots.insert("gpu",codeDirectory(engine));identifyInstalledCpu(context,app);
- // Read only the bounded owned configuration receipt. Never enumerate the
- // Core data directory or query remote workers for a guessed code version.
- QFile profile(QDir(runtimeDirectory).filePath("wallet-core.json"));
- if(profile.open(QIODevice::ReadOnly)&&profile.size()<=32768){const auto object=QJsonDocument::fromJson(profile.readAll()).object();context.genesisHash=object.value("genesis_hash").toString();const QFileInfo executable(object.value("executable").toString());if(executable.isAbsolute()&&executable.isFile()&&executable.isExecutable()){context.codeRoots.insert("core",executable.canonicalPath());context.primaryPrograms.insert("core",executable.canonicalFilePath());}}
+ context.coreProfilePath=QDir(runtimeDirectory).filePath("wallet-core.json");
+ return refreshComponentVersionsContext(std::move(context));
+}
+QByteArray componentProfileIdentity(const ComponentVersionsContext& context){
+ if(context.coreProfilePath.isEmpty())return {};
+ QFile profile(context.coreProfilePath);
+ if(!profile.exists())return "absent";
+ if(!profile.open(QIODevice::ReadOnly))return "unreadable";
+ if(profile.size()>32768)return "oversized";
+ return QCryptographicHash::hash(profile.readAll(),QCryptographicHash::Sha256);
+}
+ComponentVersionsContext refreshComponentVersionsContext(ComponentVersionsContext context){
+ if(context.coreProfilePath.isEmpty())return context;
+ context.codeRoots.remove("core");context.primaryPrograms.remove("core");context.genesisHash.clear();
+ QFile profile(context.coreProfilePath);
+ if(profile.open(QIODevice::ReadOnly)&&profile.size()<=32768){
+  const auto object=QJsonDocument::fromJson(profile.readAll()).object();context.genesisHash=object.value("genesis_hash").toString();
+  const QFileInfo executable(object.value("executable").toString());
+  if(executable.isAbsolute()&&executable.isFile()&&executable.isExecutable()){context.codeRoots.insert("core",executable.canonicalPath());context.primaryPrograms.insert("core",executable.canonicalFilePath());}
+ }
  return context;
 }
-QJsonObject inspectLocalComponentVersions(const ComponentVersionsContext& context){
+QJsonObject inspectLocalComponentVersions(const ComponentVersionsContext& original){
+ const auto context=refreshComponentVersionsContext(original);
  QJsonObject snapshot{{"schema","PGN_LOCAL_COMPONENT_VIEW_V1"},{"manifest_state","absent"},{"components",QJsonArray{}},{"release_version",QJsonValue{}},{"published",QJsonValue{}}};QJsonObject declarations;QString reason="No local component manifest is present.";
  QFile file(context.manifestPath);
  if(file.exists()){
@@ -117,7 +135,7 @@ void ComponentVersionsDialog::updateRecovery(){
  recover_->setVisible(needed);if(needed){prepare_->setEnabled(false);install_->hide();status_->setText("An interrupted update needs recovery. Restore the previous version before installing another update. Wallets and results stay in their folders.");}
 }
 void ComponentVersionsDialog::refreshLocal(){
- if(localBusy_||busy_||installStarted_||closing_)return;localBusy_=true;refresh_->setEnabled(false);localSummary_->setText("Checking installed files…");
+ if(localBusy_||busy_||installStarted_||closing_)return;context_=refreshComponentVersionsContext(context_);localBusy_=true;refresh_->setEnabled(false);localSummary_->setText("Checking installed files…");
  auto* watcher=new QFutureWatcher<QJsonObject>(this);localWatcher_=watcher;const QPointer<ComponentVersionsDialog> weak(this);
  connect(watcher,&QFutureWatcher<QJsonObject>::finished,this,[weak,watcher]{if(!weak||weak->closing_)return;weak->localBusy_=false;weak->localWatcher_=nullptr;const auto value=watcher->result();watcher->deleteLater();weak->presentLocal(value);weak->refresh_->setEnabled(true);if(weak->context_.fetchOnOpen)weak->refreshPublished();});
  watcher->setFuture(QtConcurrent::run([context=context_]{return inspectLocalComponentVersions(context);}));

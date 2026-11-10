@@ -4,9 +4,31 @@
 #include <QTimer>
 #include <QDir>
 #include <QJsonDocument>
+#include <QTemporaryDir>
+#include <QSaveFile>
+#include <QElapsedTimer>
+#include <QThread>
 #include <iostream>
 int main(int argc,char** argv){
  QApplication app(argc,argv);pgn::ui::ComponentVersionsContext context;context.fetchOnOpen=false;
+ if(argc>=3&&QString::fromLocal8Bit(argv[1])=="--profile-rebind"){
+  const QString root=QString::fromLocal8Bit(argv[2]);QTemporaryDir runtime;if(!runtime.isValid())return 30;
+  context.manifestPath=root+"/components.json";context.coreProfilePath=runtime.filePath("wallet-core.json");
+  const QString core=root+"/Core/pgn-core"
+#ifdef Q_OS_WIN
+  ".exe"
+#endif
+  ;
+  const auto bind=[&](const QString& image){QSaveFile file(context.coreProfilePath);if(!file.open(QIODevice::WriteOnly))return false;file.write(QJsonDocument(QJsonObject{{"executable",image},{"genesis_hash",QString(64,'a')}}).toJson());return file.commit();};
+  pgn::ui::ComponentStatusStrip strip(context);
+  const auto row=[&]{for(const auto& x:strip.property("pgn_component_local_snapshot").toJsonObject()["components"].toArray())if(x.toObject()["id"]=="core")return x.toObject();return QJsonObject{};};
+  const auto wait=[&](const QString& state){QElapsedTimer clock;clock.start();while(row()["state"]!=state&&clock.elapsed()<3500){app.processEvents();QThread::msleep(5);}return row()["state"]==state;};
+  if(!wait("unidentified")||!bind(core)||!wait("matched_local_manifest")||!row()["primary_bound"].toBool())return 32;
+  if(pgn::ui::inspectLocalComponentVersions(context)["components"].toArray()[1].toObject()["state"]!="matched_local_manifest")return 33;
+  if(!bind(root+"/missing-core")||!wait("unidentified"))return 34;
+  if(!QFile::remove(context.coreProfilePath)||!bind(core)||!wait("matched_local_manifest"))return 35;
+  std::cout<<"PASS atomic profile rebind: absent/valid/invalid/recreated; fresh primary hash binding without restart\n";return 0;
+ }
  if(argc>=3&&QString::fromLocal8Bit(argv[1])=="--inspect-installed"){
   const auto product=QString::fromLocal8Bit(argv[2]);
   const auto resolved=pgn::ui::walletComponentVersionsContext(product,product+"/data/testnet/ui-runtime",true);

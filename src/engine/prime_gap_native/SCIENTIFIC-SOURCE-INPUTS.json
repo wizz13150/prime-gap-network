@@ -232,20 +232,20 @@
     "sha256": "7ced29113d9307007c1e45ce10b1d134b2f37c54a7e330bfda9e160ab520f960"
   },
   "search_pipeline.cuh": {
-    "bytes": 9958,
-    "sha256": "60963c9c3fee32e5533a75e6cd390efa3a7fd2198bbb1626285594202a7b1e19"
+    "bytes": 8742,
+    "sha256": "af4e906d523e49046ada05713978861c51d0a34412521147f11af29fba166e12"
   },
   "search_worker.cu": {
-    "bytes": 86242,
-    "sha256": "baee46349212646361554b433023e7150a66188fa54c54086846c3fddf15489c"
+    "bytes": 78558,
+    "sha256": "708a9a4864ddab05181415d1df785649471ae8fe64cabf8b1847080c432564e1"
   },
   "seed_schedule.h": {
     "bytes": 2131,
     "sha256": "109410bdd270f761b29464be35a59fc416f61dc997999e3a3057f6ae732333b5"
   },
   "segmented_sieve.cuh": {
-    "bytes": 32049,
-    "sha256": "283d879e2984fd566823064183fbb3c41fb713ac26c7c4ef698ae754ce513d98"
+    "bytes": 30942,
+    "sha256": "149ac2bf02752dde47dce4b49164313959de3d300f2af3caf18ed7c14d0c7b4d"
   },
   "SOURCE-MANIFEST.json": {
     "bytes": 8679,

@@ -13,7 +13,7 @@ namespace pgn::mining {
 class CpuNormalResources final:public QObject {
     struct Bridge {QPointer<QProcess> miner;QString identity;};
     struct Choice {QString request;bool enabled{};int percent{};int exactWorkers{};};
-    struct Resource {CpuControlEndpoint endpoint;CpuControllerClient* client{};QJsonObject inventory,status;QHash<qint64,Bridge> pending;QString control,reason,reasonCode;bool selected{},compatible{};int desiredThreads{1};std::optional<Choice> queued;};
+    struct Resource {CpuControlEndpoint endpoint;CpuControllerClient* client{};QJsonObject inventory,status;QHash<qint64,Bridge> pending;QString control,reason,reasonCode;bool selected{},wanted{},compatible{};int desiredThreads{1};std::optional<Choice> queued;};
     QHash<QString,std::shared_ptr<Resource>> resources_;QPointer<QProcess> miner_;bool closing_{},restored_{};
     QProcess* cpuMiner_{};QString cpuProgram_;QStringList cpuArguments_;QByteArray cpuBuffer_;
     bool launchCpuMiner(){
@@ -97,7 +97,7 @@ public:
     void attachMiner(QProcess* miner){if(!miner_||miner_->state()!=QProcess::Running||miner_==miner){miner_=miner;restored_=false;}}
     void minerReady(QProcess* miner){
         if(miner_!=miner||restored_||miner->state()!=QProcess::Running)return;restored_=true;
-        for(const auto& r:resources_)if(r->selected&&r->compatible&&r->client->available()&&r->control.isEmpty()){
+        for(const auto& r:resources_)if(r->selected&&r->wanted&&r->compatible&&r->client->available()&&r->control.isEmpty()){
             const auto affinity=r->client->affinityFor(r->desiredThreads);if(affinity.size()!=r->desiredThreads)continue;
             r->control="restore-resource:"+r->endpoint.deviceId;
             const QJsonObject command{{"action","cpu_configure"},{"id",r->control},{"device_id",r->endpoint.deviceId},{"inventory",r->inventory},{"enabled",true},{"threads",r->desiredThreads},{"affinity",affinity}};
@@ -105,16 +105,17 @@ public:
         }
     }
     QJsonArray updateResumeChoices()const{
-        QJsonArray choices;for(const auto& r:resources_)if(r->selected&&r->compatible&&r->client->available())choices.append(QJsonObject{{"kind","cpu"},{"device",r->endpoint.deviceId},{"threads",r->desiredThreads}});return choices;
+        QJsonArray choices;for(const auto& r:resources_)if(r->selected&&r->wanted&&r->compatible&&r->client->available())choices.append(QJsonObject{{"kind","cpu"},{"device",r->endpoint.deviceId},{"threads",r->desiredThreads}});return choices;
     }
     bool restoreAfterUpdate(const QString& device,int workers){
-        const auto r=resources_.value(device);if(!r||!r->compatible||!r->client->available()||cpuProgram_.isEmpty())return false;
+        const auto r=resources_.value(device);if(closing_||!r||!r->compatible||!r->client->available()||cpuProgram_.isEmpty())return false;
         if(workers<1||workers>r->inventory.value("maximum_workers").toInt()){refuse(device,"update-resume","Saved CPU thread budget is no longer available");return true;}
         control(device,"update-resume",true,100,workers);return true;
     }
     bool control(const QString& device,const QString& request,bool enabled,int percent,int exactWorkers=0){
         const auto r=resources_.value(device);if(!r)return device.startsWith("CPU/")?refuse(device,request,"CPU executor is unavailable"):false;
         if(closing_||!r->compatible||!r->client->available()||r->inventory.isEmpty())return refuse(device,request,"CPU normal-cycle controller is unavailable or requires version2");
+        r->wanted=enabled; // An accepted OFF cancels automatic resume before its acknowledgement.
         if(cpuMiner_&&cpuMiner_->state()==QProcess::Starting){r->queued=Choice{request,enabled,percent,exactWorkers};return true;}
         if(!r->control.isEmpty()){r->queued=Choice{request,enabled,percent,exactWorkers};return true;}
         const int maximum=r->inventory.value("maximum_workers").toInt();if(maximum<1)return refuse(device,request,"CPU thread budget is unavailable");
@@ -172,6 +173,15 @@ public:
         }
     }
     bool allStopped()const{if(cpuMiner_&&cpuMiner_->state()!=QProcess::NotRunning)return false;for(const auto& r:resources_)if(!r->client->stopped())return false;return true;}
+    bool reopenAfterAbortedUpdate(){
+        if(!closing_)return true;
+        if(!allStopped())return false;
+        // Reopen only idle inventory channels after every previous owner left.
+        // Exact mining choices are reapplied separately by the update resume loop.
+        closing_=false;restored_=false;
+        for(const auto& r:resources_)r->client->start();
+        return true;
+    }
     bool requestClose(){if(allStopped())return true;if(!closing_){closing_=true;if(cpuMiner_&&cpuMiner_->state()!=QProcess::NotRunning)cpuMiner_->write("{\"action\":\"quit\"}\n");else for(const auto& r:resources_)r->client->close();}return allStopped();}
 };
 }

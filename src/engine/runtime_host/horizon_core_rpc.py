@@ -1,5 +1,6 @@
 """Bounded authenticated loopback Core transport; credentials never enter events."""
 from pathlib import Path
+from collections import deque
 import base64
 import http.client
 import json
@@ -26,6 +27,16 @@ class CoreRpc:
         self._idle = []
         self._generation = 0
         self._lock = threading.Lock()
+        self._active_calls = {}
+        self._recent_calls = deque(maxlen=32)
+
+    def timing_snapshot(self):
+        """Bounded method timings only: never arguments, results or credentials."""
+        with self._lock:
+            now = time.monotonic()
+            active = [dict(method=method, seconds=max(0.0, now-started))
+                      for method, started in list(self._active_calls.values())[:8]]
+            return dict(active=active, recent=list(self._recent_calls)[-8:])
 
     def _take_connection(self):
         with self._lock:
@@ -60,6 +71,9 @@ class CoreRpc:
         body = json.dumps(dict(jsonrpc="2.0", id="horizon-worker", method=method, params=params or [])).encode()
         connection, generation = self._take_connection()
         reusable = False
+        began, returned, rpc_error = time.monotonic(), False, None
+        with self._lock:
+            self._active_calls[connection] = (method[:64], began)
         try:
             with self._lock:
                 if generation != self._generation:
@@ -77,15 +91,23 @@ class CoreRpc:
                 raise ValueError("Core reply identity mismatch")
             reusable = not response.will_close
             if reply.get("error"):
+                rpc_error = reply["error"].get("code")
                 raise CoreRpcError(reply["error"].get("code"), reply["error"].get("message", "Core request refused"))
             if status != 200 or "result" not in reply:
                 reusable = False
                 raise RuntimeError("Local Core response unavailable")
+            returned = True
             return reply["result"]
         finally:
             # Never replay an RPC after a broken connection: it may already
             # have created a key or submitted a block before the reply was lost.
-            self._return_connection(connection, generation, reusable)
+            try:
+                self._return_connection(connection, generation, reusable)
+            finally:
+                with self._lock:
+                    self._active_calls.pop(connection, None)
+                    self._recent_calls.append(dict(method=method[:64], seconds=max(0.0,time.monotonic()-began),
+                                                   returned=returned, rpc_error_code=rpc_error))
 
     def audit_snapshot(self, requests):
         from horizon_audit_snapshot import read_snapshot
