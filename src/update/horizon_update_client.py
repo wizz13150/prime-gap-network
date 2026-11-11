@@ -201,6 +201,13 @@ class AuthenticatedUpdates:
                                           requested_bytes=additional,
                                           retention_target_bytes=MAX_CACHE)
 
+    def _cleanup_unused(self):
+        try:
+            self._quota(discard_unused=True)
+        except (OSError, stage.StageError):
+            self.cache_cleanup_warning = ('Temporary update files could not be cleaned; '
+                'the verified installation is retained. Cleanup will retry on a later update.')
+
     def _updater(self):
         progress.report('metadata',force=True)
         return Updater(str(self.metadata), self.metadata_url, str(self.targets),
@@ -292,6 +299,10 @@ class AuthenticatedUpdates:
             self._pins.clear()
             self._quota()
             catalog, manifest, components, chosen, target = self._catalog(self._updater(), selected)
+            # Also retire leftovers from old helper versions on the first
+            # successful check. Keep this authenticated catalogue pinned, so
+            # ordinary subsequent checks need not fetch an unchanged copy.
+            self._cleanup_unused()
             return dict(schema='PGN_AUTHENTICATED_COMPONENT_VIEW_V1',
                         publisher_authenticated=True, bootstrap_sha256=self.bootstrap_sha256,
                         catalog_sha256=target.hashes['sha256'],
@@ -299,7 +310,8 @@ class AuthenticatedUpdates:
                         sequence=manifest['sequence'], release_version=manifest['release_version'],
                         components=[{key: components[c][key] for key in
                                     ('id', 'version', 'abi', 'dependencies')} for c in chosen],
-                        bundle_target=catalog['bundle_target'], installation_performed=False)
+                        bundle_target=catalog['bundle_target'], installation_performed=False,
+                        warning=self.cache_cleanup_warning)
 
     def prepare(self, selected):
         # Returned paths are cache entries. Installation must use prepared()
@@ -318,11 +330,7 @@ class AuthenticatedUpdates:
                 # Remove temporary copies promptly, not just under pressure.
                 # Cleanup failure must never invalidate that prepared cohort.
                 self._pins.clear()
-                try:
-                    self._quota(discard_unused=True)
-                except (OSError, stage.StageError):
-                    self.cache_cleanup_warning = ('Temporary update files could not be cleaned; '
-                        'the verified installation is retained. Cleanup will retry on a later update.')
+                self._cleanup_unused()
 
     def _prepare_locked(self, selected):
         self._quota()
