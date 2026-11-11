@@ -15,6 +15,17 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
     const QJsonObject cpu3{{"kind","cpu"},{"device","CPU/test/0"},{"threads",3}},cpu4{{"kind","cpu"},{"device","CPU/test/0"},{"threads",4}},gpu{{"kind","gpu"},{"device","GPU-test"}};
     const auto merged=pgn::ui::mergeMiningUpdateChoices({cpu3,gpu},{cpu4});
     check(merged.size()==2&&merged.at(0)==cpu4&&merged.at(1)==gpu,"pending choices lost or stale CPU thread budget won");
+    for(const auto& phase:QStringList{"Paused","Needs attention","Starting","Searching","Stopped"}){
+        for(bool running:{false,true}){
+            QJsonObject intents{{"GPU-test",QJsonObject{{"wanted",true},{"running",running},{"phase",phase}}}};
+            auto captured=pgn::ui::captureMiningUpdateChoices({}, {cpu3},intents);
+            check(captured.size()==2&&captured.at(1)==gpu,"requested ON was lost because backend was paused/failed/not running");
+            intents["GPU-test"]=QJsonObject{{"wanted",false},{"running",running},{"phase",phase}};
+            captured=pgn::ui::captureMiningUpdateChoices({gpu},{cpu3},intents);
+            check(captured.size()==1&&captured.at(0)==cpu3,"latest OFF lost against pending ON or physical RUNNING");
+        }
+    }
+    check(pgn::ui::captureMiningUpdateChoices({}, {},QJsonObject{{"GPU-test",QJsonObject{{"wanted","true"}}}}).isEmpty(),"non-boolean wanted granted automatic ON");
     check(argc==2,"Python test child path required");QObject window;
     pgn::ui::MiningUpdateAbortResume recovery(&window);int resumed=0;recovery.onAbort=[&]{++resumed;};
     pgn::ui::abortMiningUpdateShutdown(&window,"ordinary close failed");QCoreApplication::processEvents();check(resumed==0,"ordinary close granted automatic ON");

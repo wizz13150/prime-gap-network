@@ -69,6 +69,10 @@ inline QJsonObject diagnosticMiningStartup(QWidget* canvas){
   const auto row=item.toObject();unsupported.append(QJsonObject{{"id",row.value("id").toString().left(64)},
    {"reason",diagnosticStatusText(row.value("reason").toString())}});
  }
- value.insert("unsupported_devices",unsupported);return value;
+ value.insert("unsupported_devices",unsupported);
+ const auto frame=canvas->property("pgn_network_ticket_frame").toJsonObject();
+ const auto maintenance=diagnosticPublicationMaintenance(frame.value("audit_service").toObject().value("publication_maintenance").toObject());
+ if(!maintenance.isEmpty())value.insert("publication_maintenance",maintenance);
+ return value;
 }
 }

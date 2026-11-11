@@ -21,11 +21,13 @@ class Rpc:
     def __init__(self,w,count=2):
         self.w=dict(w,accepted=False,parent='f'*64,height=21)
         self.w['native_audit_service']=dict(receipt(w,count),view_parent=self.w['parent'])
-        self.tip=self.w['parent'];self.canonical=True;self.old_confirmations=-1
+        self.tip=self.w['parent'];self.canonical=True;self.view_canonical=True;self.old_confirmations=-1
     def call(self,method,args=None):
         if method=='getpgnscientificwork':return copy.deepcopy(self.w)
         if method=='getbestblockhash':return self.tip
-        if method=='getblockhash':return self.w['native_audit_service']['issuance_block']if self.canonical else'1'*64
+        if method=='getblockhash':
+            if args==[self.w['height']-1]:return self.w['parent']if self.view_canonical else'2'*64
+            return self.w['native_audit_service']['issuance_block']if self.canonical else'1'*64
         if method=='getblockheader':
             block=self.w['native_audit_service']['issuance_block']
             return dict(hash=args[0],height=16,confirmations=5 if args[0]==block and self.canonical else self.old_confirmations)
@@ -56,9 +58,13 @@ class NativeDutyTests(unittest.TestCase):
         rpc.w['native_audit_service']['enforced']=False;rpc.w['native_audit_service']['credits']=[]
         self.assertIsNone(duty.observe(rpc,w,w['genesis']))
     def test_branch_change_or_orphaned_issuance_cannot_authorize_search(self):
-        for change in ('tip','canonical'):
-            rpc=Rpc(work());setattr(rpc,change,'1'*64 if change=='tip'else False)
+        for change in ('view_canonical','canonical'):
+            rpc=Rpc(work());setattr(rpc,change,False)
             with self.assertRaises(RuntimeError):duty.observe(rpc,work(),work()['genesis'])
+    def test_descendant_blocks_during_service_read_do_not_stop_cold_resume(self):
+        w=work();rpc=Rpc(w);expected=duty.observe(rpc,w,w['genesis'])
+        rpc.tip='9'*64
+        self.assertEqual(duty.observe(rpc,w,w['genesis'],expected),expected)
     def test_changed_consumer_self_audit_duplicate_and_noninteger_fields_are_rejected(self):
         values=[];base=receipt(work())
         x=copy.deepcopy(base);x['credits'][0]['request_id']=work()['request_id'];values.append(x)

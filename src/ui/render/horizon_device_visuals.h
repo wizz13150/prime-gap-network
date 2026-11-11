@@ -3,6 +3,7 @@
 #include <QPainter>
 #include <QFontMetrics>
 #include <QFontDatabase>
+#include <QRegularExpression>
 #include <QLinearGradient>
 #include <algorithm>
 #include <cmath>
@@ -129,7 +130,7 @@ inline void frame(QPainter& painter,const QRectF& pod,const QColor& color,bool a
 inline QRectF gauge(QPainter& painter,const QPointF& center,qreal radius,double fraction,
                   const QColor& color,const QString& value,const QString& label,
                   qreal labelWidth=0.,qreal labelGap=4.,int labelPixels=7,bool riecoin=false,
-                  const QColor& valueColor=QColor{},QRectF* labelBounds=nullptr){
+                  const QColor& valueColor=QColor{},QRectF* labelBounds=nullptr,bool splitRateUnits=false){
     fraction=std::clamp(fraction,0.,1.);
     const QRectF ring(center.x()-radius,center.y()-radius,radius*2,radius*2);
     painter.save();painter.setBrush(Qt::NoBrush);
@@ -147,14 +148,34 @@ inline QRectF gauge(QPainter& painter,const QPointF& center,qreal radius,double 
     painter.drawEllipse(center,inner,inner);
     QString displayed=value;
     if(riecoin&&displayed.endsWith('%')){QString numeric=displayed.left(displayed.size()-1).trimmed();numeric.replace(',','.');bool ok=false;const double percent=numeric.toDouble(&ok);if(ok&&std::isfinite(percent))displayed=QString::number(percent,'f',0)+"%";}
-    QFont valueFont=font(13,QFont::DemiBold,true,riecoin);
     const qreal textWidth=std::max(2.,2.*inner-4.);
-    while(valueFont.pixelSize()>6 && QFontMetrics(valueFont).horizontalAdvance(displayed)>textWidth)
-        valueFont.setPixelSize(valueFont.pixelSize()-1);
-    painter.setFont(valueFont);painter.setPen(valueColor.isValid()?valueColor:QColor(QStringLiteral("#f0fbfa")));
-    const QRectF valueArea(center.x()-inner,center.y()-9,inner*2,18);
-    const QRectF valueBounds=painter.boundingRect(valueArea,Qt::AlignCenter,displayed);
-    painter.drawText(valueArea,Qt::AlignCenter,displayed);
+    const bool rateLabel=label.contains(QStringLiteral("pos/s"),Qt::CaseInsensitive)||label.startsWith(QStringLiteral("tests/s"))||label.startsWith(QStringLiteral("gaps/s"));
+    static const QRegularExpression rateParts(QStringLiteral("^([0-9]+\\.[0-9]{2})\\s*([kKMGTPEZY])$"));
+    const auto parts=rateParts.match(displayed);
+    QRectF valueBounds;
+    painter.setPen(valueColor.isValid()?valueColor:QColor(QStringLiteral("#f0fbfa")));
+    if(splitRateUnits&&rateLabel&&parts.hasMatch()){
+        // Keep all digits. Put the magnitude on its own short line rather than
+        // shrinking 582.64G to a tiny seven-character monospace string.
+        QFont numberFont=font(12,QFont::DemiBold,false,riecoin);numberFont.setPixelSize(13);
+        while(numberFont.pixelSize()>6&&QFontMetrics(numberFont).horizontalAdvance(parts.captured(1))>textWidth)
+            numberFont.setPixelSize(numberFont.pixelSize()-1);
+        const QRectF numberArea(center.x()-inner,center.y()-inner*.68,inner*2,inner);
+        painter.setFont(numberFont);valueBounds=painter.boundingRect(numberArea,Qt::AlignCenter,parts.captured(1));
+        painter.drawText(numberArea,Qt::AlignCenter,parts.captured(1));
+        QFont unitFont=font(7,QFont::DemiBold,false,riecoin);unitFont.setPixelSize(8);
+        const QRectF unitArea(center.x()-inner,center.y()+inner*.20,inner*2,inner*.66);
+        painter.setFont(unitFont);valueBounds=valueBounds.united(painter.boundingRect(unitArea,Qt::AlignCenter,parts.captured(2)));
+        painter.drawText(unitArea,Qt::AlignCenter,parts.captured(2));
+    }else{
+        QFont valueFont=font(13,QFont::DemiBold,true,riecoin);
+        while(valueFont.pixelSize()>6&&QFontMetrics(valueFont).horizontalAdvance(displayed)>textWidth)
+            valueFont.setPixelSize(valueFont.pixelSize()-1);
+        painter.setFont(valueFont);
+        const QRectF valueArea(center.x()-inner,center.y()-9,inner*2,18);
+        valueBounds=painter.boundingRect(valueArea,Qt::AlignCenter,displayed);
+        painter.drawText(valueArea,Qt::AlignCenter,displayed);
+    }
     painter.setFont(font(labelPixels,QFont::DemiBold,true,riecoin));painter.setPen(alpha(color,190));
     const qreal width=labelWidth>0?labelWidth:radius*2;
     const QRectF labelArea(center.x()-width/2,center.y()+radius+labelGap,width,14);

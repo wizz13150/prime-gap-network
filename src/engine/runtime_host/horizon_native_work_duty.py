@@ -84,7 +84,10 @@ def observe(rpc,work,genesis,previous=None):
     if (header.get('hash')!=normalized['issuance_block']or header.get('height')!=normalized['issuance_height']
             or type(header.get('confirmations'))is not int or header['confirmations']<=0
             or rpc.call('getblockhash',[normalized['issuance_height']])!=normalized['issuance_block']
-            or rpc.call('getbestblockhash')!=value['view_parent']):
+            # fresh.height is the candidate height: its parent is one lower.
+            # Normal descendants cannot change consumed service credits in
+            # an immutable issuance block. A replaced observation block can.
+            or rpc.call('getblockhash',[fresh['height']-1])!=value['view_parent']):
         raise RuntimeError('Native service receipt changed branches; retained work needs a fresh view')
     if previous is not None and previous!=normalized:
         if previous['issuance_block']==normalized['issuance_block']:

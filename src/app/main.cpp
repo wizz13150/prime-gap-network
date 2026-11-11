@@ -12,6 +12,7 @@
 #include "mining/network_control_phase.h"
 #include <QElapsedTimer>
 #include "ui/vanity_view.h"
+#include "ui/social_view.h"
 #include "ui/mining_canvas.h"
 #include "ui/public_profile_button.h"
 #include "ui/public_profile_control.h"
@@ -436,6 +437,7 @@ int main(int argc,char** argv) {
   auto* networkClock=new QTimer(&window);networkClock->setInterval(1000);QObject::connect(networkClock,&QTimer::timeout,&window,displayNetwork);networkClock->start();
  walletButton->setToolTip("Native PGN wallet integrated here, with verified chain identity and protected local keys.");
   walletButton->setFixedHeight(33);topBox->addWidget(walletButton);
+ auto* socialButton=new QPushButton("SOCIAL\nCOMMUNITY SPACE",top);socialButton->setObjectName("pgn-primary-social-tab");socialButton->setCheckable(true);socialButton->setFixedSize(160,33);socialButton->setCursor(Qt::PointingHandCursor);socialButton->setShortcut(QKeySequence("Alt+S"));socialButton->setToolTip("Chat, publications, forum and miner ranking. Alt+S opens Social. Local drafts never send messages.");topBox->addWidget(socialButton);
  auto* identity=new QLabel("PRIME GAP NETWORK · GPU SOURCE / INDEPENDENT PROOF · WALLET SERVICE NOT CONNECTED");identity->setStyleSheet("color:#7dacb5;font:8px monospace;");identity->setWordWrap(true);identity->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);topBox->addWidget(identity,1);
   auto* tabs=new QTabWidget;auto* canvas=pgn::ui::createMiningCanvas();
   auto* miningPage=new QWidget;miningPage->setObjectName("pgn-mining-page");auto* miningLayout=new QVBoxLayout(miningPage);miningLayout->setContentsMargins(0,0,0,0);miningLayout->setSpacing(0);
@@ -514,9 +516,8 @@ int main(int argc,char** argv) {
  try{*pendingUpdateResume=pgn::update::takeMiningUpdateResume(pgn::app::mutableDataRoot(root),pgn::wallet::installedCoreGenesis(root),startupArguments.contains("--update-healthcheck"));}
  catch(const std::exception& error){window.setProperty("pgn_update_resume_error",QString::fromUtf8(error.what()));}
  captureMiningUpdate=[canvas,cpuFleet,pendingUpdateResume]{
-  auto result=cpuFleet->updateResumeChoices();const auto devices=canvas->property("pgn_update_gpu_intents").toJsonObject();
-  for(auto i=devices.begin();i!=devices.end();++i){const auto entry=i.value().toObject();if(entry.value("wanted").toBool()&&entry.value("running").toBool()&&entry.value("phase")!="Needs attention"&&entry.value("phase")!="Paused")result.append(QJsonObject{{"kind","gpu"},{"device",i.key()}});}
-  return pgn::ui::mergeMiningUpdateChoices(*pendingUpdateResume,result);
+  return pgn::ui::captureMiningUpdateChoices(*pendingUpdateResume,cpuFleet->updateResumeChoices(),
+      canvas->property("pgn_update_gpu_intents").toJsonObject());
  };
  const bool localCpuOnly=!QFileInfo::exists(pgn::app::mutableDataRoot(root)+"/testnet/ui-runtime/cpu-controllers.json");
  const auto discoverCpus=[cpuEndpoints,canvas,pgn,cpuFleet,localCpuOnly,root,&window]{
@@ -569,6 +570,7 @@ int main(int argc,char** argv) {
   pgn::ui::bindWalletNetworkMetrics(inspectWallet,miningResults,[miningResults,networkObservation](const QJsonObject& metrics,const QString& error){const auto& anchor=*networkObservation;const bool same=error.isEmpty()&&anchor&&anchor->freshAt(QDateTime::currentDateTimeUtc())&&metrics.value("genesis")==anchor->genesis&&metrics.value("bestblockhash")==anchor->tipHash&&metrics.value("height").toInteger(-1)==anchor->height;pgn::ui::presentMiningNetworkMetrics(miningResults,same?metrics:QJsonObject{},same?anchor->genesis:QString{});});
   if(!startup.diagnostic.isEmpty()){auto* notice=new QLabel(startup.diagnostic,inspectWallet);notice->setObjectName("pgn-startup-network-notice");notice->setTextFormat(Qt::PlainText);notice->setWordWrap(true);if(auto* box=qobject_cast<QBoxLayout*>(inspectWallet->layout()))box->insertWidget(0,notice);}
   major->addWidget(inspectWallet);ticketProgressRail->bindTicketLookup([&inspectWallet](const QString& request,auto consume){pgn::ui::readWalletTicketDetails(inspectWallet,request,std::move(consume));});
+ auto* social=new pgn::ui::SocialView(pgn::app::mutableDataRoot(root)+"/social/drafts.json");major->addWidget(social);
  const auto attachAuditIdentity=[canvas,toolsButton](const QJsonObject& identityData){
   const auto address=identityData.value("address").toString(),genesis=identityData.value("genesis").toString();
   if(address.isEmpty()||!QRegularExpression("^[0-9a-f]{64}$").match(genesis).hasMatch())return;
@@ -606,7 +608,7 @@ int main(int argc,char** argv) {
  miningBox->insertWidget(0,miningNavigation);
 
  if(networkWork){networkWork->onOpenBlock=[major,walletButton,toolsButton,inspectWallet](const QString& hash){major->setCurrentIndex(1);walletButton->setChecked(true);toolsButton->show();if(auto* pages=inspectWallet->findChild<QTabWidget*>("pgn-wallet-subtabs"))pages->setCurrentIndex(1);pgn::ui::inspectWalletBlock(inspectWallet,hash);};networkWork->onOpenAudits=[major,walletButton,toolsButton,inspectWallet]{major->setCurrentIndex(1);walletButton->setChecked(true);toolsButton->show();if(auto* pages=inspectWallet->findChild<QTabWidget*>("pgn-wallet-subtabs"))pages->setCurrentIndex(4);};}
- auto* primaryGroup=new QButtonGroup(&window);primaryGroup->setExclusive(true);primaryGroup->addButton(pgn,0);primaryGroup->addButton(walletButton,1);
+ auto* primaryGroup=new QButtonGroup(&window);primaryGroup->setExclusive(true);primaryGroup->addButton(pgn,0);primaryGroup->addButton(walletButton,1);primaryGroup->addButton(socialButton,2);
  QObject::connect(primaryGroup,&QButtonGroup::idClicked,major,[major,toolsButton](int id){major->setCurrentIndex(id);toolsButton->show();});
   showOwned=[&window,root,testnetMode,major,tabs,pgn,walletButton,toolsButton,canvas,miningPage,records,community,lens,lensGraph,benchmark,engineConfiguration](const QString& section){
   if(section=="MiningCpuAuditValidation"||section=="MiningCpuAttachValidation")return QJsonObject{{"error","Standalone CPU audit execution is retired; CPU qualification uses the normal-ticket cycle"},{"network_accepted",false}};

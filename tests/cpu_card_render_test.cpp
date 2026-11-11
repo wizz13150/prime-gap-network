@@ -31,8 +31,9 @@ int main(int argc,char** argv){
    auto sample=state;sample.insert("state",phase);
    if(phase!="RUNNING"){sample.insert("resident_workers",0);sample.insert("active_workers",0);sample.insert("threads_active",0);auto idleMetrics=metrics;idleMetrics.insert("worker_busy_percent",0.);sample.insert("cpu_telemetry",idleMetrics);sample.insert("compute_started",false);sample.insert("rate_positions_per_second",0.);}
    pgn::ui::presentCpuController(canvas,inv,sample,available);app.processEvents();QPixmap image(canvas->size());canvas->render(&image);
-   const auto rows=canvas->property("pgn_cpu_card_metrics").toJsonObject().value("CPU/QA/0").toArray();if(rows.size()!=(expanded?8:4))return 3;
-   if(rows[expanded?4:1].toObject().value("label")!="pos/s"||rows[expanded?5:2].toObject().value("label")!="tests/s"||rows.last().toObject().value("label")!="gaps/Gpos")return 10;
+   const auto rows=canvas->property("pgn_cpu_card_metrics").toJsonObject().value("CPU/QA/0").toArray();if(rows.size()!=(expanded?7:3))return 3;
+   if(rows[expanded?4:1].toObject().value("label")!="pos/s"||rows[expanded?5:2].toObject().value("label")!="tests/s")return 10;
+   for(const auto& row:rows)if(row.toObject().value("label")=="gaps/Gpos")return 11;
    for(const auto& value:canvas->property("pgn_card_layout").toJsonArray()){
     auto row=value.toObject();if(row.value("kind")!="CPU")continue;
     if(row.value("header_end").toDouble()>=row.value("gauge_top").toDouble()||row.value("gauge_bottom").toDouble()>=row.value("footer_start").toDouble())return 4;
@@ -49,7 +50,7 @@ int main(int argc,char** argv){
     const auto label=rect(value.toObject().value("rect"));if(!pod.contains(label.center()))continue;++measuredLabels;
     if(label.intersects(budget)||label.intersects(pages)||label.intersects(slider)||!pod.contains(label)){std::cerr<<"Actual CPU gauge glyphs escape or overlap footer";return 8;}
    }
-   if(measuredLabels!=(expanded?8:4)){std::cerr<<"Missing actual CPU gauge label bounds";return 9;}
+   if(measuredLabels!=(expanded?7:3)){std::cerr<<"Missing actual CPU gauge label bounds";return 9;}
    if(argc>1){QDir().mkpath(QString::fromLocal8Bit(argv[1]));if(!image.save(QString::fromLocal8Bit(argv[1])+QString("/cpu-%1-%2-%3-%4.png").arg(expanded?"expanded":"compact",phase,available?"ready":"unavailable").arg(cardWidth)))return 5;}
    ++checked;
    }

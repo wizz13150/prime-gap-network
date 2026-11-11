@@ -19,6 +19,25 @@ inline QJsonArray mergeMiningUpdateChoices(const QJsonArray& pending,const QJson
     }
     return result;
 }
+// Persist the latest requested GPU intent, including a recoverable paused or
+// failed backend. Physical RUNNING is not permission to override a later OFF.
+inline QJsonArray captureMiningUpdateChoices(const QJsonArray& pending,
+                                            const QJsonArray& cpu,
+                                            const QJsonObject& devices){
+    auto result=mergeMiningUpdateChoices(pending,cpu);
+    for(auto device=devices.begin();device!=devices.end();++device){
+        const auto entry=device.value().toObject();
+        const auto wanted=entry.value("wanted");
+        if(!wanted.isBool())continue;
+        for(qsizetype i=result.size();i-->0;){
+            const auto saved=result.at(i).toObject();
+            if(saved.value("kind")=="gpu"&&saved.value("device").toString().compare(device.key(),Qt::CaseInsensitive)==0)
+                result.removeAt(i);
+        }
+        if(wanted.toBool())result.append(QJsonObject{{"kind","gpu"},{"device",device.key()}});
+    }
+    return result;
+}
 // An aborted update may restore only its captured mining choices. Ordinary
 // closes, successful shutdowns and callbacks from an older attempt grant none.
 class MiningUpdateAbortResume final:public QObject {

@@ -45,7 +45,7 @@ class ReassignmentQueueTests(unittest.TestCase):
         self.calls.append((name,deepcopy(args)))
         if name=='getpgnscientificwork':return deepcopy(self.fresh)
         if name=='getbestblockhash':return 'a'*64
-        if name=='getblockhash':return 'e'*64 if args[0]==2 else 'c'*64
+        if name=='getblockhash':return {2:'e'*64,10:'a'*64}.get(args[0],'c'*64)
         if name=='getblockheader':
             return dict(hash=args[0],height=2 if args[0]=='e'*64 else 8,
                         confirmations=9 if args[0]=='e'*64 else self.old_confirmations)
@@ -99,6 +99,19 @@ class ReassignmentQueueTests(unittest.TestCase):
         self.old_confirmations=10
         with self.assertRaisesRegex(ValueError,'Canonical original'):self.queue.stage(self.entry)
         self.assertEqual(self.out.first(),self.entry);self.assertFalse(self.queue.index.exists())
+
+    def test_forked_native_view_cannot_retire_completed_report(self):
+        original=self.worker.rpc.call
+        def forked(name,args=None):
+            if name=='getblockhash'and args==[10]:return 'c'*64
+            return original(name,args)
+        self.worker.rpc.call=forked
+        with self.assertRaisesRegex(RuntimeError,'changed branches'):self.queue.stage(self.entry)
+        self.assertEqual(self.out.first(),self.entry)
+        self.assertEqual(self.cycles.snapshot(self.old['request_id']),self.oldcycle)
+        self.assertEqual(self.report.read_bytes(),self.report_bytes)
+        self.assertFalse(self.queue.index.exists())
+        self.assertFalse(any(name in ('submitblock','signmessage')for name,_ in self.calls))
 
     def test_retained_report_tampering_does_not_retire_a_cycle(self):
         self.report.write_bytes(self.report_bytes.replace(b'"ticket":',b'"bad_ticket":',1))
@@ -231,6 +244,7 @@ class ReassignmentQueueTests(unittest.TestCase):
         original=self.worker.rpc.call
         def current(name,args=None):
             if name=='getbestblockhash':return 'd'*64
+            if name=='getblockhash'and args==[10]:return 'd'*64
             result=original(name,args)
             if name=='getpgnworkview':result['state']['bestblockhash']='d'*64
             return result

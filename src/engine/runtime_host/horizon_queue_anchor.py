@@ -31,7 +31,10 @@ def observe_queue(database, rpc, table):
             raise ValueError('Audit anchor height changed for the same block')
         fork = bool(previous and previous['hash'] != tip and
                     (previous['height'] > height or rpc.call('getblockhash', [previous['height']]) != previous['hash']))
-        if rpc.call('getbestblockhash') != tip:
+        # A descendant tip does not invalidate the snapshot. Require its exact
+        # block to remain canonical at the recorded height; an actual reorg
+        # still refuses this read before any queue acknowledgement is changed.
+        if rpc.call('getblockhash', [height]) != tip:
             return None
         anchor = dict(hash=tip, height=height, genesis=genesis)
         if previous and previous['hash'] == tip:

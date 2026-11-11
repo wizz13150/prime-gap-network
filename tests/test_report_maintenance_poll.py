@@ -70,12 +70,12 @@ class MaintenancePollTests(unittest.TestCase):
         for second in range(12):clock.value=float(second);poller.poll()
         self.assertEqual(owner.owner_calls,[0.0,5.0,10.0])
 
-    def test_expensive_owner_steps_have_bounded_callback_duty(self):
+    def test_expensive_owner_steps_have_bounded_additional_retry_delay(self):
         clock=Clock();owner=Lane(clock);owner.owner_cost=2.0
         poller=ReportPoller(owner,clock=clock);poller.poll()
-        self.assertEqual(poller.owner_next,8.0)
-        clock.value=7.99;poller.poll();self.assertEqual(len(owner.owner_calls),1)
-        clock.value=8.0;poller.poll();self.assertEqual(owner.owner_calls,[0.0,8.0])
+        self.assertEqual(poller.owner_next,7.0)
+        clock.value=6.99;poller.poll();self.assertEqual(len(owner.owner_calls),1)
+        clock.value=7.0;poller.poll();self.assertEqual(owner.owner_calls,[0.0,7.0])
 
     def test_owner_failure_never_starves_audit_lanes_and_notice_stays_stable(self):
         clock=Clock();owner=Lane(clock);owner.fail_owner=True;lane=Lane(clock)
@@ -98,8 +98,9 @@ class MaintenancePollTests(unittest.TestCase):
         for value in (-1,math.nan,math.inf,True):
             with self.assertRaises(ValueError):owner_poll_delay(value,True)
         self.assertEqual(owner_poll_delay(.1,True),1.0)
-        self.assertEqual(owner_poll_delay(2.0,True),6.0)
-        self.assertEqual(owner_poll_delay(2.0,False),6.0)
+        self.assertEqual(owner_poll_delay(2.0,True),5.0)
+        self.assertEqual(owner_poll_delay(2.0,False),5.0)
+        self.assertEqual(owner_poll_delay(180.0,True),5.0)
 
     def test_legacy_owner_adapter_keeps_default_cadence(self):
         clock=Clock();calls=[]
