@@ -186,6 +186,52 @@ class OwnerReports:
         with self.database() as db:
             return db.execute('SELECT 1 FROM reports LIMIT 1').fetchone() is not None
 
+    def retain_publication_turn(self, rows):
+        """Persist only deferred identities; never a verdict or a private body."""
+        if not isinstance(rows, list) or len(rows) > 64:
+            raise ValueError('Owner publication turn exceeds budget')
+        seen = set()
+        with self.database() as db:
+            for request, item in rows:
+                self.validate(request, item)
+                if request in seen:
+                    raise ValueError('Duplicate deferred owner report')
+                seen.add(request)
+                row = db.execute('SELECT ticket,root,waiting FROM reports WHERE name=?', (request,)).fetchone()
+                if row != (item['ticket'], item['report_root'], 1):
+                    raise ValueError('Deferred owner differs from retained waiting report')
+            if rows:
+                db.execute("INSERT OR REPLACE INTO meta VALUES('publication_turn',?)",
+                           (json.dumps(rows, separators=(',', ':')),))
+            else:
+                db.execute("DELETE FROM meta WHERE key='publication_turn'")
+
+    def deferred_publication_turn(self):
+        with self.database() as db:
+            stored = db.execute("SELECT value FROM meta WHERE key='publication_turn'").fetchone()
+            if not stored:
+                return []
+            if len(stored[0]) > 16384:
+                raise ValueError('Deferred owner publication turn exceeds budget')
+            rows = json.loads(stored[0])
+            if not isinstance(rows, list) or len(rows) > 64:
+                raise ValueError('Invalid deferred owner publication turn')
+            result, seen = [], set()
+            for entry in rows:
+                if not isinstance(entry, list) or len(entry) != 2:
+                    raise ValueError('Invalid deferred owner identity')
+                request, item = entry
+                self.validate(request, item)
+                if request in seen:
+                    raise ValueError('Duplicate deferred owner report')
+                seen.add(request)
+                row = db.execute('SELECT ticket,root,waiting FROM reports WHERE name=?', (request,)).fetchone()
+                if row is None or row[:2] != (item['ticket'], item['report_root']):
+                    raise ValueError('Deferred owner differs from immutable report')
+                if row[2]:
+                    result.append((request, item))
+            return result
+
     def next_page(self, limit=64):
         if type(limit) is not int or not 1 <= limit <= 64:
             raise ValueError('Owner report scheduling page exceeds budget')

@@ -29,7 +29,11 @@ def active_candidate(rpc,intent):
  if type(height)is not int or height<0 or type(confirmations)is not int:raise ValueError('Coordination confirmation metadata is invalid')
  return confirmations>0 and rpc.call('getblockhash',[height])==intent['hash']
 
-class CoordinationParentChanged(RuntimeError):
+class PublicationPending(RuntimeError):
+ """Retained operation needs another observation, never another computation."""
+ pass
+
+class CoordinationParentChanged(PublicationPending):
  pass
 
 def confirm_candidate(rpc,intent,*,seconds=30,clock=time.monotonic,sleep=time.sleep,rebase=False):
@@ -47,12 +51,12 @@ def confirm_candidate(rpc,intent,*,seconds=30,clock=time.monotonic,sleep=time.sl
   try:outcome=rpc.call('submitblock',[intent['block']])
   except (OSError,RuntimeError)as error:
    if active_candidate(rpc,intent):return
-   raise RuntimeError('Coordination submission outcome unresolved; exact candidate retained')from error
+   raise PublicationPending('Coordination submission outcome unresolved; exact candidate retained')from error
   if active_candidate(rpc,intent):return
   if rebase and rpc.call('getbestblockhash')!=intent['parent']:
    raise CoordinationParentChanged('Active parent changed after submission; exact candidate retained')
   if outcome not in (None,'time-too-new','duplicate','duplicate-inconclusive','inconclusive'):
    raise RuntimeError('Coordination record rejected; exact candidate retained: '+str(outcome)[:200])
   last=str(outcome)
-  if clock()>=deadline:raise RuntimeError('Coordination record is not on the active chain; candidate retained: '+last)
+  if clock()>=deadline:raise PublicationPending('Coordination record is not on the active chain; candidate retained: '+last)
   sleep(.25)

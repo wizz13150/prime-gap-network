@@ -353,7 +353,7 @@ class NetworkWorker:
                         save(journal, previous)
                         if on_intent is not None and same_operation:
                             on_intent(previous)
-                        confirm_candidate(self.rpc, previous, rebase=True)
+                        confirm_candidate(self.rpc, previous, rebase=True, seconds=0)
                     previous['confirmed'] = True
                     save(journal, previous)
                     if same_operation:
@@ -375,7 +375,7 @@ class NetworkWorker:
         save(self.root / "coordination-intent.json", intent)
         if on_intent is not None:
             on_intent(intent)
-        confirm_candidate(self.rpc,intent,rebase=True)
+        confirm_candidate(self.rpc,intent,rebase=True,seconds=0)
         intent["confirmed"] = True
         save(self.root / "coordination-intent.json", intent)
         return dict(block_hash=intent["hash"], operation_sha256=operation)

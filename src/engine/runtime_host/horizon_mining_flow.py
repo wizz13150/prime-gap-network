@@ -705,8 +705,14 @@ class MiningFlow:
                 if self.worker.quitting.is_set():
                     break
                 self.worker.network_notice = str(error)[:400]
-                audit.last_error = str(error)[:300]
-                self.worker.quitting.wait(2)
+                from horizon_coordination import PublicationPending
+                if isinstance(error, PublicationPending):
+                    audit.last_error = None
+                    self.worker.network_notice = 'Computed audit saved; retrying its network publication'
+                    self.worker.quitting.wait(.5)
+                else:
+                    audit.last_error = str(error)[:300]
+                    self.worker.quitting.wait(2)
 
     def recover_prepared_assignment(self, error):
         if str(error)!='Saved ticket no longer matches its live computation lease':raise error

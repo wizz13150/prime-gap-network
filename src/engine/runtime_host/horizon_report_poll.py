@@ -6,10 +6,10 @@ import time
 def owner_poll_delay(elapsed, more):
     if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or elapsed < 0:
         raise ValueError('Invalid owner maintenance duration')
-    # A cheap unfinished sweep advances once a second. Expensive steps rest
-    # for three times their own duration (at most25% callback duty). The audit
-    # answer cadence remains separate and is never increased by this choice.
-    return max(1.0 if more else 5.0, elapsed*3.0)
+    # The callback has its own bounded publication turn. A slow RPC must not
+    # create an additional unbounded idle interval after it finally returns.
+    # Keep the audit-answer cadence independent.
+    return min(5.0, max(1.0 if more else 5.0, elapsed*3.0))
 
 
 class ReportPoller:

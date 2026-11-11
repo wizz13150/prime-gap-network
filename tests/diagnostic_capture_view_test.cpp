@@ -77,6 +77,13 @@ int main(int argc,char** argv){
  }
  const auto maintenance=pgn::ui::diagnosticPublicationMaintenance(QJsonObject{{"owner",QJsonObject{{"active",true},{"elapsed_seconds",2.5},{"next_in_seconds",1.0},{"error","password=INERT-MAINTENANCE"},{"cookie","INERT-MAINTENANCE"}}},{"auditors",QJsonObject{{"active",false},{"elapsed_seconds",-1},{"error",QJsonValue{}}}}});
  if(QJsonDocument(maintenance).toJson().contains("INERT-")||maintenance["auditors"].toObject().contains("elapsed_seconds")||maintenance["owner"].toObject()["elapsed_seconds"]!=2.5)return 29;
+ const QJsonObject wireOwner{{"active",false},{"elapsed_seconds",30.0},{"next_in_seconds",90.0},{"error","cookie=INERT-WIRE-SECRET"},{"private_key","INERT-WIRE-KEY"}};
+ const QJsonObject wireMaintenance{{"owner",wireOwner}};
+ const QJsonObject wireService{{"publication_maintenance",wireMaintenance}};
+ canvas.setProperty("pgn_network_ticket_frame",QJsonObject{{"audit_service",wireService},{"private_key","INERT-FRAME-KEY"}});
+ const auto runtimeCapture=pgn::ui::diagnosticMiningStartup(&canvas);
+ const auto ownerMaintenance=runtimeCapture["publication_maintenance"].toObject()["owner"].toObject();
+ if(ownerMaintenance["elapsed_seconds"]!=30.0||ownerMaintenance["next_in_seconds"]!=90.0||QJsonDocument(runtimeCapture).toJson().contains("INERT-"))return 32;
  const QJsonObject inventory{{"schema","PGN_LOCAL_COMPONENT_VIEW_V1"},{"components",QJsonArray{
   QJsonObject{{"id","ui"},{"state","matched_local_manifest"},{"version","2026.11.7.45"},{"primary_bound",true},{"code_root","C:/Users/example/private-location"},{"private_key","INERT-DO-NOT-COPY"}},
   QJsonObject{{"id","cpu"},{"state","unidentified"},{"version","99.0"},{"reason","password=INERT-DO-NOT-COPY"}}}}};

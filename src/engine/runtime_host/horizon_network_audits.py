@@ -4,10 +4,11 @@ import hashlib
 import json
 import math
 import secrets
+import time
 from pgn_native_contract import fields
 from pgn_session import atomic_bytes
 from report_commitment import audit_commitment, canonical_bytes
-from horizon_coordination import confirm_candidate, validate_intent
+from horizon_coordination import confirm_candidate, validate_intent, CoordinationParentChanged
 from horizon_audit_answers import AuditAnswers
 from horizon_owner_reports import OwnerReports
 from horizon_audit_progress import presentation as audit_presentation
@@ -57,15 +58,27 @@ class NetworkAudits:
         return self.worker.rpc.call("getpgnauditevent", args + [signature])
 
     def apply(self, action, request=None, slot=None, attempt=None, body=None, *, on_intent=None):
-        with self.worker.network_lock:
-            proposal = self.event(action, request, slot, attempt, body)
-            if proposal.get("available"):
-                envelopes = [proposal["envelope"]]
-                receipt = (self.worker.ledger(envelopes, on_intent=on_intent)
-                           if on_intent is not None else self.worker.ledger(envelopes))
-                if receipt is not None:
-                    proposal = dict(proposal, confirmed_block=receipt["block_hash"])
-            return proposal
+        # Identity/body is immutable; physical candidates are parent-bound.
+        # Release the lane between attempts so another miner's new block is
+        # normal concurrency, not a reason to strand a completed GPU result.
+        for attempt_index in range(2):
+            try:
+                with self.worker.network_lock:
+                    proposal = self.event(action, request, slot, attempt, body)
+                    if proposal.get("available"):
+                        envelopes = [proposal["envelope"]]
+                        receipt = (self.worker.ledger(envelopes, on_intent=on_intent)
+                                   if on_intent is not None else self.worker.ledger(envelopes))
+                        if receipt is not None:
+                            proposal = dict(proposal, confirmed_block=receipt["block_hash"])
+                    return proposal
+            except CoordinationParentChanged:
+                if attempt_index:
+                    raise  # Durable intent/answer remains available next turn.
+                stopping = getattr(self.worker, 'quitting', None)
+                running = getattr(self.worker, 'running', None)
+                if stopping is not None and stopping.is_set() or running is not None and not running.is_set():
+                    raise
 
     def state(self, request):
         values = self.worker.rpc.call("getpgnauditstate", [0, 1, request])
@@ -283,7 +296,12 @@ class NetworkAudits:
         if anchor is None:
             self.owner_poll_more = True
             return
-        page, self.owner_poll_more = self.owner_reports.next_on_anchor(anchor)
+        page = self.owner_reports.deferred_publication_turn()
+        if page:
+            self.owner_poll_more = True
+        else:
+            self.owner_reports.retain_publication_turn([])
+            page, self.owner_poll_more = self.owner_reports.next_on_anchor(anchor)
         pending = dict(page)
         if not pending:
             return
@@ -324,7 +342,17 @@ class NetworkAudits:
                     first_error = error
         # Preserve the durable round-robin page: high-merit reports get the
         # first publication within it, without starving later bounded pages.
-        for _, request, item, sealed, state in sorted(ready, key=lambda row: -row[0]):
+        began, attempts = time.monotonic(), 0
+        ready.sort(key=lambda row: -row[0])
+        for position, (_, request, item, sealed, state) in enumerate(ready):
+            if attempts >= 4 or attempts and time.monotonic()-began >= 5.0:
+                # Scheduling never acknowledges a report. Unvisited rows stay
+                # waiting in the durable fair catalogue, including on restart.
+                self.owner_reports.invalidate_sweep()
+                self.owner_reports.retain_publication_turn([(r, i) for _, r, i, _, _ in ready[position:]])
+                self.owner_poll_more = True
+                break
+            attempts += 1
             stopping = getattr(self.worker, 'quitting', None)
             if stopping is not None and stopping.is_set():
                 self.owner_reports.invalidate_sweep()
@@ -356,6 +384,8 @@ class NetworkAudits:
             except Exception as error:
                 if first_error is None:
                     first_error = error
+        else:
+            self.owner_reports.retain_publication_turn([])
         if first_error is not None:
             raise first_error
 
@@ -385,7 +415,7 @@ class NetworkAudits:
                         raise RuntimeError("Audit assignment changed; private computation retained for reconciliation")
                     # The per-audit intent survives another lane overwriting the
                     # global publication journal before a crash or GUI restart.
-                    confirm_candidate(self.worker.rpc, audit["publication_intent"])
+                    confirm_candidate(self.worker.rpc, audit["publication_intent"], seconds=0, rebase=True)
                     self.on_committed(audit, audit["publication_intent"]["hash"])
                 journal.unlink()
                 audit = None
@@ -463,42 +493,41 @@ class NetworkAudits:
                 acknowledge(identity)
         if self.before_commit is not None and not self.before_commit(audit):
             return "paused"
-        with self.worker.network_lock:
-            answer = audit.get("answer")
-            if answer is None:
-                answer = audit_commitment(audit["ticket"], audit["attempt"], [r["index"] for r in audit["ranges"]], [str(n) for n in audit["counts"]], secrets.token_hex(32))
-                audit["answer"] = answer
-                save(journal, audit)
-            name = audit["request_id"] + "-" + str(audit["slot"]) + "-" + str(audit["attempt"])
+        answer = audit.get("answer")
+        if answer is None:
+            answer = audit_commitment(audit["ticket"], audit["attempt"], [r["index"] for r in audit["ranges"]], [str(n) for n in audit["counts"]], secrets.token_hex(32))
+            audit["answer"] = answer
+            save(journal, audit)
+        name = audit["request_id"] + "-" + str(audit["slot"]) + "-" + str(audit["attempt"])
+        save(self.folder / (name + ".json"), audit)
+        # Persist independent recovery before publication, even if the
+        # active window is full of older withheld-owner responses.
+        self.answers.register([name])
+        index = self.folder / "pending.json"
+        if index.is_file()and index.stat().st_size>1024*1024:
+            raise ValueError("Pending audit index exceeds budget")
+        pending = json.loads(index.read_bytes()) if index.is_file() else []
+        if not isinstance(pending,list)or len(pending)>4096:
+            raise ValueError("Pending audit index exceeds its item budget")
+        if name not in pending and len(pending)<64:
+            pending.append(name)
+        save(index, pending)
+        def retain_publication(intent):
+            validate_intent(intent)
+            audit["publication_intent"] = dict(intent)
+            if len(canonical_bytes(audit)) > 262144:
+                raise BufferError("Audit publication journal exceeds its budget")
+            save(journal, audit)
             save(self.folder / (name + ".json"), audit)
-            # Persist independent recovery before publication, even if the
-            # active window is full of older withheld-owner responses.
-            self.answers.register([name])
-            index = self.folder / "pending.json"
-            if index.is_file()and index.stat().st_size>1024*1024:
-                raise ValueError("Pending audit index exceeds budget")
-            pending = json.loads(index.read_bytes()) if index.is_file() else []
-            if not isinstance(pending,list)or len(pending)>4096:
-                raise ValueError("Pending audit index exceeds its item budget")
-            if name not in pending and len(pending)<64:
-                pending.append(name)
-            save(index, pending)
-            def retain_publication(intent):
-                validate_intent(intent)
-                audit["publication_intent"] = dict(intent)
-                if len(canonical_bytes(audit)) > 262144:
-                    raise BufferError("Audit publication journal exceeds its budget")
-                save(journal, audit)
-                save(self.folder / (name + ".json"), audit)
-            receipt = self.apply("commit", audit["request_id"], audit["slot"], audit["attempt"], answer["commitment"],
-                                 on_intent=retain_publication if self.on_committed is not None else None)
-            if not receipt.get("available"):
-                raise RuntimeError("Audit commitment unavailable; private answer retained")
-            if self.on_committed is not None:
-                if not receipt.get("confirmed_block"):
-                    raise RuntimeError("Audit confirmation receipt unavailable; private answer retained")
-                self.on_committed(audit, receipt["confirmed_block"])
-            journal.unlink()
-            self.presentation = None
-            self.current_audit = None
-            return "committed"
+        receipt = self.apply("commit", audit["request_id"], audit["slot"], audit["attempt"], answer["commitment"],
+                             on_intent=retain_publication if self.on_committed is not None else None)
+        if not receipt.get("available"):
+            raise RuntimeError("Audit commitment unavailable; private answer retained")
+        if self.on_committed is not None:
+            if not receipt.get("confirmed_block"):
+                raise RuntimeError("Audit confirmation receipt unavailable; private answer retained")
+            self.on_committed(audit, receipt["confirmed_block"])
+        journal.unlink()
+        self.presentation = None
+        self.current_audit = None
+        return "committed"
