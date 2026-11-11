@@ -21,8 +21,53 @@ static QJsonObject frame(QJsonArray rows={}){return {{"schema","PGN_HORIZON_MINI
     {"title","Ticket 857"},{"bits",68},{"target_merit",28.5},{"record_pairs",rows},{"phase","Searching"},
     {"work_role","search"},{"start","150000000000000000000"},{"end","150000200000000000000"},
     {"positions_total","200000000000000"},{"positions","100000000000000"},{"speed_rate",1e12},{"eta_rate",1e12}};}
+static void storageWaitPresentation(){
+ for(int kind:{0,1,2}){
+  QWidget canvas,results;canvas.setProperty("pgn_network_desired_on",true);
+  QTableWidget table(&results);table.setObjectName("pgn-results-best");table.setColumnCount(1);table.setRowCount(1);
+  table.setItem(0,0,new QTableWidgetItem("retained result"));
+  MiningTicketProgress rail;rail.bindSourceCanvas(&canvas);rail.bindResultsView(&results);rail.resize(1366,120);
+  QJsonObject meta{{"schema","PGN_MINING_CYCLE_VIEW_V1"},{"request_id",QString(64,'f')},
+   {"ticket_number","857"},{"search_positions","1800"},{"active_index",0},
+   {"audits",QJsonArray{QJsonObject{{"state","assigned"},{"positions","100"}},QJsonObject{{"state","assigned"},{"positions","100"}}}}};
+  auto packet=frame();packet.insert("work_role","audit");packet.insert("positions_total","100");packet.insert("positions","100");packet.insert("eta_rate",10.);
+  const auto present=[&]{packet.insert("audit_service",QJsonObject{{"cycle",meta}});rail.present(packet);};
+  if(kind!=1){
+   packet.insert("ticket_id",QString(64,'1'));present();
+   meta.insert("active_index",1);packet.insert("ticket_id",QString(64,'2'));present();
+   meta.insert("active_index",2);
+   if(kind==2){
+    packet.insert("ticket_id",QString(64,'4'));packet.insert("work_role","search");
+    packet.insert("positions_total","1800");packet.insert("positions","900");present();
+   }
+  }
+  packet.insert("ticket_id",QString(64,kind==1?'1':kind==2?'3':'4'));
+  packet.insert("work_role",kind==0?"search":"audit");
+  packet.insert("positions_total",kind==0?"1800":"100");packet.insert("positions",kind==0?"900":"50");
+  if(kind==2)meta.insert("catch_up",true);
+  present();
+  const auto paint=[&]{QImage image(rail.size(),QImage::Format_ARGB32);image.fill(Qt::transparent);rail.render(&image);return image;};
+  const auto before=paint();
+  const auto fraction=rail.property("pgn_ticket_progress_fraction").toDouble();
+  const auto cycleFraction=rail.property("pgn_ticket_cycle_fraction").toDouble();
+  const auto presentation=rail.property("pgn_ticket_work_presentation").toJsonObject();
+  require(rail.property("pgn_ticket_cycle_eta_seconds").isValid(),"Storage fixture must begin with a measured cycle ETA");
+  auto waiting=packet;waiting.insert("phase","Waiting for storage");waiting.insert("message","Data storage is busy. Work is saved; retrying automatically.");
+  rail.present(waiting);const auto after=paint();
+  const auto waitingPresentation=rail.property("pgn_ticket_work_presentation").toJsonObject();
+  require(waitingPresentation.value("phase")=="Waiting for storage"&&waitingPresentation.value("status").toString().startsWith("Waiting for storage"),"Known cycle hid the explicit storage-wait phase");
+  require(!rail.property("pgn_ticket_eta_seconds").isValid()&&!rail.property("pgn_ticket_cycle_eta_seconds").isValid()&&waitingPresentation.value("remaining").toString().isEmpty(),"Storage wait retained a stale ETA or fabricated a zero duration");
+  require(rail.property("pgn_ticket_progress_fraction").toDouble()==fraction&&rail.property("pgn_ticket_cycle_fraction").toDouble()==cycleFraction,"Storage wait changed measured progress");
+  require(waitingPresentation.value("quantity")==presentation.value("quantity")&&waitingPresentation.value("title")==presentation.value("title"),"Storage wait changed work identity/quantity");
+  require(before.copy(QRect(14,83,rail.width()-28,3))==after.copy(QRect(14,83,rail.width()-28,3)),"Storage wait changed the painted audit/search segments");
+  require(table.rowCount()==1&&table.item(0,0)->text()=="retained result"&&canvas.property("pgn_network_desired_on").toBool(),"Storage notice cleared results or requested OFF");
+  rail.present(packet);paint();
+  require(rail.property("pgn_ticket_cycle_eta_seconds").isValid()&&rail.property("pgn_ticket_work_presentation").toJsonObject().value("phase")!="Waiting for storage","Fresh work did not restore the measured ETA/status");
+ }
+ std::cout<<"PASS storage-wait actual renderer: search/regular audit/catch-up, retained fraction/segments/results/ON, hidden stale ETA and fresh resumption; no image files or GPU/Core\n";
+}
 int main(int argc,char** argv){
- QApplication app(argc,argv);GapFlowModel model;auto old=row(1,29.);auto gold=row(2,30.);
+ QApplication app(argc,argv);try{storageWaitPresentation();}catch(const std::exception& error){std::cerr<<"FAIL storage wait: "<<error.what()<<"\n";return 77;}GapFlowModel model;auto old=row(1,29.);auto gold=row(2,30.);
  QJsonObject cycleMeta{{"schema","PGN_MINING_CYCLE_VIEW_V1"},{"request_id",QString(64,'f')},{"ticket_number","857"},{"search_positions","1800"},{"active_index",0},{"audits",QJsonArray{QJsonObject{{"state","assigned"},{"positions","100"}},QJsonObject{{"state","assigned"},{"positions","100"}}}}};
  auto cycleFrame=frame();cycleFrame.insert("work_role","audit");cycleFrame.insert("positions_total","100");cycleFrame.insert("positions","50");cycleFrame.insert("eta_rate",10);cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});auto firstCycle=miningCycleProgress(cycleFrame);
  require(firstCycle.known&&std::abs(firstCycle.fraction-.025)<1e-12&&firstCycle.taskEta==5&&firstCycle.cycleEta==195,"First audit uses first5percent and complete measured ETA");

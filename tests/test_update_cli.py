@@ -52,6 +52,11 @@ class CliTests(unittest.TestCase):
     def close(self):calls.append('handles_closed')
    result=cli.run(self.request,repositories=self.repositories,fetcher=self.fixture.transport,lifecycle_factory=Lifecycle)
    self.assertTrue(result['publisher_authenticated']);self.assertTrue(result['installation_committed']);self.assertEqual(result['selected'],['cpu']);self.assertEqual(calls,['constructed','drained','health_verified','handles_closed'])
+   cache=Path(self.request['cache'])
+   self.assertFalse(list(cache.glob('s-*')),'Installed code retained disposable extractions')
+   self.assertFalse(list(cache.glob('*/targets/*')),'Installed code retained downloaded archives')
+   self.assertTrue(list(cache.glob('*/metadata/root.json')),'Cleanup removed trusted TUF state')
+   self.assertEqual(result['warning'],'')
   finally:base.tearDown()
   self.request['selected']=['cpu'];self.request['cache']='relative'
   with self.assertRaises(ValueError):self.call()

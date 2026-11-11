@@ -168,7 +168,12 @@ class CohortStore:
         # Never accept a caller-created boolean "authenticated" receipt.
         stage.require(client.context==self.context and client.context_sha256==self.context_sha256,'Authentication client context differs')
         with locked_cache(self.root):self.require_resolved_transaction()
-        receipt=client.prepare(selected)
+        # Hold the download-cache lock through every stage read/copy. A second
+        # helper must not reclaim our authenticated source after prepare returns.
+        with client.prepared(selected,discard_after=True) as receipt:
+            return self._prepare_authenticated_receipt(receipt)
+
+    def _prepare_authenticated_receipt(self,receipt):
         stage.require(receipt['publisher_authenticated']and receipt['context_sha256']==self.context_sha256,'Authenticated preparation required')
         source=Path(receipt['stage']);plan=stage.verify_stage(source,receipt['manifest_sha256'],self.context,self.context_sha256)
         manifest=stage._json(stage._read_plain(source/'component-bundle.json',stage.MAX_MANIFEST))
