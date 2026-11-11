@@ -312,7 +312,7 @@ void MiningTicketProgress::present(const QJsonObject& frame){
 }
 void MiningTicketProgress::paintEvent(QPaintEvent*){
  QPainter painter(this);painter.setRenderHint(QPainter::Antialiasing);
- const auto phase=frame_.value("phase").toString("Waiting for a ticket");const bool active=phase=="Searching",transition=phase=="Starting"||phase=="Stopping";
+ const auto phase=frame_.value("phase").toString("Waiting for a ticket");const bool active=phase=="Searching",transition=phase=="Starting"||phase=="Stopping",storageWait=phase=="Waiting for storage";
  const auto role=frame_.value("work_role").toString();
  const bool audit=role=="audit"||(role.isEmpty()&&frame_.value("audit_service").toObject().value("active_role")=="audit");
  QString displayPhase=phase;
@@ -325,7 +325,7 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  const auto accent=transition?QColor("#ffbd69"):QColor("#69efc5");
  const double total=frame_.value("positions_total").toString().toDouble(),done=frame_.value("positions").toString().toDouble();
  const auto cycle=miningCycleProgress(frame_,cycleHistory_.audits(),cycleHistory_.search());const auto fraction=cycle.known?std::optional<double>(cycle.fraction):total>0?std::optional<double>(std::clamp(done/total,0.,1.)):std::nullopt;
- if(cycle.known)displayPhase=cycle.phase;
+ if(cycle.known&&!storageWait)displayPhase=cycle.phase;
  const auto field=bar();const double seconds=flow_.moving()?clock_.elapsed()/1000.:0.;
  double pressure=0.;
  for(const auto& event:flow_.events()){
@@ -365,7 +365,7 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  const QString positions=frame_.contains("positions_total")?(audit?QString("Complete audit · "):QString{})+positionFormats(frame_.value("positions_total").toString()).inlineText()+" positions":QString{};
  QString remaining;
  if(eta&&std::isfinite(*eta)&&*eta<365.*86400){const auto value=qint64(std::ceil(*eta));remaining=QString("ETA ≈ %1:%2:%3").arg(value/3600,2,10,QChar('0')).arg(value/60%60,2,10,QChar('0')).arg(value%60,2,10,QChar('0'));}
- if(cycle.known){const auto format=[](std::optional<double> seconds){if(!seconds||!std::isfinite(*seconds)||*seconds>=365.*86400)return QString("—");const auto n=qint64(std::ceil(*seconds));return QString("≈ %1:%2:%3").arg(n/3600,2,10,QChar('0')).arg(n/60%60,2,10,QChar('0')).arg(n%60,2,10,QChar('0'));};remaining="Cycle ETA "+format(cycle.cycleEta)+" · "+(audit?QString("audit "):QString("search "))+format(cycle.taskEta);}
+ if(cycle.known&&!storageWait){const auto format=[](std::optional<double> seconds){if(!seconds||!std::isfinite(*seconds)||*seconds>=365.*86400)return QString("—");const auto n=qint64(std::ceil(*seconds));return QString("≈ %1:%2:%3").arg(n/3600,2,10,QChar('0')).arg(n/60%60,2,10,QChar('0')).arg(n%60,2,10,QChar('0'));};remaining="Cycle ETA "+format(cycle.cycleEta)+" · "+(audit?QString("audit "):QString("search "))+format(cycle.taskEta);}
  // One measured row keeps the tables close to the live track. Reserve the
  // changing state/ETA first, then elide metadata instead of resizing fonts.
  constexpr double rowY=94.,rowHeight=22.,gap=16.;
@@ -381,7 +381,7 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  if(detailWidth>0)painter.drawText(QRectF(detailLeft,rowY,detailWidth,rowHeight),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(positions,Qt::ElideRight,detailWidth));
  painter.setFont(metricFont);painter.setPen(accent);painter.drawText(QRectF(width()-18-activityWidth,rowY,activityWidth,rowHeight),Qt::AlignRight|Qt::AlignVCenter,metricMetrics.elidedText(activity,Qt::ElideRight,activityWidth));
  setProperty("pgn_ticket_header_rows",1);setProperty("pgn_ticket_header_height",120);
- setProperty("pgn_ticket_eta_seconds",eta?QVariant(*eta):QVariant{});setProperty("pgn_ticket_progress_fraction",fraction?QVariant(*fraction):QVariant{});
+ setProperty("pgn_ticket_eta_seconds",eta?QVariant(*eta):QVariant{});setProperty("pgn_ticket_progress_fraction",fraction?QVariant(*fraction):QVariant{});if(storageWait)setProperty("pgn_ticket_cycle_eta_seconds",QVariant{});
  setProperty("pgn_ticket_work_presentation",QJsonObject{{"role",audit?"audit":role},{"phase",displayPhase},{"title",title},{"status",status},{"quantity",positions},{"remaining",remaining}});
  setProperty("pgn_ticket_animation_active",flow_.moving());setProperty("pgn_ticket_animation_phase",flow_.moving()?QVariant(std::fmod(clock_.elapsed()/1000.,1.)):QVariant{});
  if(overlay_)overlay_->synchronize();

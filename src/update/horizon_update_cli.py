@@ -17,7 +17,7 @@ from horizon_update_client import AuthenticatedUpdates
 from horizon_component_install import CohortStore, _write
 import horizon_update_progress as progress
 
-VERSION='2026.11.10.21'
+VERSION='2026.11.11.22'
 
 
 def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,recovery_factory=None):
@@ -99,11 +99,12 @@ def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,
             return dict(schema='PGN_UPDATE_INSTALL_RESULT_V1',publisher_authenticated=True,
                 installation_performed=committed,installation_committed=committed,
                 selected=candidate['selected'],current=store.current(),process_control_performed=True,
-                warning=store.commit_warning)
+                warning=' '.join(filter(None,[store.commit_warning,client.cache_cleanup_warning])))
         finally:
             if lifecycle is not None:lifecycle.close()
     return dict(schema='PGN_UPDATE_INSTALL_PREPARATION_V1',publisher_authenticated=True,
-        candidate=candidate,installation_performed=False,process_control_performed=False)
+        candidate=candidate,installation_performed=False,process_control_performed=False,
+        warning=client.cache_cleanup_warning)
 
 
 def main():

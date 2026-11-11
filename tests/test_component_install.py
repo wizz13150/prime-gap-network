@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 """Cohort transactions only. Inert PE fixtures; no application is executed.
 
 TUF authentication has separate reference-library signature tests. Here the
@@ -34,7 +35,7 @@ class InstallTests(unittest.TestCase):
   self.cache=stage.init_cache(self.root/'staging',self.context)
   folder,plan=stage.stage_bundle(archive,stage.sha(archive.read_bytes()),self.context,self.context_sha,self.cache,['cpu'])
   self.receipt=dict(publisher_authenticated=True,context_sha256=self.context_sha,stage=str(folder),manifest_sha256=plan['manifest_sha256'],selection=['cpu'])
-  self.client=type('PreparedClient',(),dict(context=self.context,context_sha256=self.context_sha,prepare=lambda ignored,selected:deepcopy(self.receipt)))()
+  self.client=type('PreparedClient',(),dict(context=self.context,context_sha256=self.context_sha,prepared=lambda ignored,selected,**kwargs:nullcontext(deepcopy(self.receipt))))()
   self.original=install.inventory(self.base)[2]
  def tearDown(self):
   self.assertEqual(self.sentinel.read_bytes(),b'NEVER TOUCHED');self.assertEqual(install.inventory(self.base)[2],self.original);self.temp.cleanup()
@@ -42,6 +43,20 @@ class InstallTests(unittest.TestCase):
   candidate=self.store.prepare(self.client,['cpu']);new=Path(candidate['cohort']);value,files,_,_=install.inventory(new)
   self.assertFalse((new/'EngineRuntime/cpu/obsolete.dll').exists());self.assertEqual((new/PRIMARY['ui']).read_bytes(),pe());self.assertEqual({c['id']:c['version']for c in value['components']},{'ui':'1.0.0','core':'1.0.0','gpu':'1.0.0','cpu':'2.0.0'});self.assertEqual(self.store.current()['cohort'],str(self.base))
   self.assertEqual(self.store.prepare(self.client,['cpu']),candidate)
+ def test_authenticated_stage_lease_spans_every_source_copy(self):
+  from contextlib import contextmanager
+  held=[];copied=[];copy=install.shutil.copyfile
+  @contextmanager
+  def prepared(selected,**kwargs):
+   held.append(True)
+   try:yield deepcopy(self.receipt)
+   finally:held.pop()
+  def copying(source,target):
+   self.assertTrue(held,'The cache lease ended before source consumption')
+   copied.append(str(source));return copy(source,target)
+  with patch.object(self.client,'prepared',side_effect=prepared),patch.object(install.shutil,'copyfile',side_effect=copying):
+   self.store.prepare(self.client,['cpu'])
+  self.assertTrue(copied);self.assertFalse(held)
  def test_subsequent_install_can_protect_its_selected_code_inside_the_owned_store(self):
   candidate=self.store.prepare(self.client,['cpu'])
   self.assertTrue(self.store.activate(candidate,lambda:True,lambda path:True,lambda *args:None))
@@ -63,7 +78,7 @@ class InstallTests(unittest.TestCase):
   cache=stage.init_cache(self.root/'second-staging',context);archive=self.root/'update.zip'
   folder,plan=stage.stage_bundle(archive,stage.sha(archive.read_bytes()),context,context_sha,cache,['cpu'])
   receipt=dict(publisher_authenticated=True,context_sha256=context_sha,stage=str(folder),manifest_sha256=plan['manifest_sha256'],selection=['cpu'])
-  client=type('SecondPreparedClient',(),dict(context=context,context_sha256=context_sha,prepare=lambda ignored,selected:deepcopy(receipt)))()
+  client=type('SecondPreparedClient',(),dict(context=context,context_sha256=context_sha,prepared=lambda ignored,selected,**kwargs:nullcontext(deepcopy(receipt))))()
   return Path(first['cohort']),install.CohortStore(self.store.root,context,context_sha),client
  def test_only_owned_immutable_cohorts_share_identical_code_across_updates(self):
   first,store,client=self.second_generation();second=Path(store.prepare(client,['cpu'])['cohort'])
@@ -201,7 +216,7 @@ class InstallTests(unittest.TestCase):
   for state in ('prepared','starting_candidate','activation_failed','shutdown_failed'):
    install._write(self.store.root/'transaction.json',dict(schema='PGN_COHORT_ACTIVATION_V1',state=state,before=self.store.current(),candidate=candidate,restoration_completed=False))
    original=(self.store.root/'transaction.json').read_bytes()
-   with patch.object(self.client,'prepare',side_effect=AssertionError('Must preserve recovery before downloading')):
+   with patch.object(self.client,'prepared',side_effect=AssertionError('Must preserve recovery before downloading')):
     with self.assertRaisesRegex(ValueError,'requires recovery'):self.store.prepare(self.client,['cpu'])
    self.assertEqual((self.store.root/'transaction.json').read_bytes(),original)
  def test_interruption_blocks_callbacks_and_preserves_native_backups(self):

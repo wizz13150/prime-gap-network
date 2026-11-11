@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 """Actual Linux pidfd, native data lease, install/restart and rollback.
 
 The Qt child is an inert fixture using the production data lease, not Horizon
@@ -54,7 +55,7 @@ class LinuxInstallTests(unittest.TestCase):
         cache=stage.init_cache(self.root/'stage',self.context)
         folder,plan=stage.stage_bundle(archive,stage.sha(archive.read_bytes()),self.context,self.context_sha,cache,['cpu'])
         receipt=dict(publisher_authenticated=True,context_sha256=self.context_sha,stage=str(folder),manifest_sha256=plan['manifest_sha256'],selection=['cpu'])
-        client=type('PreparedClient',(),dict(context=self.context,context_sha256=self.context_sha,prepare=lambda ignored,selected:deepcopy(receipt)))()
+        client=type('PreparedClient',(),dict(context=self.context,context_sha256=self.context_sha,prepared=lambda ignored,selected,**kwargs:nullcontext(deepcopy(receipt))))()
         self.candidate=self.store.prepare(client,['cpu']);self.new=Path(self.candidate['cohort'])
         self.runtime=self.data/'testnet/ui-runtime';self.runtime.mkdir(parents=True)
         self.profile=self.runtime/'wallet-core.json'

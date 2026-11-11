@@ -414,7 +414,7 @@ int main(int argc,char** argv) {
    if(!online){
     using Condition=pgn::wallet::NetworkLinkCondition;
     const auto caption=condition==Condition::Connecting?QString("NETWORK · CONNECTING"):
-     condition==Condition::Disconnected?QString("NETWORK · DISCONNECTED"):
+     condition==Condition::Disconnected?QString("WALLET NODE · DISCONNECTED"):
      condition==Condition::Unverified?QString("CORE · IDENTITY NOT VERIFIED"):
      condition==Condition::Unavailable?QString("CORE READ UNAVAILABLE · RETRYING"):QString("NETWORK STATUS · REFRESHING");
     const bool stopped=condition==Condition::Disconnected||condition==Condition::Unverified;

@@ -9,6 +9,7 @@ import errno
 import json
 import os
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
@@ -21,6 +22,9 @@ import horizon_update_progress as progress
 from tuf.ngclient.urllib3_fetcher import Urllib3Fetcher
 
 MAX_CATALOG = 128 * 1024
+# Retention target for disposable artifacts, not a lifetime or admission quota.
+# Signed single-download/extraction bounds and actual disk-space admission are
+# enforced separately. One in-flight update may need more than this target.
 MAX_CACHE = 1024 * 1024 * 1024
 MAX_TARGET = 512 * 1024 * 1024
 MARKER = b'PGN_AUTHENTICATED_UPDATE_CACHE_V1\n'
@@ -49,6 +53,8 @@ class AuthenticatedUpdates:
                           and url.endswith('/'), 'Explicit HTTPS repository required')
         self.context, self.context_sha256 = context, context_sha256
         self.cache_repairs = []
+        self.cache_cleanup_warning = ''
+        self._pins = set()
         self.cache = stage._cache_path(cache, context)
         if self.cache.exists():
             stage.require(stage._read_plain(self.cache / '.owner', 128) == MARKER,
@@ -77,8 +83,9 @@ class AuthenticatedUpdates:
         self.metadata.mkdir(parents=True, exist_ok=True)
         self.targets.mkdir(parents=True, exist_ok=True)
 
-    def _quota(self, additional=0):
-        total = 0
+    def _cache_size(self):
+        # Validate the complete tree before a reclamation can remove anything.
+        total, sizes = 0, {}
         for base, dirs, files in os.walk(self.cache, followlinks=False):
             for name in dirs + files:
                 file = Path(base) / name
@@ -86,17 +93,120 @@ class AuthenticatedUpdates:
                     # python-tuf7 intentionally maintains this ONE relative
                     # alias. Windows without symlink permission uses a hardlink.
                     # The target still undergoes TUF root-chain verification.
-                    stage.require(file == self.metadata / 'root.json' and file.is_symlink(),
+                    namespace = file.parent.parent
+                    stage.require(file.name == 'root.json' and file.parent.name == 'metadata'
+                                  and namespace.parent == self.cache and file.is_symlink()
+                                  and re.fullmatch(r'[0-9a-f]{20}', namespace.name),
                                   'Linked update-cache entry')
+                    marker = stage._read_plain(namespace/'.bootstrap-sha256', 65).decode().strip()
+                    stage.require(stage.DIGEST.fullmatch(marker) and marker.startswith(namespace.name),
+                                  'TUF root namespace binding differs')
                     link = os.readlink(file).replace('\\', '/')
                     stage.require(re.fullmatch(r'root_history/[1-9][0-9]{0,18}\.root\.json', link),
                                   'Unexpected TUF root alias')
-                    target = stage._plain_chain(self.metadata / link)
+                    target = stage._plain_chain(file.parent / link)
                     stage.require(target.is_file() and target.stat().st_size <= 262144,
                                   'TUF root alias target is unavailable or outside bounds')
             for name in files:
-                total += (Path(base) / name).stat().st_size
-                stage.require(total + additional <= MAX_CACHE, 'Update cache quota exceeded')
+                file = Path(base)/name
+                length = file.stat().st_size
+                total += length
+                relative = file.relative_to(self.cache)
+                top = self.cache/relative.parts[0]
+                sizes[top] = sizes.get(top, 0)+length
+                sizes[file] = length
+        return total, sizes
+
+    def _discard_stage(self, path):
+        # Downloaded/extracted code only. Installed cohorts live in a different
+        # owned store. The cache OS lock is held through stage consumption too.
+        stage._plain_chain(path)
+        stage.require(path.parent == self.cache and
+                      re.fullmatch(r's-[0-9a-f]{20}', path.name) and
+                      stage._read_plain(path/'.pgn-stage-cache', 64) == stage.MARKER,
+                      'Unowned cached stage refused')
+        receipts = self.cache/'receipts'
+        receipt_bytes = 0
+        if receipts.exists():
+            stage._plain_chain(receipts)
+            for receipt in receipts.iterdir():
+                if re.fullmatch(path.name[2:]+r'[0-9a-f]{44}\.json', receipt.name):
+                    stage._plain_chain(receipt)
+                    receipt_bytes += receipt.stat().st_size
+                    receipt.unlink()
+        # A crash during removal leaves a recognizable, owned scratch tree.
+        pending = self.cache/('.pending-gc-'+uuid.uuid4().hex)
+        os.rename(path, pending)
+        self._discard_interrupted_gc(pending)
+        return receipt_bytes
+
+    def _discard_interrupted_gc(self, path):
+        import shutil
+        stage.require(path.parent == self.cache and
+                      re.fullmatch(r'\.pending-gc-[0-9a-f]{32}', path.name),
+                      'Unsafe cache cleanup target')
+        stage._plain_chain(path)
+        # The complete tree was checked by _cache_size; no links may be followed.
+        shutil.rmtree(path)
+
+    def _quota(self, additional=0, *, discard_unused=False):
+        total, sizes = self._cache_size()
+        if not discard_unused and total + additional <= MAX_CACHE:
+            return
+        # Reclaim oldest derived artifacts, never TUF metadata/root history,
+        # unknown files, installed programs, or a source currently being copied.
+        candidates = []
+        for path in self.cache.iterdir():
+            if re.fullmatch(r'\.pending-gc-[0-9a-f]{32}', path.name) and path.is_dir():
+                candidates.append((-1, 0, path, 'gc'))
+            elif re.fullmatch(r's-[0-9a-f]{20}', path.name) and path.is_dir():
+                if stage._read_plain(path/'.pgn-stage-cache', 64) == stage.MARKER:
+                    candidates.append((0, path.stat().st_mtime_ns, path, 'stage'))
+        # Targets under previous build-pinned roots are expendable too. Keep
+        # every root's trusted metadata, including its anti-rollback history.
+        for namespace in self.cache.iterdir():
+            if not re.fullmatch(r'[0-9a-f]{20}', namespace.name) or not namespace.is_dir():
+                continue
+            marker = namespace/'.bootstrap-sha256'
+            if not marker.is_file():
+                continue
+            root_hash = stage._read_plain(marker, 65).decode().strip()
+            if not stage.DIGEST.fullmatch(root_hash) or not root_hash.startswith(namespace.name):
+                continue
+            targets = namespace/'targets'
+            if not targets.is_dir():
+                continue
+            for path in targets.iterdir():
+                if path.is_file() and (re.fullmatch(r'[0-9a-f]{64}-[A-Za-z0-9][A-Za-z0-9._-]{0,180}', path.name)
+                                      or re.fullmatch(r'\.pending-download-[0-9a-f]{32}', path.name)):
+                    candidates.append((1, path.stat().st_mtime_ns, path, 'target'))
+        for _, _, path, kind in sorted(candidates):
+            if path in self._pins:
+                continue
+            if kind == 'stage':
+                total -= self._discard_stage(path)
+            elif kind == 'gc':
+                self._discard_interrupted_gc(path)
+            else:
+                stage._plain_chain(path).unlink()
+            # Charge one inventory walk, not a full rescan per old release.
+            total -= sizes.get(path, 0)
+            if not discard_unused and total + additional <= MAX_CACHE:
+                return
+        # Nothing disposable remains. Do not turn a retention target into an
+        # inability to refresh or install a valid bounded update. In particular,
+        # never erase trusted TUF history to satisfy this target. Download and
+        # extraction still admit their real peak against available disk space.
+        self.cache_budget_pressure = dict(retained_bytes=total,
+                                          requested_bytes=additional,
+                                          retention_target_bytes=MAX_CACHE)
+
+    def _cleanup_unused(self):
+        try:
+            self._quota(discard_unused=True)
+        except (OSError, stage.StageError):
+            self.cache_cleanup_warning = ('Temporary update files could not be cleaned; '
+                'the verified installation is retained. Cleanup will retry on a later update.')
 
     def _updater(self):
         progress.report('metadata',force=True)
@@ -116,6 +226,7 @@ class AuthenticatedUpdates:
                       'Signed target length/SHA256 unavailable or outside bounds')
         destination = self.targets / (target.hashes['sha256'] + '-' + name)
         stage._plain_chain(destination)
+        self._pins.add(destination)
         self._quota(0 if destination.exists() else target.length)
         if destination.exists():
             try:
@@ -185,8 +296,13 @@ class AuthenticatedUpdates:
 
     def refresh(self, selected):
         with locked_cache(self.cache):
+            self._pins.clear()
             self._quota()
             catalog, manifest, components, chosen, target = self._catalog(self._updater(), selected)
+            # Also retire leftovers from old helper versions on the first
+            # successful check. Keep this authenticated catalogue pinned, so
+            # ordinary subsequent checks need not fetch an unchanged copy.
+            self._cleanup_unused()
             return dict(schema='PGN_AUTHENTICATED_COMPONENT_VIEW_V1',
                         publisher_authenticated=True, bootstrap_sha256=self.bootstrap_sha256,
                         catalog_sha256=target.hashes['sha256'],
@@ -194,53 +310,78 @@ class AuthenticatedUpdates:
                         sequence=manifest['sequence'], release_version=manifest['release_version'],
                         components=[{key: components[c][key] for key in
                                     ('id', 'version', 'abi', 'dependencies')} for c in chosen],
-                        bundle_target=catalog['bundle_target'], installation_performed=False)
+                        bundle_target=catalog['bundle_target'], installation_performed=False,
+                        warning=self.cache_cleanup_warning)
 
     def prepare(self, selected):
-        with locked_cache(self.cache):
-            self._quota()
-            updater = self._updater()
-            catalog, manifest, _, _, target = self._catalog(updater, selected)
-            archive, artifact = self._download(updater, catalog['bundle_target'], MAX_TARGET)
-            selection = sorted(set(selected))
-            key = digest(json.dumps([self.context_sha256, artifact.hashes['sha256'], selection]).encode())
-            stage_cache = self.cache / ('s-'+key[:20])
-            receipt_file = self.cache / 'receipts' / (key + '.json')
-            stage._plain_chain(receipt_file)
-            if receipt_file.exists():
-                old = stage._json(stage._read_plain(receipt_file, MAX_CATALOG))
-                folder = stage._plain_chain(old['stage'])
-                stage.require(folder.parent == stage_cache, 'Retained stage escaped its namespace')
-                plan = stage.verify_stage(folder, old['manifest_sha256'], self.context, self.context_sha256)
-                stage.require(plan['archive_sha256'] == artifact.hashes['sha256']
-                              and plan['requested'] == selection, 'Retained stage binding changed')
-            else:
-                _, components, files, chosen = stage._manifest(
-                    json.dumps(manifest, separators=(',', ':')).encode(), self.context, selection)
-                names = {f['path'] for c in chosen for f in components[c]['files']}
-                self._quota(sum(files[n]['bytes'] for n in names) + 2 * MAX_CATALOG)
-                if not stage_cache.exists():
-                    stage_cache.parent.mkdir(parents=True, exist_ok=True)
-                    stage.init_cache(stage_cache, self.context)
-                folder, plan = stage.stage_bundle(archive, artifact.hashes['sha256'],
-                                                 self.context, self.context_sha256,
-                                                 stage_cache, selection,progress=progress.report)
-            raw = stage._read_plain(folder / 'component-bundle.json', MAX_CATALOG)
-            stage.require(stage._json(raw) == manifest,
-                          'Signed catalogue and downloaded bundle describe different components')
-            receipt = dict(schema='PGN_AUTHENTICATED_STAGE_RECEIPT_V1',
-                        publisher_authenticated=True, bootstrap_sha256=self.bootstrap_sha256,
-                        catalog_sha256=target.hashes['sha256'],
-                        archive_sha256=artifact.hashes['sha256'],
-                        manifest_sha256=plan['manifest_sha256'], context_sha256=self.context_sha256,
-                        stage=str(folder), selection=plan['selected_with_dependencies'],
-                        installation_performed=False, process_control_performed=False)
-            receipt_file.parent.mkdir(parents=True, exist_ok=True)
-            temporary = receipt_file.with_suffix('.pending')
-            with temporary.open('wb') as stream:
-                stream.write((json.dumps(receipt, sort_keys=True) + '\n').encode())
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, receipt_file)
-            self._quota()
+        # Returned paths are cache entries. Installation must use prepared()
+        # so reclamation cannot race its source-file reads.
+        with self.prepared(selected) as receipt:
             return receipt
+
+    @contextmanager
+    def prepared(self, selected, *, discard_after=False):
+        """Pin and lock staged code until its consumer finishes copying it."""
+        with locked_cache(self.cache):
+            self._pins.clear()
+            yield self._prepare_locked(selected)
+            if discard_after:
+                # A verified independent cohort now owns the required code.
+                # Remove temporary copies promptly, not just under pressure.
+                # Cleanup failure must never invalidate that prepared cohort.
+                self._pins.clear()
+                self._cleanup_unused()
+
+    def _prepare_locked(self, selected):
+        self._quota()
+        updater = self._updater()
+        catalog, manifest, _, _, target = self._catalog(updater, selected)
+        archive, artifact = self._download(updater, catalog['bundle_target'], MAX_TARGET)
+        selection = sorted(set(selected))
+        key = digest(json.dumps([self.context_sha256, artifact.hashes['sha256'], selection]).encode())
+        stage_cache = self.cache / ('s-'+key[:20])
+        self._pins.add(stage_cache)
+        receipt_file = self.cache / 'receipts' / (key + '.json')
+        stage._plain_chain(receipt_file)
+        if receipt_file.exists():
+            old = stage._json(stage._read_plain(receipt_file, MAX_CATALOG))
+            folder = stage._plain_chain(old['stage'])
+            stage.require(folder.parent == stage_cache, 'Retained stage escaped its namespace')
+            plan = stage.verify_stage(folder, old['manifest_sha256'], self.context, self.context_sha256)
+            stage.require(plan['archive_sha256'] == artifact.hashes['sha256']
+                          and plan['requested'] == selection, 'Retained stage binding changed')
+        else:
+            _, components, files, chosen = stage._manifest(
+                json.dumps(manifest, separators=(',', ':')).encode(), self.context, selection)
+            names = {f['path'] for c in chosen for f in components[c]['files']}
+            # A crash may leave a complete extraction without its receipt.
+            # Rebuild that disposable extraction under the cache lock; do
+            # not mistake an orphan directory for a prepared installation.
+            if stage_cache.exists():
+                self._discard_stage(stage_cache)
+            self._quota(sum(files[n]['bytes'] for n in names) + 2 * MAX_CATALOG)
+            if not stage_cache.exists():
+                stage_cache.parent.mkdir(parents=True, exist_ok=True)
+                stage.init_cache(stage_cache, self.context)
+            folder, plan = stage.stage_bundle(archive, artifact.hashes['sha256'],
+                                             self.context, self.context_sha256,
+                                             stage_cache, selection,progress=progress.report)
+        raw = stage._read_plain(folder / 'component-bundle.json', MAX_CATALOG)
+        stage.require(stage._json(raw) == manifest,
+                      'Signed catalogue and downloaded bundle describe different components')
+        receipt = dict(schema='PGN_AUTHENTICATED_STAGE_RECEIPT_V1',
+                    publisher_authenticated=True, bootstrap_sha256=self.bootstrap_sha256,
+                    catalog_sha256=target.hashes['sha256'],
+                    archive_sha256=artifact.hashes['sha256'],
+                    manifest_sha256=plan['manifest_sha256'], context_sha256=self.context_sha256,
+                    stage=str(folder), selection=plan['selected_with_dependencies'],
+                    installation_performed=False, process_control_performed=False)
+        receipt_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = receipt_file.with_suffix('.pending')
+        with temporary.open('wb') as stream:
+            stream.write((json.dumps(receipt, sort_keys=True) + '\n').encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, receipt_file)
+        self._quota()
+        return receipt
