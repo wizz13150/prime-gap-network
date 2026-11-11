@@ -90,8 +90,8 @@ int main(int argc,char** argv){
  if(!hasProcessed()){std::cerr<<"FAIL valid native gap rate zero hidden\n";return 10;}
  lane.raw.remove("pgn_processed_gaps_per_second");pgn::ui::presentDevice(canvas.get(),lane);canvas->repaint();
  if(hasProcessed()){std::cerr<<"FAIL missing native gap rate fabricated from retained output\n";return 11;}
- if(!nativeDescriptions.contains("Input/output yield:")&&!nativeDescriptions.contains("Retained output per billion input positions")){
-  std::cerr<<"FAIL removing misleading input count also removed the valid input/output ratio\n";return 8;}
+ if(nativeDescriptions.contains("Input/output yield:")||nativeDescriptions.contains("Retained output per billion input positions")){
+  std::cerr<<"FAIL removed gaps/Gpos ratio gauge or tooltip remains visible\n";return 8;}
  lane.engineId.clear();lane.raw.remove("pgn_processed_gaps_per_second");
  pgn::ui::presentDevice(canvas.get(),lane);canvas->repaint();
  canvas->setProperty("pgn_values_audit_enabled",true);
