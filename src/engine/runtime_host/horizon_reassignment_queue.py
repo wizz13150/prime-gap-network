@@ -95,6 +95,7 @@ class ReassignmentQueue:
                 flow.cycles.prepare(value['work'],native_service=value['native_service'])
             else:
                 flow.cycles.replace_inactive_assignment(value['previous'],value['work'],value['native_service'],value['evidence'])
+            self.retire_allocator(value)
             return
         if hashlib.sha256(_report(flow.outbox,entry)).hexdigest()!=value['retained_report_sha256']:
             raise ValueError('Retained scientific report changed during reassignment')
@@ -115,7 +116,7 @@ class ReassignmentQueue:
             raise RuntimeError('Partial assignment recovery requires unstarted publication lanes')
         return self._stage_inactive(previous)
 
-    def stage_unstarted(self, previous):
+    def stage_unstarted(self, previous, *, allocator_journal=None):
         """A ready recovery can itself be reorganized before GPU adoption."""
         flow=self.flow
         with flow.gpu.condition:
@@ -123,12 +124,12 @@ class ReassignmentQueue:
                 raise RuntimeError('Reassigned range is already owned by the executor')
         # Only the preparation writer obtains this recovery before it publishes
         # ready work. Never hold the GPU scheduling condition over Core I/O.
-        cycle=flow.cycles.snapshot(previous['request_id'])
-        if cycle['stage']!='prepared' or cycle['work']!=flow.cycles.work_identity(previous):
+        cycle=flow.cycles.snapshot(previous['request_id']) if flow.cycles.contains(previous['request_id']) else None
+        if cycle is not None and (cycle['stage']!='prepared' or cycle['work']!=flow.cycles.work_identity(previous)):
             raise RuntimeError('Only an unstarted prepared replacement can be reconciled')
-        return self._stage_inactive(previous)
+        return self._stage_inactive(previous,allocator_journal=allocator_journal)
 
-    def _stage_inactive(self, previous):
+    def _stage_inactive(self, previous, *, allocator_journal=None):
         flow=self.flow
         proof=prove_reassignment(flow.worker,previous)
         if proof is None:return False
@@ -146,18 +147,47 @@ class ReassignmentQueue:
             value=dict(schema='PGN_REASSIGNMENT_HANDOFF_V1',retention='inactive_assignment',
                 previous=previous,work=fresh,entry=None,previous_cycle=cycle,native_service=native,
                 evidence=proof['evidence'],retained_session=hashlib.sha256(session.read_bytes()).hexdigest()if session.exists()else None)
+            if allocator_journal is not None:
+                raw_journal=(flow.allocator.root/'controller.json').read_bytes()
+                if len(raw_journal)>32768 or json.loads(raw_journal)!=allocator_journal:
+                    raise ValueError('Prepared allocation journal changed before retention')
+                if allocator_journal.get('work')!=previous or allocator_journal.get('stage')!='ASSIGNED':
+                    raise ValueError('Only the exact unconsumed prepared allocation can be retired')
+                value['allocator_journal']=dict(raw_utf8=raw_journal.decode('utf8'),sha256=hashlib.sha256(raw_journal).hexdigest())
             raw=canonical_bytes(value)+b'\n'
             if len(raw)>65536:raise ValueError('Startup reassignment handoff exceeds budget')
             ids=self.read()
             if key not in ids and len(ids)>=4:raise BufferError('Reassignment queue is full; old work remains retained')
             if path.exists():
                 prior=self.record(key)
-                if prior!=value:raise ValueError('Immutable startup reassignment receipt changed')
+                if (any(prior.get(k)!=value.get(k)for k in ('previous','previous_cycle','retained_session','allocator_journal'))
+                        or flow.cycles.work_identity(prior['work'])!=flow.cycles.work_identity(value['work'])):
+                    raise ValueError('Immutable startup reassignment receipt changed')
+                value=prior
             else:
                 path.parent.mkdir(parents=True,exist_ok=True);atomic_bytes(path,raw)
             if key not in ids:atomic_bytes(self.index,canonical_bytes([*ids,key])+b'\n')
             self.finish(value)
             return True
+
+    def retire_allocator(self, value):
+        retained=value.get('allocator_journal')
+        if retained is None:return
+        raw=retained['raw_utf8'].encode('utf8')
+        if hashlib.sha256(raw).hexdigest()!=retained['sha256']:
+            raise ValueError('Retained prepared journal failed its digest')
+        path=self.flow.allocator.root/'controller.json'
+        current=path.read_bytes()
+        if current!=raw:
+            saved=json.loads(current)
+            if saved.get('work',{}).get('ticket')==value['previous']['ticket']:
+                raise ValueError('Prepared allocation changed during retirement')
+            return  # Never overwrite an unrelated, newer signed request.
+        saved=json.loads(raw)
+        marker=dict(stage='ALLOCATION_REASSIGNED',sequence=saved['sequence'],
+                    previous_request=value['previous']['request_id'],
+                    retained_assignment_sha256=retained['sha256'])
+        atomic_bytes(path,canonical_bytes(marker)+b'\n')
 
     def next_work(self):
         with self.lock:

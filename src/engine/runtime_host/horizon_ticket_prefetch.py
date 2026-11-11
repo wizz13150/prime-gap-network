@@ -7,13 +7,14 @@ from pgn_session import atomic_bytes
 from report_commitment import canonical_bytes
 
 class TicketPrefetch:
-    def __init__(self, allocator, enabled, stopping, network_lock, on_ready=None, *, recovery=None, on_recovered=None):
+    def __init__(self, allocator, enabled, stopping, network_lock, on_ready=None, *, recovery=None, on_recovered=None, recover_allocator=None):
         self.allocator = allocator
         self.enabled = enabled
         self.stopping = stopping
         self.network_lock = network_lock
         self.on_ready = on_ready
         self.recovery, self.on_recovered = recovery, on_recovered
+        self.recover_allocator = recover_allocator
         self.ready_recovered = False
         self.condition = threading.Condition()
         self.ready = None
@@ -35,7 +36,12 @@ class TicketPrefetch:
                 with self.network_lock:
                     work = self.recovery() if callable(self.recovery) else None
                     recovered = work is not None
-                    if work is None:work = self.allocator.assign()
+                    if work is None:
+                        try:work = self.allocator.assign()
+                        except ValueError as error:
+                            if not callable(self.recover_allocator):raise
+                            work=self.recover_allocator(error)
+                            recovered=True
                 with self.condition:
                     self.ready = work
                     self.ready_recovered = recovered

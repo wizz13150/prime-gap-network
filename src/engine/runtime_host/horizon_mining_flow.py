@@ -132,7 +132,8 @@ class MiningFlow:
         from horizon_reassignment_queue import ReassignmentQueue
         self.reassignments = ReassignmentQueue(self)
         self.prefetch = TicketPrefetch(allocator, worker.running, worker.quitting, worker.network_lock, self.prepared,
-            recovery=self.reassignments.next_work,on_recovered=self.reassignments.adopted)
+                                       recovery=self.reassignments.next_work,on_recovered=self.reassignments.adopted,
+                                       recover_allocator=self.recover_prepared_assignment)
         self.audit_lanes = []
         self.legacy_audit_publishers = []
         from horizon_assigned_audit_recovery import AssignedAuditRecovery
@@ -706,6 +707,15 @@ class MiningFlow:
                 self.worker.network_notice = str(error)[:400]
                 audit.last_error = str(error)[:300]
                 self.worker.quitting.wait(2)
+
+    def recover_prepared_assignment(self, error):
+        if str(error)!='Saved ticket no longer matches its live computation lease':raise error
+        saved=read(self.allocator.root/'controller.json',262144)
+        if saved.get('stage')!='ASSIGNED' or not self.reassignments.stage_unstarted(saved['work'],allocator_journal=saved):
+            raise error
+        work=self.reassignments.next_work()
+        if work is None:raise RuntimeError('Prepared reassignment has no durable successor')
+        return work
 
     def startup_work(self):
         work=self.reassignments.next_work()

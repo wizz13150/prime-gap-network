@@ -163,7 +163,7 @@ class ReassignmentQueueTests(unittest.TestCase):
         self.session_bytes=session.read_bytes()
         flow=object.__new__(MiningFlow)
         flow.worker=self.worker;flow.cycles=self.cycles;flow.outbox=self.out
-        flow.gpu=SimpleNamespace(active=None,jobs={})
+        flow.gpu=SimpleNamespace(active=None,jobs={},condition=threading.Condition())
         flow.audit_threads=[threading.Thread()]
         for name in ('report_thread','owner_report_thread','pressure_thread'):setattr(flow,name,threading.Thread())
         flow.reassignments=ReassignmentQueue(flow)
@@ -245,6 +245,56 @@ class ReassignmentQueueTests(unittest.TestCase):
         self.assertTrue(self.queue.stage(self.entry))
         self.flow.gpu=SimpleNamespace(jobs={self.fresh['ticket']:object()},condition=threading.Condition())
         with self.assertRaisesRegex(RuntimeError,'already owned'):self.queue.stage_unstarted(self.fresh)
+
+    def prepared_allocator(self, flow):
+        folder=self.root/'prepared-ticket';folder.mkdir()
+        saved=dict(stage='ASSIGNED',sequence=27,work=self.old)
+        original=(json.dumps(saved,indent=2)+'\n').encode()
+        (folder/'controller.json').write_bytes(original)
+        def changed():raise ValueError('Saved ticket no longer matches its live computation lease')
+        flow.allocator=SimpleNamespace(root=folder,assign=changed)
+        return saved,original
+
+    def test_actual_prefetch_recovers_orphaned_assigned_journal_while_execution_loop_lives(self):
+        flow=self.partial_flow('prepared',with_cycle=False)
+        saved,original=self.prepared_allocator(flow)
+        enabled=threading.Event();enabled.set();stopping=threading.Event()
+        prefetch=TicketPrefetch(flow.allocator,enabled,stopping,threading.RLock(),
+            recovery=flow.reassignments.next_work,on_recovered=flow.reassignments.adopted,
+            recover_allocator=flow.recover_prepared_assignment)
+        prefetch.start()
+        try:
+            with prefetch.condition:
+                self.assertTrue(prefetch.condition.wait_for(lambda:prefetch.ready is not None or prefetch.error is not None,4), 'No prefetch result')
+            self.assertIsNone(prefetch.error);self.assertEqual(prefetch.ready,self.fresh)
+            marker=json.loads((flow.allocator.root/'controller.json').read_bytes())
+            self.assertEqual(marker['stage'],'ALLOCATION_REASSIGNED')
+            record=flow.reassignments.record(flow.reassignments.read()[0])
+            self.assertEqual(record['allocator_journal']['raw_utf8'].encode(),original)
+            # A later unrelated signature must survive recovered-work adoption.
+            newer=b'{"stage":"REQUEST_SIGNED","sequence":28,"request":{"nonce":"new"}}\n'
+            (flow.allocator.root/'controller.json').write_bytes(newer)
+            adopted=[];self.assertEqual(prefetch.take(adopted.append,0),self.fresh)
+            self.assertEqual(adopted,[self.fresh]);self.assertEqual((flow.allocator.root/'controller.json').read_bytes(),newer)
+            self.assertEqual(self.report.read_bytes(),self.report_bytes)
+        finally:
+            stopping.set();self.assertTrue(prefetch.close(3))
+
+    def test_prepared_recovery_replays_after_cycle_write_before_allocator_retirement(self):
+        flow=self.partial_flow('prepared',with_cycle=False)
+        _,original=self.prepared_allocator(flow)
+        with patch.object(flow.reassignments,'retire_allocator',side_effect=OSError('Injected before prepared retirement')):
+            with self.assertRaisesRegex(OSError,'Injected'):flow.recover_prepared_assignment(ValueError('Saved ticket no longer matches its live computation lease'))
+        self.assertEqual((flow.allocator.root/'controller.json').read_bytes(),original)
+        self.assertEqual(flow.reassignments.next_work(),self.fresh)
+        self.assertEqual(json.loads((flow.allocator.root/'controller.json').read_bytes())['stage'],'ALLOCATION_REASSIGNED')
+
+    def test_unrelated_allocator_error_does_not_retire_any_journal(self):
+        flow=self.partial_flow('prepared',with_cycle=False)
+        _,original=self.prepared_allocator(flow)
+        with self.assertRaisesRegex(ValueError,'Other error'):flow.recover_prepared_assignment(ValueError('Other error'))
+        self.assertEqual((flow.allocator.root/'controller.json').read_bytes(),original)
+        self.assertFalse(flow.reassignments.index.exists())
 
 
 if __name__=='__main__':unittest.main()
