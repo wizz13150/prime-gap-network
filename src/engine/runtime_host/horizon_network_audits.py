@@ -86,27 +86,21 @@ class NetworkAudits:
 
     def restore_reassigned_answer(self, audit):
         """Recover one exact sealed answer; never scan or recompute a range."""
-        if self.on_reassigned is None:
-            return audit
         name = audit['request_id'] + '-' + str(audit['slot']) + '-' + str(audit['attempt'])
-        if not (self.folder / (name + '.json')).is_file():
+        cached = self.answers.recover_seal(name, audit)
+        if cached is None:
             return audit
-        cached, _ = self.answers.read(name)
-        # register verifies any previous immutable answer digest as well.
+        # A scheduling cursor can lose its answer without a publication intent
+        # or cycle callback. The seal is independent of both mutable contexts.
+        restored = dict(cached)
+        for key, value in audit.items():
+            if key not in ('answer', 'counts', 'publication_intent', 'target_merit_q16'):
+                restored[key] = value
+        if audit.get('answer') == cached['answer'] and audit.get('publication_intent'):
+            restored['publication_intent'] = audit['publication_intent']
+        save(self.folder / (name + '.json'), restored)
         self.answers.register([name])
-        if any(cached.get(k) != audit.get(k) for k in ('request_id', 'slot', 'attempt', 'ticket', 'report_root', 'ranges')):
-            raise ValueError('Sealed audit replay differs from the reassigned work')
-        if not cached.get('publication_intent'):
-            return audit
-        counts = cached.get('counts')
-        if (not isinstance(counts, list) or len(counts) != len(audit['ranges'])
-                or any(type(n) is not int or n < 0 for n in counts)):
-            raise ValueError('Sealed audit replay has incomplete counts')
-        expected = audit_commitment(cached['ticket'], cached['attempt'], [r['index'] for r in cached['ranges']],
-                                    [str(n) for n in counts], cached['answer']['body']['nonce'])
-        if expected != cached['answer']:
-            raise ValueError('Sealed audit replay does not match its committed counts')
-        return cached
+        return restored
 
     def reconcile_reassigned_answer(self, audit):
         if (self.on_reassigned is None or self.reassignment_needed is None
@@ -397,6 +391,10 @@ class NetworkAudits:
             if journal.stat().st_size > 262144:
                 raise ValueError("Current audit exceeds budget")
             audit = json.loads(journal.read_bytes())
+            restored = self.restore_reassigned_answer(audit)
+            if restored != audit:
+                save(journal, restored)
+            audit = restored
             anchor = self.worker.rpc.call('getbestblockhash') if self.on_retired is not None else None
             current = self.state(audit["request_id"])
             job = next((j for j in current.get("jobs", []) if j["slot"] == audit["slot"] and j["attempt"] == audit["attempt"]), None)

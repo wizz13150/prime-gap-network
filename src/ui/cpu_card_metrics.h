@@ -89,8 +89,8 @@ inline QVector<CpuCardMetric> cpuCardMetrics(const QJsonObject& status,bool conn
  const bool stopped=connected&&resident==0&&QSet<QString>{"IDLE","OFF","PAUSED","PAUSED_RECOVERED","WAITING_AUDIT","WAITING_NORMAL_CYCLE","BUDGET_PAUSED","CLOSED","AUDIT_COMPUTED_SOURCE_PROOF_PENDING","CPU_WORK_SOURCE_PROOF_PENDING","PROBE_COMPLETE"}.contains(state);
  if(stopped)rate=0.;
  const auto mining=cpuMiningRates(status,connected);
- auto tests=cpuMetricNumber(mining,"tests_per_second"),gaps=cpuMetricNumber(mining,"gaps_per_second"),yield=cpuMetricNumber(mining,"gaps_per_billion_positions");
- if(stopped&&!mining.isEmpty()){tests=0.;gaps=0.;yield.reset();}
+ auto tests=cpuMetricNumber(mining,"tests_per_second"),gaps=cpuMetricNumber(mining,"gaps_per_second");
+ if(stopped&&!mining.isEmpty()){tests=0.;gaps=0.;}
  const auto percent=[](std::optional<double> value){return value?QString::number(*value,'f',0)+"%":QString("—");};
  const auto memoryFraction=memoryUsed&&memoryTotal&&*memoryTotal>0?std::optional<double>(*memoryUsed/ *memoryTotal):std::nullopt;
  const QString rateText=rate?compactCardMetricCaption(rate):(connected&&state=="RUNNING"?QString("START"):QString("—"));
@@ -98,11 +98,10 @@ inline QVector<CpuCardMetric> cpuCardMetrics(const QJsonObject& status,bool conn
  const CpuCardMetric throughput{rate,0.,rateText,"pos/s","Mean of closed native position counts; confirmed idle/pause is zero. Not a primality-test count.",QColor("#b58cff")};
  const CpuCardMetric testRate{tests,0.,compactCardMetricCaption(tests),"tests/s","Mean native candidate tests over the same active-time counter window as gap statistics. Missing producer samples stay unavailable.",QColor("#46c8ee")};
  const CpuCardMetric gapRate{gaps,0.,compactCardMetricCaption(gaps),"gaps/s","Mean retained gap counts above the assigned minimum, over up to 60 seconds of active computation. Display counters do not imply network acceptance.",QColor("#69efc5")};
- const CpuCardMetric gapYield{yield,0.,fixedCardMetricCaption(yield),"gaps/Gpos","Retained gap delta per billion positions in the same active-time window. Zero positions is undefined. Compare equal bit/minimum/verification settings.",QColor("#b58cff")};
- if(!expanded)return {activity,throughput,testRate,gapYield};
+ if(!expanded)return {activity,throughput,testRate};
  return {activity,{load,100.,percent(load),"HOST LOAD","Total machine CPU utilization, including other applications.",accent},
   {memoryFraction,1.,memoryFraction?QString::number(*memoryFraction*100.,'f',0)+"%":QString("—"),"HOST RAM","Physical RAM used by all applications / total physical RAM.",QColor("#62cfff")},
   {engineMemory,memoryTotal.value_or(0),engineMemory?QString::number(*engineMemory/1048576.,'f',*engineMemory<104857600?1:0):QString("—"),"RAM MiB","Sum of controller and worker working sets; shared pages may be counted more than once.",QColor("#69efc5")},
-  throughput,testRate,gapRate,gapYield};
+  throughput,testRate,gapRate};
 }
 }

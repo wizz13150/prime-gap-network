@@ -518,6 +518,14 @@ class MiningFlow:
         pending = []
         lanes = getattr(self, 'audit_lanes', [])
         for position, lane in enumerate(lanes):
+            # Recovery can fail before process_one installs current_audit.
+            # Keep that actionable cause visible instead of a generic wait.
+            if getattr(lane, 'last_error', None):
+                self.worker.message('Audit ' + str(position+1) + ': ' + lane.last_error, 'Needs attention')
+                return
+            if getattr(lane, 'recovery_pending', None):
+                self.worker.message('Audit ' + str(position+1) + ': ' + lane.recovery_pending, 'Recovering saved audit')
+                return
             audit = getattr(lane, 'current_audit', None)
             if not isinstance(audit, dict):
                 continue
@@ -527,9 +535,6 @@ class MiningFlow:
             done, total = len(counts), len(ranges)
             if not 0 <= done <= total:
                 continue
-            if getattr(lane, 'last_error', None):
-                self.worker.message('Audit ' + str(position+1) + ': ' + lane.last_error, 'Needs attention')
-                return
             stage = ('verifying computed results' if done < total else 'result publication pending')
             pending.append('Audit ' + str(position + 1) + '/' + str(len(lanes))
                            + ': ' + stage)
@@ -678,6 +683,7 @@ class MiningFlow:
                 pending = self.cycles.pending(position, retry_permissions=True)
                 outcome = audit.process_one()
                 audit.last_error = None
+                audit.recovery_pending = None
                 if outcome == "none":
                     proposal = audit.last_unavailable or {}
                     # A prefetch during another calculation cannot waive the
@@ -706,7 +712,21 @@ class MiningFlow:
                     break
                 self.worker.network_notice = str(error)[:400]
                 from horizon_coordination import PublicationPending
-                if isinstance(error, PublicationPending):
+                from horizon_audit_answers import AuditSealRecoveryPending, AuditSealRecoveryRequired
+                if isinstance(error, AuditSealRecoveryPending):
+                    audit.last_error = None
+                    audit.recovery_pending = str(error)[:300]
+                    self.worker.quitting.wait(.1)
+                elif isinstance(error, AuditSealRecoveryRequired):
+                    audit.recovery_pending = None
+                    audit.last_error = str(error)[:300]
+                    self.worker.message('Audit ' + str(position+1) + ': ' + audit.last_error, 'Needs attention')
+                    # A missing or conflicting original is not a network retry.
+                    # Park this lane until an explicit OFF/ON or shutdown; leave
+                    # other lanes and publication running, and grant no credit.
+                    while self.worker.running.is_set() and not self.worker.quitting.wait(.2):
+                        pass
+                elif isinstance(error, PublicationPending):
                     audit.last_error = None
                     self.worker.network_notice = 'Computed audit saved; retrying its network publication'
                     self.worker.quitting.wait(.5)

@@ -116,8 +116,12 @@ class ReassignmentTests(unittest.TestCase):
     def test_cached_count_tampering_cannot_reuse_answer(self):
         self.current.unlink();self.audit['counts'][0]=9;save(self.sealed,self.audit)
         self.refused(ValueError,'committed counts')
-    def test_cached_answer_tampering_is_refused_by_catalogue_digest(self):
+    def test_cached_answer_tampering_recovers_exact_independent_seal(self):
+        self.current.unlink();bad=copy.deepcopy(self.audit);bad['answer']['body']['counts'][0]='9';save(self.sealed,bad)
+        self.test_current_journal_orphan_republishes_exact_answer_without_compute()
+    def test_independent_seal_tampering_is_refused_by_catalogue_digest(self):
         self.current.unlink();self.audit['answer']['body']['counts'][0]='9';save(self.sealed,self.audit)
+        save(self.audits.answers.folder/'sealed-answers'/(self.name+'.json'),self.audit)
         self.refused(ValueError,'changed after registration')
     def test_reassigned_ranges_must_match_sealed_work(self):
         self.current.unlink();self.audit['ranges']=copy.deepcopy(self.ranges);self.audit['ranges'][0]['end']='150000000000000000002';save(self.sealed,self.audit)

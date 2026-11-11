@@ -212,7 +212,7 @@ class MiningFlowCycleTests(unittest.TestCase):
             worker.rpc = Rpc(); worker.source = Source(); worker.messages = []
             worker.running = threading.Event(); worker.running.set(); worker.quitting = threading.Event()
             worker.state_lock = threading.RLock(); worker.network_lock = NetworkLane()
-            worker.sequence = 0; worker.device_lease = None; worker.audits = SimpleNamespace(presentation=None)
+            worker.sequence = 0; worker.device_lease = None; worker.audits = SimpleNamespace(presentation=None, reveal_owner_reports=lambda: None)
             flow = MiningFlow(worker, finalize=(lambda work, report: report) if preseal else None)
             self.assertEqual([lane.worker.address()for lane in flow.audit_lanes],lab_actors if lab and not native else ['fixture-auditor']*2)
             if preseal:self.assertTrue(worker.source.retention_required)
