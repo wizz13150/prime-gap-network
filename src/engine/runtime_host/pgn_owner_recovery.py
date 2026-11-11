@@ -218,11 +218,25 @@ def recover(store):
         return False
     if final.get("error") is not None or final.get("started") is not True or final.get("exit") != 0:
         return False
-    if not final.get("closed") or not final.get("orphan") or final.get("token") != token:
+    if final.get("closed") is not True or final.get("token") != token:
+        raise ValueError("Detached owner has not safely closed this worker")
+    # Storage backpressure can close the resident normally BEFORE the session
+    # commits work_closed. Parent death is not a prerequisite for replaying its
+    # exact sealed output. This path requires the durable V2 job locator and
+    # all of the same receipt, image, nonce, session and prefix checks below.
+    if final.get("orphan") is not True and not (
+        final.get("orphan") is False
+        and instance.get("closed") is True
+        and locator is not None
+        and final.get("schema") == "PGN_OWNER_OUTPUT_V2"
+        and isinstance(final.get("output_job"), dict)
+    ):
         raise ValueError("Detached owner has not safely closed this worker")
     if final["image_sha256"] != identity["worker_sha256"]:
         raise ValueError("Recovery worker image differs from the bound session")
-    if locator is not None and final.get('recovery_ticket_id') != store.folder.name:
+    if locator is not None and (
+        final.get('orphan') is True or final.get('recovery_ticket_id') is not None
+    ) and final.get('recovery_ticket_id') != store.folder.name:
         return False
     transport = _transport_v2(store, root, token, final) if final.get('schema') == 'PGN_OWNER_OUTPUT_V2' else None
     if final.get('schema') == 'PGN_OWNER_OUTPUT_V2' and transport is None:

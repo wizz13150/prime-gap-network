@@ -216,7 +216,7 @@ def boot_main(path):
             result["schema"] = "PGN_OWNER_OUTPUT_V2"
             try:
                 result["output_job"] = seal_job(root, token, cmd)
-                if orphan and result['output_job'] is not None:
+                if result['output_job'] is not None:
                     from pgn_output_spool import bound_job_context
                     current_context = bound_job_context(root, token)
                     if current_context is not None:
@@ -230,7 +230,7 @@ def boot_main(path):
             result["committed_identity_sha256"] = (
                 hashlib.sha256(committed_file.read_bytes()).hexdigest().upper()
             )
-        current_checkpoint_authorized = result.get('schema') != 'PGN_OWNER_OUTPUT_V2' or not orphan or bool(result.get('recovery_ticket_id'))
+        current_checkpoint_authorized = result.get('schema') != 'PGN_OWNER_OUTPUT_V2' or bool(result.get('recovery_ticket_id'))
         if current_checkpoint_authorized and state.is_file() and state.stat().st_size == 64:
             result["checkpoint_sha256"] = hashlib.sha256(state.read_bytes()).hexdigest().upper()
         elif not current_checkpoint_authorized:

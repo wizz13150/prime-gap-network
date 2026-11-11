@@ -173,14 +173,9 @@ def bound_job_context(root, token):
     chunk = metadata.get('current_chunk') or {}
     if not chunk:
         return None  # already durably closed work is not a new recovery job
-    instance = chunk.get('instance') or {}
     ready = _json(root / 'ready.json')
     expected_locator = recovery_locator(root, binding)
-    checks = (instance.get('output_owner') == expected_locator,
-              instance.get('job_nonce') == binding['nonce'],
-              instance.get('pid') == identity.get('pid') == ready.get('pid'),
-              str(instance.get('birth')) == str(identity.get('birth')) == str(ready.get('birth')),
-              ready.get('token') == token,
+    checks = (ready.get('token') == token,
               str(ready.get('image_sha256', '')).upper() == str(identity.get('image_sha256', '')).upper(),
               metadata.get('session_id') == identity.get('session_id'),
               hashlib.sha256(_encoded(metadata.get('configuration'))).hexdigest().upper() == str(identity.get('configuration_sha256', '')).upper())
@@ -194,9 +189,35 @@ def bound_job_context(root, token):
     state, stop = folder / 'native-checkpoint.bin', folder / 'stop.request'
     if Path(argument('--state')).resolve() != state.resolve() or Path(argument('--stop-file')).resolve() != stop.resolve():
         raise SpoolError('Current-job controls are not its canonical ticket files')
-    for flag, key in (('--start','start'),('--length','length'),('--gap-min','gap_min'),('--emit-min-gap','emit_min_gap')):
-        if int(argument(flag)) != int(chunk['identity'][key]):
-            raise SpoolError('Current-job command differs from durable work interval')
+    def matches(candidate):
+        instance = candidate.get('instance') or {}
+        worker = candidate.get('identity') or {}
+        return (instance.get('output_owner') == expected_locator
+                and instance.get('job_nonce') == binding['nonce']
+                and instance.get('pid') == identity.get('pid') == ready.get('pid')
+                and str(instance.get('birth')) == str(identity.get('birth')) == str(ready.get('birth'))
+                and str(worker.get('worker_sha256', '')).upper() == str(identity.get('image_sha256', '')).upper()
+                and worker.get('profile_k') == identity.get('profile_k')
+                and all(int(argument(flag)) == int(worker.get(key, -1))
+                        for flag, key in (('--start','start'),('--length','length'),
+                                          ('--gap-min','gap_min'),('--emit-min-gap','emit_min_gap'))))
+    if not matches(chunk):
+        # A completed job's receipt must not be interpreted against its next,
+        # not-yet-dispatched chunk. Only an exact work_closed WAL record makes
+        # it safe to finish this owner without publishing a new recovery job.
+        previous = metadata.get('closed_chunks', [])
+        for retired in previous[-10:]:
+            if (retired.get('instance') or {}).get('work_closed') is True and matches(retired):
+                return None
+        index = chunk.get('index')
+        if type(index) is int and index > 0:
+            from pgn_index import read_closed_chunk
+            retired = read_closed_chunk(folder / 'session-index.sqlite3', index - 1,
+                                        metadata['session_id'],
+                                        str(identity['configuration_sha256']).lower())
+            if retired and (retired.get('instance') or {}).get('work_closed') is True and matches(retired):
+                return None
+        raise SpoolError('Current-job durable instance/owner binding differs')
     return dict(folder=folder, checkpoint=state, stop=stop, binding=binding,
                 locator=expected_locator, identity=identity)
 

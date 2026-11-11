@@ -522,6 +522,39 @@ class GapIndex(MutableMapping):
         self.db.close()
 
 
+def read_closed_chunk(path, index, session_id, configuration_hash):
+    """Bounded primary-key read of an exact durable completed generation.
+
+    This is not a writer, migration or scan of the session's history. Binding
+    and row come from the same SQLite snapshot; a replaced database is refused.
+    """
+    if type(index) is not int or not 0 <= index < 2**63:
+        raise ValueError('Invalid completed chunk index')
+    path = state_path(path)
+    if not path.is_file():
+        return None
+    connection = sqlite3.connect(readonly_sqlite_uri(path), uri=True,
+                                 timeout=.1, isolation_level=None)
+    try:
+        connection.execute('PRAGMA query_only=ON')
+        connection.execute('BEGIN')
+        binding = connection.execute("SELECT v FROM meta WHERE k='binding'").fetchone()
+        if binding is None or json.loads(binding[0]) != dict(
+                session_id=session_id, configuration_hash=configuration_hash):
+            raise ValueError('Completed chunk belongs to a different session')
+        row = connection.execute('SELECT value FROM chunks WHERE idx=?', (index,)).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    if len(row[0].encode('utf-8')) > 65536:
+        raise ValueError('Oversized completed chunk receipt')
+    chunk = json.loads(row[0])
+    if not isinstance(chunk, dict) or chunk.get('index') != index:
+        raise ValueError('Completed chunk index differs')
+    return chunk
+
+
 def read_metadata_snapshot(path):
     """Read committed metadata only. No schema init, migration or projection write."""
     return _read_metadata_snapshot(path, (
