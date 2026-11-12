@@ -2806,7 +2806,16 @@ bool Chainstate::FlushStateToDisk(
         bool fPeriodicWrite = mode == FlushStateMode::PERIODIC && nNow >= m_next_write;
         const auto empty_cache{(mode == FlushStateMode::FORCE_FLUSH) || fCacheLarge || fCacheCritical};
         // Combine all conditions that result in a write to disk.
-        bool should_write = (mode == FlushStateMode::FORCE_SYNC) || empty_cache || fPeriodicWrite || fFlushForPrune;
+        // Local cache policy, not a block validity or history-length limit.
+        // PGN journal composition checks the complete buffered trail. Keep that
+        // pending batch bounded, using the same atomic UTXO/head/history write.
+        constexpr size_t native_journal_batch_steps{128};
+        const auto& fact_trail=CoinsTip().GetStagedPgnFactHistory();
+        const auto& issuance_trail=CoinsTip().GetStagedPgnIssuanceHistory();
+        const bool bounded_native_batch=(mode==FlushStateMode::IF_NEEDED||mode==FlushStateMode::PERIODIC)&&
+            ((fact_trail&&fact_trail->steps.size()>=native_journal_batch_steps)||
+             (issuance_trail&&issuance_trail->steps.size()>=native_journal_batch_steps));
+        bool should_write = (mode == FlushStateMode::FORCE_SYNC) || empty_cache || fPeriodicWrite || fFlushForPrune || bounded_native_batch;
         // Write blocks, block index and best chain related state to disk.
         if (should_write) {
             LogDebug(BCLog::COINDB, "Writing chainstate to disk: flush mode=%s, prune=%d, large=%d, critical=%d, periodic=%d",

@@ -68,11 +68,11 @@ BOOST_AUTO_TEST_CASE(timeoffsets_warning)
     BOOST_CHECK(!IsWarningRaised({100, 5s}));
 }
 
+
 BOOST_AUTO_TEST_CASE(version_clock_offset_excludes_processing_delay)
 {
     constexpr auto received = 1794212940s;
     for (const auto delay : {0s, 16s, 600s}) {
-        // A busy node must reach the same clock decision as an idle node.
         const auto processed = received + delay;
         BOOST_CHECK(TimeOffsets::FromVersionTime(received + 1s, received) == 1s);
         BOOST_CHECK(std::chrono::abs(TimeOffsets::FromVersionTime(received + 5s, received)) <= TimeOffsets::MAX_TIME_OFFSET);
@@ -82,6 +82,5 @@ BOOST_AUTO_TEST_CASE(version_clock_offset_excludes_processing_delay)
         if (delay >= 16s) BOOST_CHECK(std::chrono::abs(received + 1s - processed) > TimeOffsets::MAX_TIME_OFFSET);
     }
 }
-
 
 BOOST_AUTO_TEST_SUITE_END()
