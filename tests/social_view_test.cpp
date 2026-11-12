@@ -24,8 +24,12 @@
 #include <iostream>
 #include <stdexcept>
 #include "social_v4_checks.h"
+#include "social_chat_checks.h"
+#include "social/social_numbers.h"
+#include <QClipboard>
 using namespace pgn;
-static void check(bool condition,const char* message){if(!condition)throw std::runtime_error(message);}
+static int checks=0;
+static void check(bool condition,const char* message){++checks;if(!condition)throw std::runtime_error(message);}
 template<class T>static T* find(QWidget& view,const QString& name){auto* p=view.findChild<T*>(name);check(p,"Missing social control");return p;}
 static social::Identity A(){return {QString(64,'a'),"SYNTHETIC-ACCOUNT-A"};}
 static social::Identity B(){return {QString(64,'a'),"SYNTHETIC-ACCOUNT-B"};}
@@ -39,14 +43,20 @@ static social::Entry entry(QString id,QString title,int age=0,QString category={
 }
 static social::Provenance provenance(){return {A().genesis,"SYNTHETIC TEST FIXTURE — NOT NETWORK DATA",QDateTime::currentDateTimeUtc(),true};}
 static QVector<social::Miner> miners(){
-    return {{"missing","Synthetic unavailable",{},{},{}},
-        {"zero","Synthetic explicit zero",{QString("0"),provenance()},{QString("12"),provenance()},{}},
-        {"large","Synthetic accepted Gold",{QString("9007199254740993"),provenance()},{},{QDateTime::currentDateTimeUtc().addSecs(-3600),provenance()}}};
+    QVector<social::Miner> values;
+    for(const auto& id:QStringList{"missing","zero","large","adjacent"}){
+        social::Miner m;m.id=id;m.name=id=="missing"?"Synthetic unavailable":id=="zero"?"Synthetic explicit zero":"Synthetic homonym";
+        m.socialMemberId="canonical-"+id;
+        if(id!="missing"){
+            m.validatedSearchPositions={id=="zero"?QString("0"):id=="large"?QString("9007199254740993"):QString("9007199254740992"),provenance()};
+            m.ticketsReported={QString("12"),provenance()};m.ticketsValidated={QString("9"),provenance()};
+            m.validatedAudits={QString("7"),provenance()};m.lastActivityHeight={QString("16640"),provenance()};
+        }
+        values.append(m);
+    }
+    return values;
 }
 static void key(QWidget* view,int code){QKeyEvent e(QEvent::KeyPress,code,Qt::NoModifier);QApplication::sendEvent(view,&e);QKeyEvent up(QEvent::KeyRelease,code,Qt::NoModifier);QApplication::sendEvent(view,&up);}
-static void activate(QWidget& view,int section,int row){
-    auto* list=find<QListWidget>(view,QString("pgn-social-list-%1").arg(section));list->setCurrentRow(row);key(list,Qt::Key_Return);QApplication::processEvents();
-}
 static void fullyVisible(QWidget& root,QWidget* widget,const char* why){
     QApplication::processEvents();const QRect rect(widget->mapTo(&root,QPoint(0,0)),widget->size());
     check(widget->isVisible()&&!widget->visibleRegion().isEmpty()&&root.rect().contains(rect),why);
@@ -80,41 +90,11 @@ static social::Snapshot previewData(const social::ReadRequest& request){
             "Thanks. Let's keep any follow-up in the relevant forum category."
         };
         for(int i=0;i<messages.size();++i){auto e=entry(QString("chat-%1").arg(i),{},(messages.size()-i)*150);e.author=i%2?"Review author B":"Review author A";e.body=messages[i];s.entries.append(e);}
-    }else if(request.section==social::Section::Publications){
-        const QStringList titles{"Reading an audit receipt","A reproducible research note","Describing a retained gap","Comparing observation windows","Keeping ticket context","Reviewing a publication draft","Useful details for support"};
-        const QStringList bodies{
-            "An audit discussion is easier to follow when the observation, its source and the verification result are described separately.",
-            "This note lays out the question, the method and the evidence needed for another reader to reproduce the comparison.",
-            "A retained gap deserves an exact reference and enough context to explain what was observed and what remains to verify.",
-            "Two snapshots can describe different windows. This example keeps that boundary explicit before any numerical comparison.",
-            "A ticket reference connects a publication to the work being discussed without turning the draft itself into a proof.",
-            "A readable draft starts with a clear title and preserves the important facts. The preview lets its author check the full text.",
-            "A support report can include its time, network context and relevant public reference. Credentials never belong in the post."
-        };
-        for(int i=0;i<titles.size();++i){auto e=entry(QString("publication-%1").arg(i),titles[i],i*5400);e.author="Review author "+QString(QChar('A'+i%3));e.body=bodies[i];if(i==0)e.reference="PREVIEW-TICKET-1042 / PREVIEW-GOLD-27";s.entries.append(e);}
-    }else if(request.section==social::Section::Forum){
-        auto topic=entry("general","What makes a useful audit discussion?",900,"General");topic.author="Review author A";
-        topic.body="A discussion should make the context clear before comparing results.\n\nWhich details help a reader understand an audit observation without mistaking it for an accepted result?";
-        topic.replies={{"reply-a","Review author B","I would start with the network and the observation time, then add the public ticket reference.",QDateTime::currentDateTimeUtc().addSecs(-720)},
-            {"reply-b","Review author C","The method belongs next to the evidence. A missing value should stay unavailable instead of becoming a numerical claim.",QDateTime::currentDateTimeUtc().addSecs(-480)},
-            {"reply-c","Review author A","Agreed. I will keep those points in the publication draft and link back to the relevant context.",QDateTime::currentDateTimeUtc().addSecs(-240)}};
-        s.entries={topic};const QStringList titles{"When to open a support topic","Keeping a research question focused","Public references and useful context","How to describe a partial snapshot","Following up on an open question","Separating observations from conclusions"};
-        for(int i=0;i<titles.size();++i){auto e=entry(QString("general-%1").arg(i),titles[i],1800+i*300,"General");e.author="Review author "+QString(QChar('A'+i%3));e.body="A review topic with a clear question and space for a contextual reply.";s.entries.append(e);}
-        auto mining=entry("mining","Reading a miner snapshot",1200,"Mining");mining.author="Review author B";mining.body="Which observation window and source were used for this snapshot?";s.entries.append(mining);
-        auto research=entry("research","Reproducing a comparison",2100,"Research");research.author="Review author C";research.body="Describe the method and the exact evidence before comparing the outcomes.";s.entries.append(research);
-        auto support=entry("support","Preparing a useful support report",2400,"Support");support.author="Review author A";support.body="Keep public context and the observed error; exclude credentials.";s.entries.append(support);
-    }else{
-        for(int i=0;i<12;++i){social::Miner m;m.id=QString("review-miner-%1").arg(i);m.name="Review miner "+QString(QChar('A'+i));
-            if(i!=10)m.acceptedGold={QString::number(i==11?0:36-i*3),provenance()};if(i!=4&&i!=10)m.validatedAudits={QString::number(196-i*11),provenance()};
-            if(i!=10&&i!=11)m.lastActivity={QDateTime::currentDateTimeUtc().addSecs(-300-i*720),provenance()};s.miners.append(m);}
+    }else if(request.section==social::Section::Miners){
+        s.miners=miners();
     }
-    for(auto& e:s.entries){e.authorId=e.author.endsWith(" B")?"review-b":e.author.endsWith(" C")?"review-c":"review-a";
-        if(request.section==social::Section::Forum){if(e.replies.isEmpty())e.replies={{e.id+"-a","Review author B","Which part of the observation should we check first?",e.createdUtc.addSecs(60),"review-b"},{e.id+"-b","Review author C","Keep the method and the public reference together so another reader can follow the discussion.",e.createdUtc.addSecs(120),"review-c"}};
-            e.replyCount=QString::number(e.replies.size());e.lastActivity=e.replies.last().createdUtc;e.lastContributor=e.replies.last().author;e.state="Open";e.bbcode=true;e.reactions=QVector<social::Reaction>{{"like","Like",QString("3"),false}};
-            for(int j=0;j<e.replies.size();++j){auto& reply=e.replies[j];reply.authorId=reply.author.endsWith(" B")?"review-b":reply.author.endsWith(" C")?"review-c":"review-a";reply.bbcode=true;reply.reactions=QVector<social::Reaction>{{"like","Like",QString::number(j+1),false}};}}
-        if(request.section==social::Section::Forum){QVector<social::Contributor> people;QSet<QString> seen;for(auto it=e.replies.crbegin();it!=e.replies.crend();++it)if(!seen.contains(it->authorId)){people.append({it->authorId,it->author});seen.insert(it->authorId);}if(!seen.contains(e.authorId))people.append({e.authorId,e.author});e.contributors=people;}
-    }
-    for(auto& m:s.miners)m.socialMemberId="review-a";
+    for(auto& e:s.entries){e.authorId=e.author.endsWith(" B")?"review-b":"review-a";e.bbcode=true;}
+
     return s;
 }
 int main(int argc,char** argv){
@@ -122,6 +102,7 @@ int main(int argc,char** argv){
     if(!test::prepareOffscreen())return 2;QApplication app(argc,argv);app.setFont(QFont("Segoe UI",10));
     QTemporaryDir temp;check(temp.isValid(),"No temporary draft directory");
     test::v4::run(app,temp.path()+"/v4-contract");
+    test::chat::run(temp.path()+"/send-contract/drafts.json");
     social::DraftStore store(temp.path()+"/store/drafts.json");social::Drafts d,loaded;
     d.sections[0].body=QString::fromUtf8("Unicode café 🌌");check(store.save(A(),d).isEmpty()&&store.load(A(),loaded).isEmpty()&&loaded.sections[0].body==d.sections[0].body,"Unicode round-trip failed");
     check(store.path(A())!=store.path(B())&&store.path(A())!=store.path(C()),"Draft identity/genesis collision");
@@ -135,7 +116,10 @@ int main(int argc,char** argv){
     {
         ui::SocialView local(temp.path()+"/local/drafts.json");local.resize(1280,677);local.show();app.processEvents();
         check(local.findChildren<QScrollArea*>().isEmpty(),"A whole-page scroll area remains");
-        auto* tabs=find<QTabWidget>(local,"pgn-social-sections");for(int i=0;i<4;++i)check(tabs->tabText(i)==QStringList({"Chat","Publications","Forum","Miners"})[i],"Incorrect subtab name");
+        auto* tabs=find<QTabWidget>(local,"pgn-social-sections");
+        check(tabs->count()==4&&tabs->isTabVisible(0)&&tabs->isTabVisible(3)&&!tabs->isTabVisible(1)&&!tabs->isTabVisible(2),"Only Chat/Leaderboard may be visible; preserve dormant pages");
+        check(tabs->tabText(0)=="Chat"&&tabs->tabText(3)=="Leaderboard","Incorrect active subtab names");
+        for(const auto hidden:{social::Section::Publications,social::Section::Forum}){local.selectSection(hidden);check(tabs->currentIndex()==0,"selectSection reopened a retired page");}
         for(auto* label:local.findChildren<QLabel*>())check(!label->text().contains("People, ideas")&&!label->text().contains("SOCIAL / COMMUNITY"),"Hero or marketing header remains");
         check(!find<QPlainTextEdit>(local,"pgn-social-draft-body-0")->isEnabled(),"Unscoped draft allowed");
         local.setIdentity(A());auto* body=find<QPlainTextEdit>(local,"pgn-social-draft-body-0");body->setPlainText("Draft A");
@@ -144,13 +128,13 @@ int main(int argc,char** argv){
         local.setIdentity(A());check(body->toPlainText()=="Draft A","Scoped draft not restored");
         body->setPlainText(QString(3999,'x')+QString::fromUtf8("🌌"));check(body->toPlainText().size()==3999,"Limit split Unicode surrogate");
         body->setPlainText("Close flush");auto* nav=local.findChild<QFrame*>("horizonNavigation");check(nav&&nav->height()==58,"Navigation diverges from Horizon height");
-        const auto buttons=nav->findChildren<QPushButton*>();buttons[0]->setFocus();key(buttons[0],Qt::Key_Right);check(tabs->currentIndex()==1,"Arrow navigation failed");
+        const auto buttons=nav->findChildren<QPushButton*>();buttons[0]->setFocus();key(buttons[0],Qt::Key_Right);check(tabs->currentIndex()==3,"Arrow navigation did not skip retired sections");
         buttons[0]->setFocus();key(buttons[0],Qt::Key_Space);key(buttons[0],Qt::Key_Tab);check(QApplication::focusWidget()!=buttons[0],"Hidden tab proxy traps focus");
         body->setFocus();key(body,Qt::Key_Tab);check(QApplication::focusWidget()!=body,"Composer traps Tab");
         fullyVisible(local,find<QPushButton>(local,"pgn-social-send-0"),"Chat Send cut at 1280x720");
         fullyVisible(local,find<QPushButton>(local,"pgn-social-save-0"),"Chat Save cut at 1280x720");
         fullyVisible(local,find<QLabel>(local,"pgn-social-send-reason-0"),"Disabled Send reason cut");
-        for(int i=0;i<3;++i)check(!find<QPushButton>(local,QString("pgn-social-send-%1").arg(i))->isEnabled(),"Unconnected send enabled");
+        check(!find<QPushButton>(local,"pgn-social-send-0")->isEnabled(),"Unconnected send enabled");
     }
     social::DraftStore localStore(temp.path()+"/local/drafts.json");check(localStore.load(A(),loaded).isEmpty()&&loaded.sections[0].body=="Close flush","Close lost pending autosave");
     social::DraftStore brokenStore(temp.path()+"/broken/drafts.json");QDir().mkpath(QFileInfo(brokenStore.path(A())).absolutePath());QFile bad(brokenStore.path(A()));
@@ -172,54 +156,53 @@ int main(int argc,char** argv){
     auto* messages=find<QListWidget>(*view,"pgn-social-list-0");check(messages->count()==2&&messages->item(0)->text().contains("<script>literal only</script>"),"Chat is not safe plain text");
     check(!view->findChild<QTextBrowser*>("pgn-social-detail-0"),"Chat has a duplicate reading panel");
     view->setIdentity(A());pending.last().reply(snapshot(pending.last().request),{});
-    view->selectSection(social::Section::Publications);auto pub=snapshot(pending.last().request);pub.entries={entry("older","Older",90),entry("newer","Newer",10)};pub.entries[1].reference="TEST-TICKET / TEST-GOLD";pending.last().reply(pub,{});
-    auto* pubJourney=find<QStackedWidget>(*view,"pgn-social-journey-1");auto* feed=find<QListWidget>(*view,"pgn-social-list-1");
-    check(pubJourney->currentIndex()==0&&feed->item(0)->text().startsWith("Newer"),"Publication feed or chronological order failed");
-    activate(*view,1,0);check(pubJourney->currentIndex()==1&&find<QTextBrowser>(*view,"pgn-social-detail-1")->toPlainText().contains("TEST-GOLD"),"Full publication read/reference missing");
-    find<QPushButton>(*view,"pgn-social-back-read-1")->click();find<QPushButton>(*view,"pgn-social-new-1")->click();check(pubJourney->currentIndex()==2,"New publication did not open its own composer");
-    find<QLineEdit>(*view,"pgn-social-draft-title-1")->setText("Local title");find<QPlainTextEdit>(*view,"pgn-social-draft-body-1")->setPlainText("Local <script> draft");find<QLineEdit>(*view,"pgn-social-publication-reference")->setText("LOCAL-GOLD");
-    find<QPushButton>(*view,"pgn-social-preview-publication")->click();check(pubJourney->currentIndex()==3&&find<QTextBrowser>(*view,"pgn-social-publication-preview")->toPlainText().contains("Local <script> draft"),"Safe local publication preview failed");
-    find<QPushButton>(*view,"pgn-social-back-preview")->click();check(pubJourney->currentIndex()==2&&view->saveDrafts(),"Preview did not return to saved draft");
-    fullyVisible(*view,find<QPushButton>(*view,"pgn-social-send-1"),"Publish cut in dedicated composer");
-    fullyVisible(*view,find<QLabel>(*view,"pgn-social-send-reason-1"),"Publish disabled reason cut");
-    key(find<QPlainTextEdit>(*view,"pgn-social-draft-body-1"),Qt::Key_Escape);check(pubJourney->currentIndex()==0,"Escape did not return from composer");view->refresh();auto duplicate=pub;duplicate.entries.append(pub.entries[0]);pending.last().reply(duplicate,{});
-    check(feed->count()==2&&view->property("pgn_social_state_1")=="error","Malformed refresh erased valid feed");
+    auto validChat=snapshot(pending.last().request);validChat.entries={entry("kept",{},10)};
+    view->refresh();pending.last().reply(validChat,{});view->refresh();auto duplicate=validChat;duplicate.entries.append(validChat.entries[0]);pending.last().reply(duplicate,{});
+    check(messages->count()==1&&view->property("pgn_social_state_0")=="error","Malformed refresh erased valid chat");
+    const int beforeHidden=pending.size();
+    for(const auto hidden:{social::Section::Publications,social::Section::Forum})view->selectSection(hidden);
+    check(pending.size()==beforeHidden&&find<QTabWidget>(*view,"pgn-social-sections")->currentIndex()==0,"Hidden section started a read");
 
-    view->selectSection(social::Section::Forum);auto forum=snapshot(pending.last().request);auto general=entry("general","General topic",10,"General");
-    general.replies={{"reply","<b>Reply author</b>","Reply <img> literal",QDateTime::currentDateTimeUtc()}};forum.entries={general,entry("mining","Mining topic",20,"Mining")};pending.last().reply(forum,{});
-    auto* category=find<QListWidget>(*view,"pgn-social-forum-categories");for(int i=0;i<4;++i)check(category->item(i)->text()==social::categories()[i],"Forum category changed");
-    auto* forumJourney=find<QStackedWidget>(*view,"pgn-social-journey-2");activate(*view,2,0);
-    check(forumJourney->currentIndex()==1&&find<QListWidget>(*view,"pgn-social-forum-thread")->count()==2&&find<QTextBrowser>(*view,"pgn-social-forum-body-reply")->toPlainText().contains("Reply <img> literal"),"Forum posts are not distinct or safe");
-    const auto beforeForumResize=view->size();for(const QSize size:{QSize(1366,950),QSize(1920,1030)}){view->resize(size);app.processEvents();check(find<QTextBrowser>(*view,"pgn-social-forum-body-reply")->height()<=180,"Short forum reply expands after native window resize");}view->resize(beforeForumResize);app.processEvents();
-    find<QPushButton>(*view,"pgn-social-reply-topic")->click();check(forumJourney->currentIndex()==2,"Reply did not open dedicated composer");
-    auto* reply=find<QPlainTextEdit>(*view,"pgn-social-draft-body-2");reply->setPlainText("General reply draft");check(view->saveDrafts(),"Reply draft not saved");
-    fullyVisible(*view,find<QPushButton>(*view,"pgn-social-send-2"),"Reply action cut at 1280x720");
-    find<QPushButton>(*view,"pgn-social-back-compose-2")->click();find<QPushButton>(*view,"pgn-social-back-read-2")->click();
-    category->setCurrentRow(1);activate(*view,2,1);find<QPushButton>(*view,"pgn-social-reply-topic")->click();check(reply->toPlainText().isEmpty(),"Reply draft crossed topics");reply->setPlainText("Mining reply draft");
-    find<QPushButton>(*view,"pgn-social-back-compose-2")->click();find<QPushButton>(*view,"pgn-social-back-read-2")->click();category->setCurrentRow(0);activate(*view,2,0);find<QPushButton>(*view,"pgn-social-reply-topic")->click();
-    check(reply->toPlainText()=="General reply draft","Contextual reply draft not restored");
-    find<QPushButton>(*view,"pgn-social-back-compose-2")->click();find<QPushButton>(*view,"pgn-social-back-read-2")->click();find<QPushButton>(*view,"pgn-social-new-2")->click();
-    find<QLineEdit>(*view,"pgn-social-draft-title-2")->setText("Research draft");find<QComboBox>(*view,"pgn-social-topic-category")->setCurrentText("Research");reply->setPlainText("A new topic draft");check(view->saveDrafts(),"Topic draft save failed");
-    fullyVisible(*view,find<QPushButton>(*view,"pgn-social-save-2"),"Topic Save cut");
-    fullyVisible(*view,find<QLabel>(*view,"pgn-social-send-reason-2"),"Topic disabled reason cut");
-
-    view->selectSection(social::Section::Miners);auto data=snapshot(pending.last().request);data.miners=miners();data.miners[2].acceptedGold.provenance.source="<img src='not-loaded'>";pending.last().reply(data,{});
-    auto* table=find<QTableWidget>(*view,"pgn-social-miners");const QStringList columns{"Miner","Accepted Gold","Validated audits","Last activity"};for(int i=0;i<4;++i)check(table->horizontalHeaderItem(i)->text()==columns[i],"Wrong miner columns");
-    check(table->item(0,1)->text()=="9007199254740993"&&table->item(1,1)->text()=="0"&&table->item(2,1)->text()=="unavailable","Default Gold sort or absent/zero distinction failed");
-    check((table->item(0,1)->textAlignment()&Qt::AlignRight)&&table->item(0,1)->data(Qt::AccessibleDescriptionRole).toString().contains(A().genesis),"Numeric alignment or accessible provenance missing");
+    view->selectSection(social::Section::Miners);auto data=snapshot(pending.last().request);data.miners=miners();data.miners[2].validatedSearchPositions.provenance.source="<img src='not-loaded'>";pending.last().reply(data,{});
+    auto* table=find<QTableWidget>(*view,"pgn-social-miners");
+    const QStringList columns{"Miner","Validated positions","Tickets reported","Tickets validated","Audits validated","Last activity · block"};
+    check(table->columnCount()==6,"Leaderboard column count changed");for(int i=0;i<columns.size();++i)check(table->horizontalHeaderItem(i)->text()==columns[i],"Wrong leaderboard columns");
+    const auto rowId=[&](int row){return table->item(row,0)->data(Qt::UserRole).toString();};
+    check(rowId(0)=="large"&&rowId(1)=="adjacent"&&rowId(2)=="zero"&&rowId(3)=="missing","Exact volume sort failed above 2^53 or missing value sorted as zero");
+    check(table->item(0,1)->text()==social::leaderboardNumber("9007199254740993")&&table->item(0,1)->text()==table->item(1,1)->text(),"Scientific display fixture does not exercise equal rounded text");
+    check(table->item(2,1)->text()=="0"&&table->item(3,1)->text()=="Unavailable","Absent/explicit zero distinction failed");
+    check((table->item(0,1)->textAlignment()&Qt::AlignRight)&&table->item(0,1)->data(Qt::AccessibleDescriptionRole).toString().contains(A().genesis)&&table->item(0,1)->toolTip().contains("9007199254740993"),"Numeric alignment or exact accessible provenance missing");
     check(table->item(0,1)->toolTip().contains("&lt;img")&&!table->item(0,1)->toolTip().contains("<img"),"External tooltip interpreted as rich content");
-    check(find<QLabel>(*view,"pgn-social-loaded-3")->text().contains("Sorted by Accepted Gold (descending)"),"Default Gold sort is not explicit");
+    check(find<QLabel>(*view,"pgn-social-loaded-3")->text().contains("Sorted by Validated positions (descending)"),"Default volume sort is not explicit");
     auto* sort=find<QHeaderView>(*view,"pgn-social-miner-sort-header");auto* refreshMiners=find<QPushButton>(*view,"pgn-social-refresh-3");refreshMiners->setFocus();key(refreshMiners,Qt::Key_Tab);app.processEvents();check(sort->hasFocus(),"Sort header is not reachable with Tab");key(sort,Qt::Key_Home);key(sort,Qt::Key_Right);key(sort,Qt::Key_Return);
-    check(find<QLabel>(*view,"pgn-social-loaded-3")->text().contains("Sorted by Accepted Gold (ascending)"),"Changed sort order is not explicit");
-    check(table->item(0,1)->text()=="0"&&table->item(2,1)->text()=="unavailable","Keyboard Gold sort failed or placed unknown first");
-    auto badMetric=data;badMetric.miners[2].acceptedGold.provenance.genesis=C().genesis;check(!social::validate(badMetric,pending.last().request).isEmpty(),"Wrong-genesis value accepted");
-    badMetric=data;badMetric.miners[2].acceptedGold.provenance.authenticated=false;check(!social::validate(badMetric,pending.last().request).isEmpty(),"Unauthenticated metric accepted");
-    view->refresh();const auto oldWindow=pending.last();find<QComboBox>(*view,"pgn-social-miner-window")->setCurrentIndex(1);check(pending.last().request.window==social::Window::Day,"Window not announced in request");
-    oldWindow.reply(data,{});check(table->rowCount()==0,"Late old-window page accepted");auto day=snapshot(pending.last().request);day.miners=miners();pending.last().reply(day,{});
-    view->refresh();pending.last().reply({},"Source unavailable");check(table->rowCount()==3&&view->property("pgn_social_state_3")=="error","Error erased known snapshot");
+    check(find<QLabel>(*view,"pgn-social-loaded-3")->text().contains("Sorted by Validated positions (ascending)"),"Changed sort order is not explicit");
+    check(rowId(0)=="zero"&&rowId(1)=="adjacent"&&rowId(2)=="large"&&rowId(3)=="missing","Keyboard exact-volume sort failed or placed unknown first");
+    // Equal counters are ordered by canonical operator identity, never homonym.
+    key(sort,Qt::Key_Right);key(sort,Qt::Key_Return);check(rowId(0)=="adjacent"&&rowId(1)=="large"&&rowId(2)=="zero","Counter ties are not ordered by canonical identity");
+    for(int col=1;col<6;++col){check(table->item(3,col)->text()=="Unavailable","Missing metric became a fabricated zero");}
+    for(const auto field:{&social::Miner::validatedSearchPositions,&social::Miner::ticketsReported,&social::Miner::ticketsValidated,&social::Miner::validatedAudits,&social::Miner::lastActivityHeight}){
+        auto badMetric=data;(badMetric.miners[2].*field).provenance.genesis=C().genesis;check(!social::validate(badMetric,pending.last().request).isEmpty(),"Wrong-genesis value accepted");
+        badMetric=data;(badMetric.miners[2].*field).provenance.authenticated=false;check(!social::validate(badMetric,pending.last().request).isEmpty(),"Unauthenticated metric accepted");
+    }
+    auto* window=find<QComboBox>(*view,"pgn-social-miner-window");check(window->count()==1&&window->currentText()=="All recorded activity"&&pending.last().request.window==social::Window::AllTime,"Qt138 advertises an unsupported observation window");
+    view->refresh();const auto oldPage=pending.last();view->setIdentity(B());oldPage.reply(data,{});check(table->rowCount()==0,"Late old-identity leaderboard page accepted");
+    view->setIdentity(A());auto current=snapshot(pending.last().request);current.miners=miners();pending.last().reply(current,{});
+    view->refresh();pending.last().reply({},"Source unavailable");check(table->rowCount()==4&&view->property("pgn_social_state_3")=="error","Error erased known snapshot");
     view->refresh();pending.last().reply(snapshot(pending.last().request),{});check(table->rowCount()==0&&view->property("pgn_social_state_3")=="empty","Empty response confused with offline/error");
     view->setIdentity({});check(table->rowCount()==0&&messages->count()==0&&view->property("pgn_social_state_3")=="offline","Signout did not clear data/state");
     view->setIdentity(A());const auto late=pending.last();delete view;late.reply(snapshot(late.request),{});
+    {
+        ui::SocialView pages(temp.path()+"/page-refusals/drafts.json",services);pages.setIdentity(A());pages.selectSection(social::Section::Miners);
+        auto first=snapshot(pending.last().request);first.miners={miners()[1]};first.nextCursor="page-two";pending.last().reply(first,{});
+        auto* table=find<QTableWidget>(pages,"pgn-social-miners");auto* more=find<QPushButton>(pages,"pgn-social-more-3");
+        more->click();const auto overlap=pending.last();auto bad=snapshot(overlap.request);bad.miners=first.miners;bad.nextCursor="page-three";overlap.reply(bad,{});
+        check(table->rowCount()==1&&pages.property("pgn_social_state_3")=="error","Overlapping page duplicated an operator");
+        more->click();const auto loop=pending.last();bad=snapshot(loop.request);bad.nextCursor=loop.request.cursor;loop.reply(bad,{});
+        check(table->rowCount()==1&&pages.property("pgn_social_state_3")=="error","Repeated page cursor accepted");
+        more->click();const auto next=pending.last();auto good=snapshot(next.request);good.miners={miners()[2]};next.reply(good,{});
+        check(table->rowCount()==2,"Valid retry did not append one distinct operator");
+        next.reply(first,{});check(table->rowCount()==2,"Duplicate page callback changed loaded rows");
+    }
     {
         ui::SocialView paged(temp.path()+"/paged/drafts.json",services);paged.setIdentity(A());paged.selectSection(social::Section::Miners);
         int count=0;
@@ -240,37 +223,28 @@ int main(int argc,char** argv){
         for(int i=0;i<4;++i){pages->setCurrentIndex(i);app.processEvents();fullyVisible(frame,access,"Access panel clipped");QImage image(frame.size(),QImage::Format_ARGB32);image.fill(Qt::transparent);frame.render(&image);check(image.save(output+"/access-"+names[i]+".png"),"Access capture not saved");}
     }
 
-    if(argc==3&&(QString::fromLocal8Bit(argv[1])=="--render"||QString::fromLocal8Bit(argv[1])=="--render-forum")){
-        const bool forumOnly=QString::fromLocal8Bit(argv[1])=="--render-forum";
+    if(argc==3&&QString::fromLocal8Bit(argv[1])=="--render"){
         const QString output=QString::fromLocal8Bit(argv[2]);check(QDir().mkpath(output),"No capture output directory");
         QWidget shell;shell.setStyleSheet("QWidget{background:#010b10;color:#c9eee7;}"+HorizonWorkspaceControlStyle());
         auto* layout=new QVBoxLayout(&shell);layout->setContentsMargins(0,0,0,0);layout->setSpacing(0);
         auto* top=new QFrame;top->setObjectName("horizonCoinNavigation");top->setStyleSheet(HorizonPrimaryNavigationStyle());top->setFixedHeight(43);auto* bar=new QHBoxLayout(top);bar->setContentsMargins(14,5,14,5);
-        int primary=0;for(const auto& label:{"PGN\nPRIME GAP SEARCH","WALLET\nPGN CORE CLIENT","SOCIAL\nCOMMUNITY SPACE"}){auto* button=new QPushButton(label);button->setCheckable(true);button->setChecked(QString(label).startsWith("SOCIAL"));button->setFixedSize(QList<int>{260,210,160}[primary++],33);bar->addWidget(button);}
+        int primary=0;for(const auto& label:{"PGN\nPRIME GAP SEARCH","WALLET\nPGN CORE CLIENT","SOCIAL\nCOMMUNITY SPACE"}){auto* button=new QPushButton(label);button->setCheckable(true);button->setChecked(QString(label).startsWith("SOCIAL"));button->setFixedSize(QList<int>{260,210,210}[primary++],33);bar->addWidget(button);}
         auto* indicator=new QLabel("REVISION PREVIEW · synthetic fixtures · no network");indicator->setStyleSheet("font:11px 'Segoe UI';color:#e6bd64;");bar->addWidget(indicator,1);layout->addWidget(top);
         social::Services fixtures{[](auto request,auto done){done(previewData(request),{});}};auto* socialView=new ui::SocialView(temp.path()+"/review/drafts.json",fixtures);layout->addWidget(socialView,1);
         auto identity=A();identity.subject="Review author A";socialView->setIdentity(identity);
-        for(const QSize size:{QSize(1366,950),QSize(1920,1030)}){
+        for(const QSize size:{QSize(1366,900),QSize(1920,1080)}){
             shell.resize(size);shell.show();app.processEvents();check(shell.size()==size,"Page forces oversized shell");
-            for(int i=0;i<4;++i){
-                if(forumOnly&&i!=2)continue;
+            for(const int i:{0,3}){
                 socialView->selectSection(static_cast<social::Section>(i));app.processEvents();
                 if(i==0){find<QPlainTextEdit>(*socialView,"pgn-social-draft-body-0")->setPlainText("I will keep the exact observation window in the draft before sharing it.");find<QPushButton>(*socialView,"pgn-social-save-0")->click();}
-                if(i==1){auto* journey=find<QStackedWidget>(*socialView,"pgn-social-journey-1");
-                    find<QPushButton>(*socialView,"pgn-social-new-1")->click();fullyVisible(shell,find<QPushButton>(*socialView,"pgn-social-send-1"),"Publication composer action clipped");
-                    fullyVisible(shell,find<QPushButton>(*socialView,"pgn-social-preview-publication"),"Preview action clipped");fullyVisible(shell,find<QLabel>(*socialView,"pgn-social-send-reason-1"),"Publication reason clipped");
-                    find<QPushButton>(*socialView,"pgn-social-back-compose-1")->click();check(journey->currentIndex()==0,"Publication cannot return to feed");}
-                if(i==2){find<QPushButton>(*socialView,"pgn-social-back-read-2")->click();activate(*socialView,2,0);fullyVisible(shell,find<QPushButton>(*socialView,"pgn-social-reply-topic"),"Forum reply action clipped");
-                    find<QPushButton>(*socialView,"pgn-social-reply-topic")->click();fullyVisible(shell,find<QPushButton>(*socialView,"pgn-social-send-2"),"Forum compose action clipped");
-                    fullyVisible(shell,find<QLabel>(*socialView,"pgn-social-send-reason-2"),"Forum reason clipped");find<QPushButton>(*socialView,"pgn-social-back-compose-2")->click();if(!forumOnly)find<QPushButton>(*socialView,"pgn-social-back-read-2")->click();}
                 if(i==0){fullyVisible(shell,find<QPushButton>(*socialView,"pgn-social-send-0"),"Chat Send clipped");fullyVisible(shell,find<QPushButton>(*socialView,"pgn-social-save-0"),"Chat Save clipped");fullyVisible(shell,find<QLabel>(*socialView,"pgn-social-send-reason-0"),"Chat reason clipped");}
                 fullyVisible(shell,find<QLabel>(*socialView,"pgn-social-status"),"Stable status line clipped");app.processEvents();
-                if(forumOnly){const auto posts=socialView->findChildren<QTextBrowser*>(QRegularExpression("pgn-social-forum-body-.*"));check(!posts.isEmpty(),"Forum review has no post bodies");for(auto* post:posts)check(post->height()<=200,"Short review forum post has oversized reader");}
-                QImage image(shell.size(),QImage::Format_ARGB32);image.fill(Qt::transparent);shell.render(&image);check(image.save(output+(forumOnly?QString("/forum-thread-%1.png").arg(size.width()):QString("/social-%1-%2.png").arg(size.width()).arg(i))),"Capture not saved");
+                QImage image(shell.size(),QImage::Format_ARGB32);image.fill(Qt::transparent);shell.render(&image);check(image.save(output+QString("/social-%1-%2.png").arg(size.width()).arg(i)),"Capture not saved");
             }
         }
     }
-    std::cout<<"PASS: V4 mixed surfaces and contrast; BBCode source/toolbar/preview/bounds/safe resources; Discord-style channels/participants and scoped drafts; service-authoritative roles and refusal; no hidden superior; identity/revocation/recovery/replay adapter guards; four-section context menus; publication feed/read/write/preview; contextual forum replies; native keyboard/focus; bounded atomic drafts; genesis/provenance/Gold sort; 500-row pagination; offline/loading/empty/error; safe late/destruction\n";
+    std::cout<<"PASS: V4 mixed surfaces and contrast; BBCode source/toolbar/preview/bounds/safe resources; Discord-style channels/participants and scoped drafts; service-authoritative roles and refusal; no hidden superior; identity/revocation/recovery/replay adapter guards; Chat/Leaderboard native context menus with canonical targets; retired sections inaccessible; native keyboard/focus; bounded atomic drafts; genesis/provenance/exact volume sort and scientific display; 500-row pagination; offline/loading/empty/error; safe late/destruction; same-operation send retry/restart; no optimistic insert; Posted vs Delivered; wrong-scope/401 refusal\n";
+    std::cout<<"CHECKS "<<(checks+test::v4::checks+test::chat::checks)<<"\n";
     return 0;
  }catch(const std::exception& error){std::cerr<<"FAIL: "<<error.what()<<'\n';return 1;}
 }

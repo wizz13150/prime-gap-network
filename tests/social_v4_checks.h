@@ -8,7 +8,8 @@
 #include <QContextMenuEvent>
 #include <cmath>
 namespace pgn::test::v4 {
-inline void expect(bool good,const char* why){if(!good)throw std::runtime_error(why);}
+inline int checks=0;
+inline void expect(bool good,const char* why){++checks;if(!good)throw std::runtime_error(why);}
 template<class T>inline T* control(QWidget& root,const QString& name){auto* value=root.findChild<T*>(name);expect(value,"Missing V4 control");return value;}
 inline social::Identity identity(){return {QString(64,'a'),"SYNTHETIC-PERSISTENT-ACCOUNT"};}
 inline social::AccessSnapshot access(){
@@ -101,12 +102,11 @@ inline void run(QApplication& app,const QString& path){
     control<QPushButton>(local,"pgn-social-open-access")->click();app.processEvents();auto* unverified=local.findChild<QDialog*>("pgn-social-access-dialog");expect(unverified&&!control<QPushButton>(*unverified,"pgn-social-assign-role")->isEnabled(),"Local identity auto-granted a role");
     local.setIdentity({QString(64,'b'),identity().subject});expect(!local.findChild<QDialog*>("pgn-social-access-dialog"),"Identity change retained access dialog");local.close();
     struct PendingRead{ReadRequest request;Services::Reply done;};QVector<PendingRead> reads;
-    struct PendingThread{ThreadRequest request;std::function<void(ThreadSnapshot,QString)> done;};QVector<PendingThread> threadReads;
-    Services injected;injected.read=[&](auto req,auto done){reads.append({req,done});};injected.readThread=[&](auto req,auto done){threadReads.append({req,done});};
+    Services injected;injected.read=[&](auto req,auto done){reads.append({req,done});};
     auto response=[&](const ReadRequest& req){Snapshot result;result.identity=req.identity;result.section=req.section;result.window=req.window;result.authenticated=true;result.source="SYNTHETIC CONTRACT FIXTURE";result.observedUtc=QDateTime::currentDateTimeUtc();result.access=access();
         if(req.section==Section::Chat){result.channel=req.channel.isEmpty()?"general":req.channel;result.channels=QVector<Channel>{{"general","general","Synthetic channel"},{"mining","mining","Synthetic channel"}};
             result.participants=QVector<Participant>{{"peer","Synthetic moderator","Online",{"moderator"}},{identity().subject,"Synthetic member",{},{"member"}}};}
-        if(req.section==Section::Miners){Provenance provenance{req.identity.genesis,"SYNTHETIC PROVENANCE",QDateTime::currentDateTimeUtc(),true};Miner miner{"miner","Synthetic miner",{QString("0"),provenance},{},{}};miner.socialMemberId=identity().subject;result.miners={miner};}
+        if(req.section==Section::Miners){Provenance provenance{req.identity.genesis,"SYNTHETIC PROVENANCE",QDateTime::currentDateTimeUtc(),true};Miner miner;miner.id="miner";miner.name="Wizz";miner.validatedSearchPositions={QString("0"),provenance};miner.socialMemberId=identity().subject;result.miners={miner};}
         else{Entry item;item.id="synthetic-item";item.author="Synthetic author";item.authorId=identity().subject;item.title="Synthetic title";item.body="[b]Synthetic source[/b]";item.createdUtc=QDateTime::currentDateTimeUtc();if(req.section==Section::Forum){item.category="General";item.replies={{"reply","Synthetic reply","Synthetic reply body",QDateTime::currentDateTimeUtc(),identity().subject}};item.replyCount="200";item.lastActivity=QDateTime::currentDateTimeUtc();item.state="Open";item.nextReplyCursor="page-0";item.replies[0].reactions=QVector<Reaction>{{"like","Like",{},false}};}result.entries={item};}
         return result;};
     ui::SocialView network(path+"/network/drafts.json",injected);network.resize(1280,677);network.show();network.activateWindow();network.setIdentity(identity());app.processEvents();
@@ -121,31 +121,40 @@ inline void run(QApplication& app,const QString& path){
     chatBody->setPlainText("[i]General draft[/i]");channelList->setCurrentRow(1);QApplication::sendEvent(channelList,&enter);reads.last().done(response(reads.last().request),{});expect(chatBody->toPlainText()=="[b]Mining draft[/b]","Channel BBCode draft not recovered");
     auto* participantList=control<QListWidget>(network,"pgn-social-chat-members");expect(participantList->horizontalScrollBarPolicy()==Qt::ScrollBarAlwaysOff,"Participants have horizontal chrome");
     auto* toggle=control<QPushButton>(network,"pgn-social-toggle-members");toggle->click();expect(!participantList->isVisible(),"Participants cannot collapse");toggle->click();expect(participantList->isVisible(),"Participants cannot reopen");
-    for(int section=0;section<4;++section){
-        network.selectSection(static_cast<Section>(section));if(section)reads.last().done(response(reads.last().request),{});app.processEvents();
-        QWidget* target;if(section==3){auto* table=control<QTableWidget>(network,"pgn-social-miners");table->setCurrentCell(0,0);target=table;}
-        else{auto* list=control<QListWidget>(network,"pgn-social-list-"+QString::number(section));list->setCurrentRow(0);target=list;}
-        target->setFocus();QContextMenuEvent event(QContextMenuEvent::Keyboard,QPoint(-1,-1),QPoint(20,20));QApplication::sendEvent(target,&event);app.processEvents();
-        auto* menu=network.findChild<QMenu*>("pgn-social-context-"+QString::number(section));
-        if(!menu){QMetaObject::invokeMethod(target,"customContextMenuRequested",Qt::DirectConnection,Q_ARG(QPoint,QPoint(-1,-1)));app.processEvents();menu=network.findChild<QMenu*>("pgn-social-context-"+QString::number(section));}
-        expect(menu&&menu->actions().size()>=2,"Keyboard context menu unavailable");
-        bool memberAction=false;for(const auto* action:menu->actions()){memberAction|=action->text().contains("member actions");if(action->text().startsWith("Remove "))expect(section!=3&&!action->isEnabled(),"Unauthenticated moderation enabled");if(section==3)expect(!action->text().startsWith("Remove ")&&!action->text().contains("approve",Qt::CaseInsensitive),"Leaderboard mutation/approval invented");}
-        expect(memberAction,"Canonical member target missing from context menu");menu->close();QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
-        if(section==2){auto* list=control<QListWidget>(network,"pgn-social-list-2");const QPoint local(list->viewport()->width()-16,list->visualItemRect(list->currentItem()).center().y());QMouseEvent moreEvent(QEvent::MouseButtonRelease,QPointF(local),QPointF(list->viewport()->mapToGlobal(local)),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);QApplication::sendEvent(list->viewport(),&moreEvent);app.processEvents();auto* rowMenu=network.findChild<QMenu*>("pgn-social-context-2");expect(rowMenu&&control<QStackedWidget>(network,"pgn-social-journey-2")->currentIndex()==0,"Inline topic actions also opened the reader");rowMenu->close();QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
-            QApplication::sendEvent(list,&enter);auto* reader=control<QTextBrowser>(network,"pgn-social-forum-body-reply");
-            QMetaObject::invokeMethod(reader,"customContextMenuRequested",Qt::DirectConnection,Q_ARG(QPoint,QPoint(20,20)));app.processEvents();auto* replyMenu=network.findChild<QMenu*>("pgn-social-context-2");bool replyAction=false;for(const auto* action:replyMenu->actions())replyAction|=action->text()=="Remove reply";expect(replyAction,"Reply menu targets the whole topic");replyMenu->close();QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
-            auto* reaction=control<QPushButton>(network,"pgn-social-forum-reaction-reply-like");expect(reaction->text().contains("unavailable")&&!reaction->isEnabled(),"Reaction absence became zero or enabled write");
-            control<QPushButton>(network,"pgn-social-forum-quote-reply")->click();auto* forumDraft=control<QPlainTextEdit>(network,"pgn-social-draft-body-2");expect(forumDraft->toPlainText().contains("[quote]Synthetic reply body[/quote]")&&network.saveDrafts(),"Forum quote did not produce saved BBCode");
-            Drafts forumSaved;expect(DraftStore(path+"/network/drafts.json").load(identity(),forumSaved).isEmpty()&&forumSaved.replyTargets.value("synthetic-item")=="reply","Quoted reply lost canonical target");
-            control<QPushButton>(network,"pgn-social-preview-forum")->click();expect(control<QTextBrowser>(network,"pgn-social-forum-preview")->toPlainText().contains("Synthetic reply body")&&!control<QTextBrowser>(network,"pgn-social-forum-preview")->toPlainText().contains("[quote]"),"Forum editor/preview format diverged");control<QPushButton>(network,"pgn-social-forum-back-preview")->click();control<QPushButton>(network,"pgn-social-back-compose-2")->click();
-            auto* more=control<QPushButton>(network,"pgn-social-more-replies");more->click();auto invalidPage=threadReads.last();ThreadSnapshot bad;bad.identity=invalidPage.request.identity;bad.identity.genesis=QString(64,'b');bad.topic=invalidPage.request.topic;bad.source="SYNTHETIC THREAD FIXTURE";bad.authenticated=true;bad.observedUtc=QDateTime::currentDateTimeUtc();invalidPage.done(bad,{});
-            expect(control<QListWidget>(network,"pgn-social-forum-thread")->count()==2&&control<QLabel>(network,"pgn-social-forum-thread-state")->text().contains("retained"),"Wrong-genesis reply page replaced posts");
-            more->click();invalidPage=threadReads.last();bad.identity=invalidPage.request.identity;bad.replies={{"reply","Synthetic overlap","Should be rejected",QDateTime::currentDateTimeUtc(),identity().subject}};invalidPage.done(bad,{});
-            expect(control<QListWidget>(network,"pgn-social-forum-thread")->count()==2,"Overlapping reply page duplicated posts");
-            const int started=threadReads.size();for(int page=0;page<4;++page){more->click();const auto pending=threadReads.last();expect(pending.request.limit==(page==3?49:50),"Thread remaining-capacity bound missing");more->click();expect(threadReads.size()==started+page+1,"Overlapping thread read admitted");
-                ThreadSnapshot thread;thread.identity=pending.request.identity;thread.topic=pending.request.topic;thread.source="SYNTHETIC THREAD FIXTURE";thread.authenticated=true;thread.observedUtc=QDateTime::currentDateTimeUtc();thread.nextCursor=page==3?QString{}:QString("page-%1").arg(page+1);
-                for(int j=0;j<pending.request.limit;++j)thread.replies.append({QString("page-%1-reply-%2").arg(page).arg(j),"Synthetic member","Synthetic paged reply",QDateTime::currentDateTimeUtc(),identity().subject});pending.done(thread,{});}
-            expect(control<QListWidget>(network,"pgn-social-forum-thread")->count()==201&&!more->isEnabled(),"Thread paging exceeded cap or omitted distinct posts");
+    // Only the two operator-authorized sections may be navigated. Legacy draft
+    // and data types remain intact; a test must not reopen their hidden pages.
+    for(const auto section:{Section::Chat,Section::Miners}){
+        const int index=static_cast<int>(section);
+        network.selectSection(section);if(index==3)reads.last().done(response(reads.last().request),{});app.processEvents();
+        QWidget* target;
+        if(section==Section::Miners){auto* table=control<QTableWidget>(network,"pgn-social-miners");table->setCurrentCell(0,0);target=table;}
+        else{auto* list=control<QListWidget>(network,"pgn-social-list-0");list->setCurrentRow(0);target=list;}
+        for(const auto reason:{QContextMenuEvent::Keyboard,QContextMenuEvent::Mouse}){
+            target->setFocus();
+            QPoint position(-1,-1);
+            if(reason==QContextMenuEvent::Mouse){
+                if(index==3){auto* table=static_cast<QTableWidget*>(target);position=table->visualItemRect(table->item(0,0)).center();}
+                else{auto* list=static_cast<QListWidget*>(target);position=list->visualItemRect(list->currentItem()).center();}
+            }
+            QContextMenuEvent event(reason,position,target->mapToGlobal(position));
+            // QAbstractScrollArea receives native context events on its viewport.
+            QApplication::sendEvent(static_cast<QAbstractItemView*>(target)->viewport(),&event);app.processEvents();
+            QPointer<QMenu> menu=network.findChild<QMenu*>("pgn-social-context-"+QString::number(index));
+            expect(menu&&menu->actions().size()>=2,"Native keyboard/right-click context menu unavailable");
+            QAction* memberAction=nullptr;
+            for(auto* action:menu->actions()){
+                if(action->text().contains("member actions"))memberAction=action;
+                if(action->text().startsWith("Remove "))expect(index!=3&&!action->isEnabled(),"Unauthenticated moderation enabled");
+                if(index==3)expect(!action->text().startsWith("Remove ")&&!action->text().contains("approve",Qt::CaseInsensitive),"Leaderboard mutation/approval invented");
+            }
+            expect(memberAction,"Canonical member target missing from context menu");
+            memberAction->trigger();app.processEvents();
+            auto* dialog=network.findChild<QDialog*>("pgn-social-access-dialog");
+            expect(dialog,"Canonical member action did not open access dialog");
+            auto* people=control<QListWidget>(*dialog,"pgn-social-member-list");
+            expect(people->currentItem()&&people->currentItem()->data(Qt::UserRole).toString()==identity().subject,"Display name replaced canonical member target");
+            expect(!control<QPushButton>(*dialog,"pgn-social-assign-role")->isEnabled(),"Username granted local moderator authority");
+            dialog->close();if(menu)menu->close();QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
         }
     }
     network.close();
