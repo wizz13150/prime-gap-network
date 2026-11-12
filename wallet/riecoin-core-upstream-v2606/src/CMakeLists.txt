@@ -510,3 +510,14 @@ target_link_libraries(pgn-native-audit-retained-history-test PRIVATE core_interf
 
 add_executable(pgn-native-audit-config-test EXCLUDE_FROM_ALL pgn/native_audit_config_test.cpp)
 target_link_libraries(pgn-native-audit-config-test PRIVATE core_interface riecoin_node univalue)
+
+# Portable Core must resolve its bundled non-system libraries after relocation.
+# RPATH (rather than RUNPATH) also covers the bundled libraries' children.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  foreach(portable_core IN ITEMS riecoind riecoin-cli)
+    if(TARGET ${portable_core})
+      set_target_properties(${portable_core} PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE INSTALL_RPATH "$ORIGIN")
+      target_link_options(${portable_core} PRIVATE "LINKER:--disable-new-dtags")
+    endif()
+  endforeach()
+endif()
