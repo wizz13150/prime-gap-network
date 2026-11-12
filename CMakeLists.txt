@@ -1803,3 +1803,8 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME whole-audit-progress COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audit_progress.py")
     set_tests_properties(controlled-lab-audit-actors audit-partition-prefetch PROPERTIES TIMEOUT 30 LABELS "audits;recovery;scheduling;synthetic;no-gpu" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endif()
+
+if(Python3_Interpreter_FOUND)
+ add_test(NAME cycle-execution COMMAND "${Python3_EXECUTABLE}" -B -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cycle_execution.py")
+ set_tests_properties(cycle-execution PROPERTIES TIMEOUT 30 LABELS "audits;no-gpu")
+endif()

@@ -1,5 +1,6 @@
 """The scheduler spends one allowance on activation, never on eligibility scans."""
 from collections import deque
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -16,10 +17,10 @@ from test_work_cycle import work, task
 
 class CatchupBudgetFlowTests(unittest.TestCase):
     def test_scanning_partitions_restart_and_next_search_keep_the_whole_audit_budget(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as cleanup:
             root = Path(directory)
             journal = WorkCycleJournal(root / 'work-cycles', 'a' * 64)
-            self.addCleanup(journal.close)
+            cleanup.callback(journal.close)
             current = work()
             journal.prepare(current)
             for index in range(2):
@@ -45,7 +46,8 @@ class CatchupBudgetFlowTests(unittest.TestCase):
             for part in range(1, 5):
                 item = audit(700, part)
                 self.assertTrue(flow.may_start_work(item)); flow.activate(item)
-            flow.activate(second)
+            self.assertFalse(flow.may_start_work(second))
+            with self.assertRaises(BufferError):flow.activate(second)
             self.assertFalse(flow.may_start_work(excess))
             # The next queued search cannot retag an already admitted audit.
             next_work = work(2); journal.prepare(next_work)
@@ -57,7 +59,7 @@ class CatchupBudgetFlowTests(unittest.TestCase):
             self.assertFalse(flow.may_start_work(excess))
             flow.gpu.active = None
             journal.close(); flow.cycles = WorkCycleJournal(root / 'work-cycles', 'a' * 64)
-            self.addCleanup(flow.cycles.close)
+            cleanup.callback(flow.cycles.close)
             flow.gpu.search = deque([search])
             self.assertFalse(flow.may_start_work(excess))
             self.assertTrue(flow.may_start_work(audit(700, 4)))
