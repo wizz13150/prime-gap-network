@@ -13,6 +13,7 @@
 #include "ui/mining_summary.h"
 #include "mining/cpu_activity.h"
 #include "ui/cpu_card_metrics.h"
+#include "ui/busy_history_geometry.h"
 #include "ui/block_eta.h"
 #include "mining/resource_age.h"
 #include "ui/historical_proof_presentation.h"
@@ -2548,26 +2549,14 @@ private:
             const qreal y = area.top() + area.height() * i / 4.0;
             painter.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
         }
-        if (history.size() >= 2) {
-            QPainterPath path;
-            bool drawing = false;
-            for (int i = 0; i < history.size(); ++i) {
-                const qreal x = area.left() + area.width() * i / static_cast<qreal>(history.size() - 1);
-                if (!history.at(i).utilizationEmitted) {
-                    drawing = false;
-                    continue;
-                }
-                const qreal y = area.bottom() - area.height() *
-                    std::clamp(history.at(i).utilization / 100.0, 0.0, 1.0);
-                if (!drawing) {
-                    path.moveTo(x, y);
-                    drawing = true;
-                } else {
-                    path.lineTo(x, y);
-                }
-            }
-            painter.setPen(QPen(color, 1.7));
-            painter.drawPath(path);
+        const auto points = pgn::ui::busyHistoryGeometry(
+            history, area, QDateTime::currentMSecsSinceEpoch());
+        painter.setPen(QPen(color, 1.7));
+        QPointF previous;
+        for (const auto& point : points) {
+            if (point.connect) painter.drawLine(previous, point.position);
+            else painter.drawPoint(point.position);
+            previous = point.position;
         }
         if (showLabel) {
             painter.setFont(Font(7, QFont::DemiBold, true));
@@ -4924,6 +4913,18 @@ private:
         }
         drawSparkline(painter, QRectF(pod.left() + 12, pod.bottom() - 13, pod.width() - 24, 8),
                       history, color, false);
+        const auto historyArea = QRectF(pod.left() + 12, pod.bottom() - 18, pod.width() - 24, 15)
+                                     .intersected(m_deviceStripRect);
+        if (!historyArea.isEmpty()) {
+            const auto age = history.isEmpty() || !history.constLast().observedUtc.isValid()
+                ? QStringLiteral("unavailable")
+                : QStringLiteral("%1 s ago").arg(std::max<qint64>(0,
+                    history.constLast().observedUtc.msecsTo(QDateTime::currentDateTimeUtc())) / 1000.0, 0, 'f', 1);
+            m_uiTooltipHits.append({historyArea,
+                QStringLiteral("GPU utilization history (0–100%) · last 2 minutes\n"
+                               "Spacing follows observation time. Missing data stays blank.\n"
+                               "Latest observation: %1").arg(age)});
+        }
         }else{
             if(controlConnected)m_deviceControlHits.append({controlId,deviceKind,statePill.intersected(m_deviceStripRect),{},true});
             drawCpuThreadBudget(painter,pod,lane,stableDeviceId,color,controlConnected);
@@ -7219,18 +7220,19 @@ void presentCpuController(QWidget* widget,const QJsonObject& inventory,const QJs
     const auto host=inventory.value("host").toString();if(host.isEmpty())return;
     FrontierTelemetrySnapshot lane;lane.gpuUuid="CPU/"+host.toUpper()+"/"+QString::number(inventory.value("processor_group").toInt());
     lane.gpuName=host+" · "+inventory.value("model").toString();lane.engineId="pgn-cpu-normal-executor";lane.sourceMode="live";
-    const bool computing=pgn::mining::cpuCalculationActive(status,connected);
+    const bool computing=pgn::mining::cpuCalculationActive(status,connected)||pgn::ui::cpuResourceSessionActive(status,connected);
     lane.authoritative=connected;lane.stale=!connected;lane.observedUtc=QDateTime::currentDateTimeUtc();lane.state=computing?"running":"idle";
     lane.producerStatus=computing?"running":"idle";lane.runId=status.value("request_sha256").toString(status.value("session").toString());
     lane.rowsCompleted=status.value("completed_positions").toString();lane.rowsTotal=status.value("total_positions").toString();
     if(computing&&status.value("rate_positions_per_second").isDouble())lane.e2ePositionsPerSecond=status.value("rate_positions_per_second").toDouble();
+    if(computing&&!pgn::ui::cpuResourceRates(status,connected).isEmpty())lane.e2ePositionsPerSecond=pgn::ui::cpuMetricNumber(status,"resource_positions_per_second");
     if(connected&&status.value("machine_load_percent").isDouble())lane.gpuSmUtilPercent=status.value("machine_load_percent").toDouble();
     lane.raw={{"pgn_cpu_inventory",inventory},{"pgn_cpu_host",host},{"pgn_cpu_control",connected},{"pgn_cpu_state",status.value("state")},
         {"pgn_cpu_maximum_workers",inventory.value("maximum_workers")},{"pgn_cpu_requested_threads",status.value("requested_threads")},
         {"pgn_cpu_active_threads",status.value("threads_active")},{"pgn_cpu_worker_pids",status.value("worker_pids")},
         {"pgn_device_enabled",connected&&status.value("resource_selected").toBool(status.value("enabled").toBool())},{"pgn_process_running",computing},
         {"pgn_cpu_status",status}};
-    const auto science=pgn::ui::cpuMiningRates(status,connected);
+    const auto science=pgn::ui::cpuVisibleRates(status,connected);
     if(computing&&!science.isEmpty()){
         lane.powmPerSecond=pgn::ui::cpuMetricNumber(science,"tests_per_second");
         lane.raw.insert("pgn_processed_gaps_per_second",science.value("gaps_per_second"));

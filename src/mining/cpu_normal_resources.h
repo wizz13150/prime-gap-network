@@ -15,7 +15,7 @@ class CpuNormalResources final:public QObject {
     struct Choice {QString request;bool enabled{};int percent{};int exactWorkers{};};
     struct Resource {CpuControlEndpoint endpoint;CpuControllerClient* client{};QJsonObject inventory,status;QHash<qint64,Bridge> pending;QString control,reason,reasonCode;bool selected{},wanted{},compatible{};int desiredThreads{1};std::optional<Choice> queued;};
     QHash<QString,std::shared_ptr<Resource>> resources_;QPointer<QProcess> miner_;bool closing_{},restored_{};
-    QProcess* cpuMiner_{};QString cpuProgram_;QStringList cpuArguments_;QByteArray cpuBuffer_;
+    QProcess* cpuMiner_{};QString cpuProgram_,frameDevice_;QStringList cpuArguments_;QByteArray cpuBuffer_;
     bool launchCpuMiner(){
         if(closing_||cpuProgram_.isEmpty())return false;
         if(!cpuMiner_){
@@ -26,8 +26,11 @@ class CpuNormalResources final:public QObject {
                 if(cpuBuffer_.size()>4194304){cpuBuffer_.clear();cpuMiner_->write("{\"action\":\"quit\"}\n");return;}
                 while(cpuBuffer_.contains('\n')){
                     const auto end=cpuBuffer_.indexOf('\n');const auto line=cpuBuffer_.left(end);cpuBuffer_.remove(0,end+1);
-                    const auto frame=QJsonDocument::fromJson(line).object();
-                    if(!packet(cpuMiner_,frame)&&onNormalFrame)onNormalFrame(frame);
+                    auto frame=QJsonDocument::fromJson(line).object();
+                    if(!packet(cpuMiner_,frame)&&onNormalFrame){
+                        if(frame.value("schema")=="PGN_HORIZON_MINING_VIEW_V1"&&!frameDevice_.isEmpty())frame.insert("source_device",frameDevice_);
+                        onNormalFrame(frame);
+                    }
                 }
             });
             connect(cpuMiner_,&QProcess::readyReadStandardError,this,[this]{const auto error=cpuMiner_->readAllStandardError();if(!error.isEmpty()&&onNormalFrame)onNormalFrame({{"schema","PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1"},{"phase","Needs attention"},{"message",QString::fromUtf8(error).right(400)}});});
@@ -152,6 +155,7 @@ public:
             r->pending.insert(id,{miner,identity});return true;
         }
         if(!r||miner_!=miner)return true;
+        if(packet.value("type")=="telemetry")frameDevice_=device;
         if(packet.value("status").isObject())r->status=packet.value("status").toObject();
         r->status.insert("normal_cycle_mode","qualification");r->status.insert("publication_admitted",false);
         if(packet.value("resource_enabled").isBool())r->selected=packet.value("resource_enabled").toBool();
@@ -165,7 +169,7 @@ public:
         present(r);return true;
     }
     void disconnected(QProcess* miner){
-        if(miner_!=miner)return;miner_=nullptr;
+        if(miner_!=miner)return;miner_=nullptr;frameDevice_.clear();
         for(const auto& r:resources_){
             r->client->pause();r->pending.clear();
             if(!r->control.isEmpty()&&onControl)onControl(r->endpoint.deviceId,r->control,false,"Normal miner disconnected; CPU frontier retained");r->control.clear();

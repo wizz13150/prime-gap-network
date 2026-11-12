@@ -1,10 +1,13 @@
 #include "ui/social_view.h"
+#include "social/social_numbers.h"
 #include "ui/render/horizon_coin_navigation.h"
 #include "ui/render/horizon_workspace_style.h"
 #include "ui/social_light_style.h"
 #include "ui/social_entry_delegate.h"
 #include "ui/social_access_dialog.h"
 #include "ui/social_controls.h"
+#include "ui/social_presentation.h"
+#include <QInputMethodEvent>
 #include "ui/social_forum_thread.h"
 #include <QFrame>
 #include <QMenu>
@@ -100,7 +103,7 @@ protected:
 SocialView::SocialView(QString path,social::Services services,QWidget* parent)
     :QWidget(parent),services_(std::move(services)),store_(std::move(path)){
     setObjectName("pgn-social-workspace");
-    setStyleSheet(SocialLightStyle()+SocialChatContrastStyle());
+    setStyleSheet(SocialLightStyle()+SocialChatContrastStyle()+SocialReadableStyle());
     auto* box=vertical(this);box->setSpacing(0);tabs_=new QTabWidget;tabs_->setProperty("socialSurface",true);tabs_->setObjectName("pgn-social-sections");
     for(int i=0;i<4;++i){
         auto& p=pages_[i];auto* page=new QWidget;if(i==0)page->setObjectName("pgn-social-chat-surface");auto* layout=vertical(page,14);
@@ -111,7 +114,7 @@ SocialView::SocialView(QString path,social::Services services,QWidget* parent)
             tools->addWidget(text("Window"));
             p.filter=new SocialComboBox;p.filter->setObjectName("pgn-social-miner-window");
             p.filter->setAccessibleName("Miner observation window");
-            for(int w=0;w<4;++w)p.filter->addItem(social::windowLabel(static_cast<social::Window>(w)));
+            p.filter->addItem("All recorded activity");p.filter->setToolTip("Confirmed activity on the current chain. Hardware count and mining time are not reported by this source.");
             tools->addWidget(p.filter);
         }
         p.search=new QLineEdit;p.search->setMaxLength(160);p.search->setPlaceholderText(i==0?"Find in loaded messages":"Filter loaded "+QString(nouns[i]));
@@ -124,23 +127,23 @@ SocialView::SocialView(QString path,social::Services services,QWidget* parent)
         auto* browse=new QWidget;auto* browseBox=vertical(browse);browseBox->addLayout(tools);
         p.dataSlot=new QStackedWidget;p.dataSlot->setObjectName(QString("pgn-social-data-slot-%1").arg(i));
         if(i==3){
-            p.ranking=new QTableWidget(0,4);p.ranking->setObjectName("pgn-social-miners");
+            p.ranking=new QTableWidget(0,6);p.ranking->setObjectName("pgn-social-miners");
             auto* header=new SortHeader(p.ranking);p.ranking->setHorizontalHeader(header);
-            p.ranking->setHorizontalHeaderLabels({"Miner","Accepted Gold","Validated audits","Last activity"});
-            header->setSectionResizeMode(0,QHeaderView::Stretch);for(int col=1;col<4;++col)header->setSectionResizeMode(col,QHeaderView::ResizeToContents);
+            p.ranking->setHorizontalHeaderLabels({"Miner","Validated positions","Tickets reported","Tickets validated","Audits validated","Last activity · block"});
+            header->setSectionResizeMode(0,QHeaderView::Stretch);for(int col=1;col<6;++col)header->setSectionResizeMode(col,QHeaderView::ResizeToContents);
             header->setSortIndicator(1,Qt::DescendingOrder);header->onSort=[this](int col){sortDescending_=sortColumn_==col?!sortDescending_:col!=0;sortColumn_=col;renderMiners();};
             p.ranking->verticalHeader()->hide();p.ranking->setEditTriggers(QAbstractItemView::NoEditTriggers);p.ranking->setSelectionBehavior(QAbstractItemView::SelectRows);
             p.ranking->setSelectionMode(QAbstractItemView::SingleSelection);p.ranking->setWordWrap(false);p.ranking->verticalHeader()->setDefaultSectionSize(32);
             p.dataSlot->addWidget(p.ranking);
             connect(p.filter,&QComboBox::currentIndexChanged,this,[this]{auto& q=pages_[3];++q.generation;q.busy=q.loaded=false;q.nextCursor.clear();q.miners.clear();renderMiners();updateAccess();read(3);});
         }else{
-            p.list=new QListWidget;p.list->setWordWrap(true);p.list->setObjectName(QString("pgn-social-list-%1").arg(i));p.list->setAccessibleName(i==0?"Global message chronology":i==1?"Publication feed":"Forum topics");
+        p.list=new QListWidget;p.list->setWordWrap(true);p.list->setMouseTracking(true);p.list->viewport()->setAttribute(Qt::WA_Hover,true);p.list->setObjectName(QString("pgn-social-list-%1").arg(i));p.list->setAccessibleName(i==0?"Global message chronology":i==1?"Publication feed":"Forum topics");
             p.list->setItemDelegate(new SocialEntryDelegate(i,p.list));p.list->setMouseTracking(true);
             if(i==0)p.list->installEventFilter(this);if(i==2){p.list->viewport()->installEventFilter(this);p.list->setCursor(Qt::PointingHandCursor);}
             p.list->setSelectionMode(QAbstractItemView::SingleSelection);p.dataSlot->addWidget(p.list);
             if(i>0){connect(p.list,&QListWidget::itemActivated,this,[this,i]{openRead(i);});connect(p.list,&QListWidget::itemClicked,this,[this,i]{openRead(i);});}
         }
-        auto* emptyPane=new QWidget;auto* emptyBox=vertical(emptyPane,12);p.empty=text({});p.empty->setWordWrap(true);p.empty->setAlignment(Qt::AlignLeft|Qt::AlignTop);
+        auto* emptyPane=new QWidget;emptyPane->setObjectName(QString("pgn-social-empty-pane-%1").arg(i));auto* emptyBox=vertical(emptyPane,12);p.empty=text({});p.empty->setWordWrap(true);p.empty->setAlignment(Qt::AlignLeft|Qt::AlignTop);
         p.empty->setObjectName(QString("pgn-social-empty-%1").arg(i));emptyBox->addWidget(p.empty);emptyBox->addStretch();p.dataSlot->addWidget(emptyPane);
         p.dataSlot->setCurrentIndex(1);
         if(i==2){auto* headers=new QHBoxLayout;headers->setContentsMargins(24,4,12,4);headers->setSpacing(0);headers->addWidget(text("Topic"),1);for(const auto& spec:QList<QPair<QString,int>>{{"Participants",140},{"Replies",88},{"Activity",140},{"State",100}}){auto* label=text(spec.first);label->setFixedWidth(spec.second);headers->addWidget(label);}browseBox->addLayout(headers);}
@@ -158,9 +161,9 @@ SocialView::SocialView(QString path,social::Services services,QWidget* parent)
             channels_->setContextMenuPolicy(Qt::CustomContextMenu);connect(channels_,&QListWidget::customContextMenuRequested,this,[this](QPoint pos){auto* item=channels_->itemAt(pos);if(!item)item=channels_->currentItem();if(!item)return;const QString id=item->data(Qt::UserRole).toString();auto* menu=new QMenu(this);menu->setProperty("socialSurface",true);auto* copy=menu->addAction("Copy channel ID");connect(copy,&QAction::triggered,this,[id]{QApplication::clipboard()->setText(id);});auto* permissions=menu->addAction("Channel permissions…");connect(permissions,&QAction::triggered,this,[this,id]{openAccess({},id);});connect(menu,&QMenu::aboutToHide,menu,&QObject::deleteLater);menu->popup(channels_->viewport()->mapToGlobal(pos));});
             auto* conversation=new QWidget;auto* cb=vertical(conversation,12);cb->setSpacing(8);cb->addWidget(browse,1);cb->addWidget(makeComposer(i));columns->addWidget(conversation,1);
             auto* side=new QFrame;side->setObjectName("pgn-social-members-pane");side->setFixedWidth(204);membersPane_=side;auto* mb=vertical(side,14);memberCount_=text("Participants unavailable");memberCount_->setProperty("caption",true);mb->addWidget(memberCount_);
-            members_=new QListWidget;members_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);members_->setTextElideMode(Qt::ElideRight);members_->setObjectName("pgn-social-chat-members");members_->setAccessibleName("Authenticated channel participants and reported presence");mb->addWidget(members_,1);
+            members_=new QListWidget;members_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);members_->setTextElideMode(Qt::ElideRight);members_->setObjectName("pgn-social-chat-members");members_->setItemDelegate(new SocialMemberDelegate(members_));members_->setAccessibleName("Authenticated channel participants and reported presence");mb->addWidget(members_,1);
             connect(members_,&QListWidget::itemActivated,this,[this]{if(members_->currentItem())openAccess(members_->currentItem()->data(Qt::UserRole).toString());});
-            members_->setContextMenuPolicy(Qt::CustomContextMenu);connect(members_,&QListWidget::customContextMenuRequested,this,[this](QPoint pos){auto* item=members_->itemAt(pos);if(!item)item=members_->currentItem();if(!item||item->data(Qt::UserRole).toString().isEmpty())return;const auto id=item->data(Qt::UserRole).toString();auto* menu=new QMenu(this);menu->setProperty("socialSurface",true);auto* manage=menu->addAction("Roles & member actions…");connect(manage,&QAction::triggered,this,[this,id]{openAccess(id);});connect(menu,&QMenu::aboutToHide,menu,&QObject::deleteLater);menu->popup(members_->viewport()->mapToGlobal(pos.x()<0?QPoint(20,20):pos));});
+            members_->setContextMenuPolicy(Qt::CustomContextMenu);connect(members_,&QListWidget::customContextMenuRequested,this,[this](QPoint pos){auto* item=members_->itemAt(pos);if(!item)item=members_->currentItem();if(!item||item->data(Qt::UserRole).toString().isEmpty())return;const auto id=item->data(Qt::UserRole).toString();auto* menu=new QMenu(this);menu->setProperty("socialSurface",true);auto* copy=menu->addAction("Copy full identity");connect(copy,&QAction::triggered,this,[id]{QApplication::clipboard()->setText(id);});auto* manage=menu->addAction("Roles & member actions…");connect(manage,&QAction::triggered,this,[this,id]{openAccess(id);});connect(menu,&QMenu::aboutToHide,menu,&QObject::deleteLater);menu->popup(members_->viewport()->mapToGlobal(pos.x()<0?QPoint(20,20):pos));});
             columns->addWidget(side);layout->addLayout(columns,1);
         }
         else if(i==3)layout->addWidget(browse,1);
@@ -191,14 +194,22 @@ SocialView::SocialView(QString path,social::Services services,QWidget* parent)
         if(i==3){QWidget::setTabOrder(p.refresh,p.ranking->horizontalHeader());QWidget::setTabOrder(p.ranking->horizontalHeader(),p.ranking);}
     }
     auto* nav=HorizonCoinNavigation(tabs_,{{"01  CHAT","GLOBAL CHANNEL"},{"02  PUBLICATIONS","IDEAS + UPDATES"},{"03  FORUM","TOPICS + REPLIES"},{"04  MINERS","VERIFIED ACTIVITY"}},this);
-    nav->setStyleSheet(nav->styleSheet()+"QPushButton:focus{border:1px solid #69efc5;}");box->addWidget(nav);
+    // Retain legacy pages/drafts, remove them from every user navigation route.
+    tabs_->setTabVisible(1,false);tabs_->setTabVisible(2,false);tabs_->setTabText(3,"Leaderboard");
+    for(const int legacy:{1,2}){tabs_->widget(legacy)->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Ignored);tabs_->widget(legacy)->setMinimumSize(0,0);}
+    if(auto* group=nav->findChild<QButtonGroup*>()){
+        group->button(1)->hide();group->button(2)->hide();
+        group->button(3)->setText("02  LEADERBOARD\nVERIFIED ACTIVITY");
+    }
+    nav->setStyleSheet(nav->styleSheet()+"QPushButton{font:600 12px 'Segoe UI';}QPushButton:focus{border:2px solid #7eafb8;}");box->addWidget(nav);
     auto* context=new QWidget;context->setProperty("socialSurface",true);context->setProperty("socialChrome",true);context->setFixedHeight(30);auto* contextBox=new QHBoxLayout(context);contextBox->setContentsMargins(14,2,14,2);contextBox->setSpacing(12);
     account_=text({});account_->setObjectName("pgn-social-account");account_->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);contextBox->addWidget(account_,1);
+    account_->setContextMenuPolicy(Qt::CustomContextMenu);connect(account_,&QLabel::customContextMenuRequested,this,[this](QPoint pos){if(identity_.subject.isEmpty())return;auto* menu=new QMenu(this);auto* copy=menu->addAction("Copy full identity");connect(copy,&QAction::triggered,this,[this]{QApplication::clipboard()->setText(identity_.subject);});connect(menu,&QMenu::aboutToHide,menu,&QObject::deleteLater);menu->popup(account_->mapToGlobal(pos));});
     network_=text({});network_->setObjectName("pgn-social-network");network_->setAlignment(Qt::AlignRight|Qt::AlignVCenter);contextBox->addWidget(network_,1);box->addWidget(context);
-    status_=text({});status_->setProperty("socialSurface",true);status_->setProperty("socialChrome",true);status_->setObjectName("pgn-social-status");status_->setFixedHeight(22);status_->setContentsMargins(14,0,14,0);status_->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);box->addWidget(status_);box->addWidget(tabs_,1);
+    status_=text({});status_->setProperty("socialSurface",true);status_->setProperty("socialChrome",true);status_->setObjectName("pgn-social-status");status_->setFixedHeight(22);status_->setContentsMargins(0,0,0,0);status_->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);status_->setMinimumWidth(180);status_->setMaximumWidth(540);contextBox->insertWidget(1,status_);box->addWidget(tabs_,1);
     tabs_->setFocusPolicy(Qt::NoFocus);tabs_->tabBar()->setFocusPolicy(Qt::NoFocus);
     connect(tabs_,&QTabWidget::currentChanged,this,[this](int i){updateStatus();if(!pages_[i].loaded)read(i);});
-    for(int i=0;i<4;++i){auto* shortcut=new QShortcut(QKeySequence(QString("Ctrl+%1").arg(i+1)),this);shortcut->setContext(Qt::WidgetWithChildrenShortcut);connect(shortcut,&QShortcut::activated,this,[this,i]{selectSection(static_cast<social::Section>(i));});}
+    for(int i=0;i<2;++i){const int page=i==0?0:3;auto* shortcut=new QShortcut(QKeySequence(QString("Ctrl+%1").arg(i+1)),this);shortcut->setContext(Qt::WidgetWithChildrenShortcut);connect(shortcut,&QShortcut::activated,this,[this,page]{selectSection(static_cast<social::Section>(page));});}
     auto* save=new QShortcut(QKeySequence::Save,this);save->setContext(Qt::WidgetWithChildrenShortcut);connect(save,&QShortcut::activated,this,[this]{saveDrafts();});
     auto* toggleMembers=new QShortcut(QKeySequence("Ctrl+U"),this);toggleMembers->setContext(Qt::WidgetWithChildrenShortcut);connect(toggleMembers,&QShortcut::activated,this,[this]{if(tabs_->currentIndex()==0)findChild<QPushButton*>("pgn-social-toggle-members")->toggle();});
     for(const auto sequence:{QKeySequence("Shift+F10"),QKeySequence(Qt::Key_Menu)}){auto* menu=new QShortcut(sequence,this);menu->setObjectName("pgn-social-keyboard-context");menu->setContext(Qt::WidgetWithChildrenShortcut);connect(menu,&QShortcut::activated,this,[this]{
@@ -222,12 +233,13 @@ QWidget* SocialView::makeComposer(int i){
     }
     p.draft=new QPlainTextEdit;p.draft->setTabChangesFocus(true);p.draft->setMinimumHeight(60);p.draft->setObjectName(QString("pgn-social-draft-body-%1").arg(i));p.draft->setAccessibleName(QString("%1 draft text").arg(names[i]));
     p.draft->setPlaceholderText(i==0?"Write a message · BBCode supported":i==1?"Write your publication…":"Write a topic or reply…");
+    {auto palette=p.draft->palette();palette.setColor(QPalette::PlaceholderText,QColor("#526e78"));p.draft->setPalette(palette);}
     if(i==0){
         auto* toolbar=new QHBoxLayout;toolbar->setSpacing(4);
         for(const auto& tag:{"b","i","u","s","quote","code","url"}){const QString t=tag;auto* format=new QPushButton(t=="b"?"B":t=="i"?"I":t=="u"?"U":t=="s"?"S":t=="url"?"Link":t=="quote"?"Quote":"Code");
-            format->setObjectName("pgn-social-bbcode-"+t);format->setAccessibleName("Insert BBCode "+t);format->setToolTip(social::bbcode::opening(t)+"…[/"+t+"]");format->setMaximumWidth(t.size()==1?34:62);toolbar->addWidget(format);connect(format,&QPushButton::clicked,this,[this,t]{formatChat(t);});}
+            format->setObjectName("pgn-social-bbcode-"+t);format->setProperty("bbcodeTool",true);format->setAccessibleName("Insert BBCode "+t);format->setToolTip(social::bbcode::opening(t)+"…[/"+t+"]");format->setMaximumWidth(t.size()==1?34:62);toolbar->addWidget(format);connect(format,&QPushButton::clicked,this,[this,t]{formatChat(t);});}
         toolbar->addStretch();previewChat_=new QPushButton("Preview");previewChat_->setObjectName("pgn-social-preview-chat");previewChat_->setCheckable(true);toolbar->addWidget(previewChat_);connect(previewChat_,&QPushButton::clicked,this,[this]{previewChat();});box->addLayout(toolbar);
-        chatEditor_=new QStackedWidget;p.draft->setFixedHeight(68);chatEditor_->addWidget(p.draft);chatPreview_=new QTextBrowser;chatPreview_->setDocument(new social::bbcode::Document(chatPreview_));chatPreview_->setOpenLinks(false);chatPreview_->setOpenExternalLinks(false);chatPreview_->setObjectName("pgn-social-chat-preview");chatEditor_->addWidget(chatPreview_);chatEditor_->setFixedHeight(78);box->addWidget(chatEditor_);
+        chatEditor_=new QStackedWidget;p.draft->setFixedHeight(62);chatEditor_->addWidget(p.draft);chatPreview_=new QTextBrowser;chatPreview_->setDocument(new social::bbcode::Document(chatPreview_));chatPreview_->setOpenLinks(false);chatPreview_->setOpenExternalLinks(false);chatPreview_->setObjectName("pgn-social-chat-preview");chatEditor_->addWidget(chatPreview_);chatEditor_->setFixedHeight(62);box->addWidget(chatEditor_);
     }else{
         if(i==2){auto* toolbar=new QHBoxLayout;for(const auto& tag:{"b","i","u","s","quote","code","url"}){const QString t=tag;auto* button=new QPushButton(t=="url"?"Link":t=="quote"?"Quote":t=="code"?"Code":t.toUpper());button->setObjectName("pgn-social-forum-bbcode-"+t);button->setToolTip(social::bbcode::opening(t)+"…[/"+t+"]");toolbar->addWidget(button);connect(button,&QPushButton::clicked,this,[this,t]{formatDraft(2,t);});}toolbar->addStretch();box->addLayout(toolbar);}
         box->addWidget(p.draft,1);
@@ -239,6 +251,7 @@ QWidget* SocialView::makeComposer(int i){
     auto* clear=new QPushButton("Clear");clear->setObjectName(QString("pgn-social-clear-%1").arg(i));actions->addWidget(clear);
     if(i==1||i==2){auto* preview=new QPushButton("Preview");preview->setObjectName(i==1?"pgn-social-preview-publication":"pgn-social-preview-forum");actions->addWidget(preview);connect(preview,&QPushButton::clicked,this,[this,i]{previewPublication(i);});}
     p.send=new QPushButton(i==0?"Send":i==1?"Publish":"Post topic");p.send->setObjectName(QString("pgn-social-send-%1").arg(i));p.send->setEnabled(false);actions->addWidget(p.send);box->addLayout(actions);
+    if(i==0){p.send->setMinimumSize(96,36);p.send->setToolTip("Enter sends · Shift+Enter starts a new line");p.draft->installEventFilter(this);QPixmap plane(18,18);plane.fill(Qt::transparent);QPainter painter(&plane);painter.setRenderHint(QPainter::Antialiasing);painter.setPen(QPen(QColor("#f3ffff"),1.6,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));painter.drawPolyline(QPolygonF{{2,8},{15,2},{10,16},{7,10},{2,8}});painter.drawLine(QPointF(7,10),QPointF(15,2));painter.end();p.send->setIcon(QIcon(plane));}
     p.reason=text("Sending unavailable · no authenticated send service connected.");p.reason->setObjectName(QString("pgn-social-send-reason-%1").arg(i));box->addWidget(p.reason);
     if(i==0)connect(p.send,&QPushButton::clicked,this,[this]{sendChat();});
     connect(p.save,&QPushButton::clicked,this,[this]{saveDrafts();});connect(clear,&QPushButton::clicked,this,[this,i]{
@@ -251,7 +264,7 @@ QWidget* SocialView::makeComposer(int i){
     return compose;
 }
 SocialView::~SocialView(){if(dirty_&&!loadFailed_&&identity_.valid())store_.save(identity_,drafts_);}
-void SocialView::selectSection(social::Section section){const int i=static_cast<int>(section);if(i>=0&&i<4)tabs_->setCurrentIndex(i);}
+void SocialView::selectSection(social::Section section){const int i=static_cast<int>(section);if(i==0||i==3)tabs_->setCurrentIndex(i);}
 void SocialView::loadEditor(int i){
     QScopedValueRollback<bool> guard(loadingDraft_,true);auto& p=pages_[i];const auto& d=drafts_.sections[i];
     const bool reply=i==2&&p.replyMode;const bool room=!reply||drafts_.replies.contains(replyId_)||drafts_.replies.size()<8;
@@ -303,8 +316,8 @@ void SocialView::updateStatus(){
 }
 void SocialView::updateAccess(){
     const bool connected=identity_.valid()&&bool(services_.read);
-    account_->setText(identity_.valid()?"Identity: "+identity_.subject:"Identity not selected");account_->setToolTip(safeTip(identity_.subject));
-    network_->setText(identity_.valid()?"Network: "+identity_.genesis.left(12)+"…"+identity_.genesis.right(6):"Network not selected");network_->setToolTip(safeTip(identity_.genesis));
+    account_->setText(identity_.valid()?SocialDisplayName(identity_.subject):"Identity not selected");account_->setToolTip(safeTip(identity_.subject));
+    network_->setText(identity_.valid()?"Selected PGN network":"Network not selected");network_->setToolTip(safeTip(identity_.genesis));
     for(int i=0;i<4;++i){auto& p=pages_[i];p.refresh->setEnabled(connected&&!p.busy);
         const int count=i==3?p.miners.size():p.entries.size();p.more->setEnabled(connected&&!p.busy&&!p.nextCursor.isEmpty()&&count<LoadedLimit);
         p.count->setText(p.loaded?QString("%1 %2 loaded").arg(count).arg(nouns[i]):QString{});
@@ -372,8 +385,9 @@ void SocialView::readThread(){
 void SocialView::renderList(int i){
     auto& p=pages_[i];QString selected;const int row=p.list->currentRow();if(row>=0&&row<p.list->count())selected=p.list->item(row)->data(Qt::UserRole).toString();
     const int scroll=p.list->verticalScrollBar()->value();QSignalBlocker block(p.list);p.list->clear();
-    for(const auto& e:p.entries){QString value=i==0?metadata(e)+"\n"+e.body:i==1?e.title+"\n"+metadata(e)+"\n"+e.body.left(210):e.title+"\n"+metadata(e);
-        auto* item=new QListWidgetItem(value);item->setData(Qt::UserRole,e.id);item->setData(AuthorRole,e.author);item->setData(TimeRole,stamp(e.createdUtc));item->setData(BodyRole,e.body);item->setData(TitleRole,e.title);item->setData(CategoryRole,e.category);item->setData(AuthorIdRole,e.authorId);item->setData(RepliesRole,e.replyCount.value_or("unavailable"));item->setData(ActivityRole,e.lastActivity.isValid()?e.lastActivity.toUTC().toString("MM-dd HH:mm 'UTC'"):"unavailable");item->setData(StateRole,e.state.isEmpty()?"unavailable":e.state);
+    int entryIndex=0;for(const auto& e:p.entries){const auto display=SocialDisplayName(e.authorId,e.author);QString value=i==0?display+" · "+stamp(e.createdUtc)+"\n"+e.body:i==1?e.title+"\n"+metadata(e)+"\n"+e.body.left(210):e.title+"\n"+metadata(e);
+        auto* item=new QListWidgetItem(value);item->setData(Qt::UserRole,e.id);item->setData(AuthorRole,display);item->setData(TimeRole,i==0?e.createdUtc.toUTC().toString("HH:mm"):stamp(e.createdUtc));item->setData(BodyRole,e.body);item->setData(TitleRole,e.title);item->setData(CategoryRole,e.category);item->setData(AuthorIdRole,e.authorId);item->setData(RepliesRole,e.replyCount.value_or("unavailable"));item->setData(ActivityRole,e.lastActivity.isValid()?e.lastActivity.toUTC().toString("MM-dd HH:mm 'UTC'"):"unavailable");item->setData(StateRole,e.state.isEmpty()?"unavailable":e.state);
+        if(i==0){const auto* previous=entryIndex?&p.entries[entryIndex-1]:nullptr;const bool day=!previous||previous->createdUtc.toUTC().date()!=e.createdUtc.toUTC().date();const bool start=day||previous->authorId!=e.authorId||previous->createdUtc.secsTo(e.createdUtc)>300;item->setData(MessageDayRole,day);item->setData(MessageGroupRole,start);item->setData(MessageDateRole,e.createdUtc);item->setToolTip(safeTip(display+"\n"+e.authorId+"\n"+e.createdUtc.toUTC().toString(Qt::ISODate)));}++entryIndex;
         item->setData(ActivityTimeRole,e.lastActivity);item->setData(LastContributorRole,e.lastContributor);QStringList people,peopleInfo;if(e.contributors)for(const auto& person:*e.contributors){people<<person.name;peopleInfo<<person.name+" · "+person.id;}item->setData(ContributorsRole,people);
         if(i==2){item->setText(value+"\nReplies: "+e.replyCount.value_or("unavailable")+" · Activity: "+item->data(ActivityRole).toString()+" · State: "+item->data(StateRole).toString());item->setToolTip(safeTip(item->text()+"\nRecent contributors: "+peopleInfo.join(", ")+"\nLast contributor: "+e.lastContributor));item->setData(Qt::AccessibleDescriptionRole,"Enter reads the topic. Menu or Shift+F10 opens its actions.");}
         p.list->addItem(item);if(e.id==selected)p.list->setCurrentItem(item);}
@@ -420,23 +434,24 @@ void SocialView::present(int i,const social::Snapshot& data,bool append){
         std::stable_sort(p.entries.begin(),p.entries.end(),[i](const auto& a,const auto& b){const auto x=i==2&&a.lastActivity.isValid()?a.lastActivity:a.createdUtc,y=i==2&&b.lastActivity.isValid()?b.lastActivity:b.createdUtc;return x==y?a.id<b.id:i==0?x<y:x>y;});
         renderList(i);if((p.detail||p.thread)&&!p.selectedId.isEmpty()){if(i==2&&!append){++p.threadGeneration;p.threadBusy=false;}showDetail(i,true);}if(i==0&&initial){p.list->setProperty("pgn_initial_scroll",true);settleInitialChat(p.list);}}
     p.refresh->setEnabled(true);const int total=i==3?p.miners.size():p.entries.size();p.more->setEnabled(!p.nextCursor.isEmpty()&&total<LoadedLimit);
-    pageState(i,total?"loaded":"empty",total?"Updated "+data.observedUtc.toUTC().toString("HH:mm")+" UTC":"Empty snapshot · "+data.observedUtc.toUTC().toString("HH:mm")+" UTC");
+    if(i==0&&data.connection){const auto& state=*data.connection;network_->setText(state.networkLabel);network_->setToolTip(safeTip(identity_.genesis));pageState(i,state.connectedPeers?"loaded":"ready",state.connectedPeers?QString("Connected · %1 peer%2").arg(state.connectedPeers).arg(state.connectedPeers==1?"":"s"):"Waiting for a peer connection");}
+    else pageState(i,total?"loaded":"empty",total?"Updated "+data.observedUtc.toUTC().toString("HH:mm")+" UTC":"Empty snapshot · "+data.observedUtc.toUTC().toString("HH:mm")+" UTC");
 }
 void SocialView::renderMiners(){
     auto& p=pages_[3];auto values=p.miners;const auto decimal=[](const QString& a,const QString& b){return a.size()!=b.size()?(a.size()<b.size()?-1:1):QString::compare(a,b);};
-    std::stable_sort(values.begin(),values.end(),[this,&decimal](const auto& a,const auto& b){int compare=0;
+    const auto counter=[](const social::Miner& m,int col)->const social::Counter&{switch(col){case 1:return m.validatedSearchPositions;case 2:return m.ticketsReported;case 3:return m.ticketsValidated;case 4:return m.validatedAudits;default:return m.lastActivityHeight;}};
+    std::stable_sort(values.begin(),values.end(),[this,&decimal,&counter](const auto& a,const auto& b){int compare=0;
         if(sortColumn_==0)compare=QString::compare(a.name,b.name,Qt::CaseInsensitive);
-        else if(sortColumn_==3){const auto& x=a.lastActivity.value;const auto& y=b.lastActivity.value;if(bool(x)!=bool(y))return bool(x);if(x)compare=*x==*y?0:*x<*y?-1:1;}
-        else{const auto& x=sortColumn_==1?a.acceptedGold.value:a.validatedAudits.value;const auto& y=sortColumn_==1?b.acceptedGold.value:b.validatedAudits.value;if(bool(x)!=bool(y))return bool(x);if(x)compare=decimal(*x,*y);}
+        else{const auto& x=counter(a,sortColumn_).value;const auto& y=counter(b,sortColumn_).value;if(bool(x)!=bool(y))return bool(x);if(x)compare=decimal(*x,*y);}
         return compare?(sortDescending_?compare>0:compare<0):a.id<b.id;});
     p.ranking->horizontalHeader()->setSortIndicator(sortColumn_,sortDescending_?Qt::DescendingOrder:Qt::AscendingOrder);
     p.ranking->setRowCount(values.size());
-    for(int row=0;row<values.size();++row){const auto& m=values[row];const QStringList texts{m.name,m.acceptedGold.value.value_or("unavailable"),m.validatedAudits.value.value_or("unavailable"),m.lastActivity.value?stamp(*m.lastActivity.value):"unavailable"};
-        for(int col=0;col<4;++col){auto* item=new QTableWidgetItem(texts[col]);if(!col){item->setData(Qt::UserRole,m.id);item->setData(AuthorIdRole,m.socialMemberId);}if(col==1||col==2)item->setTextAlignment(Qt::AlignRight|Qt::AlignVCenter);
+    for(int row=0;row<values.size();++row){const auto& m=values[row];
+        for(int col=0;col<6;++col){const auto raw=col?counter(m,col).value.value_or("Unavailable"):m.name;auto* item=new QTableWidgetItem(col?social::leaderboardNumber(raw):raw);if(!col){item->setData(Qt::UserRole,m.id);item->setData(AuthorIdRole,m.socialMemberId);}if(col)item->setTextAlignment(Qt::AlignRight|Qt::AlignVCenter);
             QString info;if(!col)info="Miner identity: "+m.id+"\nGenesis: "+identity_.genesis;
-            else{const auto& source=col==1?m.acceptedGold.provenance:col==2?m.validatedAudits.provenance:m.lastActivity.provenance;
-                const bool present=col==1?bool(m.acceptedGold.value):col==2?bool(m.validatedAudits.value):bool(m.lastActivity.value);
-                info=present?source.source+"\nObserved: "+stamp(source.observedUtc)+"\nGenesis: "+source.genesis:"Unavailable: no authenticated value supplied. No zero inferred.";}
+            else{const auto& source=counter(m,col).provenance;
+                const bool present=bool(counter(m,col).value);
+                info=present?"Exact value: "+raw+"\n"+source.source+"\nObserved: "+stamp(source.observedUtc)+"\nGenesis: "+source.genesis:"Unavailable: no authenticated value supplied. No zero inferred.";}
             item->setToolTip(safeTip(info));item->setData(Qt::AccessibleDescriptionRole,info);p.ranking->setItem(row,col,item);}}
     filter(3);
 }
@@ -460,15 +475,15 @@ void SocialView::chatDirectory(const social::Snapshot& data){
     for(const auto& channel:channelData_){auto* item=new QListWidgetItem("#  "+channel.name,channels_);item->setData(Qt::UserRole,channel.id);item->setToolTip(safeTip(channel.description));
         if(channel.id==data.channel){channels_->setCurrentItem(item);channelTitle_->setText("# "+channel.name);channelDescription_->setText(channel.description);}}
     channels_->setToolTip(data.channels?"Only channels supplied by the authenticated service.":"Channel directory unavailable.");
-    members_->clear();memberCount_->setText(data.participants?QString("Participants · %1").arg(data.participants->size()):"Participants unavailable");
+    members_->clear();memberCount_->setText(data.participants?QString("Members · %1").arg(data.participants->size()):"Members unavailable");
     if(!data.participants)return;
     auto participants=*data.participants;
     auto group=[this](const social::Participant& person){QString name="Members";int top=-1;if(access_)for(const auto& role:access_->roles)if(person.roleIds.contains(role.id)&&role.position>top){top=role.position;name=role.name;}return QPair<int,QString>{top,name};};
     std::stable_sort(participants.begin(),participants.end(),[&](const auto& a,const auto& b){const auto x=group(a),y=group(b);return x.first!=y.first?x.first>y.first:QString::compare(a.name,b.name,Qt::CaseInsensitive)<0;});
-    QString last;for(const auto& person:participants){const auto role=group(person).second;if(role!=last){auto* heading=new QListWidgetItem(role,members_);heading->setFlags(Qt::NoItemFlags);auto font=heading->font();font.setPixelSize(12);font.setWeight(QFont::DemiBold);heading->setFont(font);last=role;}
-        auto* item=new QListWidgetItem(person.name+(person.presence.isEmpty()?QString{}:"\n"+person.presence),members_);item->setData(Qt::UserRole,person.id);item->setToolTip(safeTip(person.name+"\n"+person.id+(person.presence.isEmpty()?QString{}:"\n"+person.presence)));
-        QPixmap avatar(28,28);avatar.fill(Qt::transparent);QPainter painter(&avatar);painter.setRenderHint(QPainter::Antialiasing);painter.setPen(Qt::NoPen);painter.setBrush(QColor("#e0e0e0"));painter.drawEllipse(avatar.rect());painter.setPen(QColor("#525252"));painter.drawText(avatar.rect(),Qt::AlignCenter,person.name.left(1).toUpper());item->setIcon(QIcon(avatar));}
-    members_->setIconSize({28,28});
+    QString last;for(const auto& person:participants){const auto role=group(person).second;if(role!=last){if(role!="Members"){auto* heading=new QListWidgetItem(role,members_);heading->setFlags(Qt::NoItemFlags);auto font=heading->font();font.setPixelSize(12);font.setWeight(QFont::DemiBold);heading->setFont(font);}last=role;}
+        const auto name=SocialDisplayName(person.id,person.name);auto* item=new QListWidgetItem(name+(person.presence.isEmpty()?QString{}:"\n"+person.presence),members_);item->setData(Qt::UserRole,person.id);item->setToolTip(safeTip(name+"\n"+person.id+(person.presence.isEmpty()?QString{}:"\n"+person.presence)));
+        QPixmap avatar(32,32);avatar.fill(Qt::transparent);QPainter painter(&avatar);painter.setRenderHint(QPainter::Antialiasing);painter.setPen(Qt::NoPen);painter.setBrush(SocialAvatarColor(person.id));painter.drawEllipse(avatar.rect());painter.setPen(QColor("#193f48"));QFont font("Segoe UI");font.setPixelSize(12);font.setWeight(QFont::DemiBold);painter.setFont(font);painter.drawText(avatar.rect(),Qt::AlignCenter,SocialAvatarInitials(person.id,name));item->setIcon(QIcon(avatar));}
+    members_->setIconSize({32,32});
 }
 void SocialView::updateChatSend(){
     auto& p=pages_[0];if(!p.send)return;const auto source=p.draft->toPlainText();const QString channel=channel_.isEmpty()?channelTitle_->property("channelId").toString():channel_;
@@ -476,9 +491,9 @@ void SocialView::updateChatSend(){
     p.send->setEnabled(connected&&!p.sending&&!source.trimmed().isEmpty());
     QString reason="Sending unavailable · no authenticated send service connected.";
     if(services_.sendChat){reason=!p.sendWhy.isEmpty()?p.sendWhy:"Sending unavailable · authenticated availability required.";
-        if(connected){reason=p.sendNotice.isEmpty()?"Authenticated Chat service · BBCode source":p.sendNotice;
+        if(connected){reason=p.sendNotice.isEmpty()?"Enter to send · Shift+Enter for a new line":p.sendNotice;
             if(p.sendNotice.isEmpty()&&drafts_.chatOperations.contains(channel)&&drafts_.chatOperations[channel].sourceHash==QString::fromLatin1(QCryptographicHash::hash(source.toUtf8(),QCryptographicHash::Sha256).toHex()))reason="Pending send recovered · Send retries the same operation.";}}
-    if(p.sending)reason="Sending · waiting for authenticated service confirmation…";
+    if(p.sending)reason="Publishing signed message…";
     p.reason->setText(reason.left(256));p.reason->setToolTip(safeTip(reason));
 }
 void SocialView::sendChat(){
@@ -493,11 +508,11 @@ void SocialView::sendChat(){
     services_.sendChat(request,[weak,request,epoch,completed](social::SendResult result){
         if(!weak||*completed||weak->sendEpoch_!=epoch||weak->identity_!=request.identity)return;*completed=true;auto& page=weak->pages_[0];page.sending=false;
         if(result.identity!=request.identity||result.channel!=request.channel||result.requestId!=request.requestId){page.canSend=false;page.sendWhy="Send response scope mismatch · draft retained.";weak->updateChatSend();return;}
-        if(result.outcome==social::SendOutcome::Accepted&&!result.messageId.isEmpty()&&result.messageId.size()<=256){
+        if((result.outcome==social::SendOutcome::Accepted||result.outcome==social::SendOutcome::Posted)&&!result.messageId.isEmpty()&&result.messageId.size()<=256){
             if(weak->drafts_.chatOperations.value(request.channel).requestId==request.requestId)weak->drafts_.chatOperations.remove(request.channel);
-            const bool unchanged=page.draft->toPlainText()==request.bbcode;if(unchanged)page.draft->clear();weak->dirty_=true;weak->saveDrafts();page.sendNotice=unchanged?"Sent · confirmed by service":"Previous message confirmed · current draft kept.";
+            const bool unchanged=page.draft->toPlainText()==request.bbcode;if(unchanged)page.draft->clear();weak->dirty_=true;weak->saveDrafts();page.sendNotice=unchanged?(result.reason.isEmpty()?"Sent · confirmation received":result.reason.left(180)):"Previous message published · current draft kept.";
             ++page.generation;page.busy=false;weak->read(0);
-        }else{page.sendNotice=result.outcome==social::SendOutcome::Rejected?"Send refused · "+result.reason.left(150):"Outcome unknown · retry uses the saved operation. "+result.reason.left(130);
+        }else{page.sendNotice=result.outcome==social::SendOutcome::Rejected?"Send refused · "+result.reason.left(150):"Publication not confirmed · draft kept. Retry safely. "+result.reason.left(100);
             weak->pageState(0,"error",page.sendNotice);if(result.reason.contains("401")){page.canSend=false;page.sendWhy=page.sendNotice;}}
         weak->updateChatSend();
     });
@@ -538,6 +553,8 @@ void SocialView::manageContext(social::AccessRequest r){
 }
 
 bool SocialView::eventFilter(QObject* object,QEvent* event){
+    if(object==pages_[0].draft&&event->type()==QEvent::InputMethod)chatPreedit_=!static_cast<QInputMethodEvent*>(event)->preeditString().isEmpty();
+    if(object==pages_[0].draft&&event->type()==QEvent::KeyPress){auto* key=static_cast<QKeyEvent*>(event);if((key->key()==Qt::Key_Return||key->key()==Qt::Key_Enter)&&!chatPreedit_&&!(key->modifiers()&(Qt::ShiftModifier|Qt::ControlModifier|Qt::AltModifier|Qt::MetaModifier))){if(pages_[0].send->isEnabled())sendChat();return true;}}
     if(pages_[2].list&&object==pages_[2].list->viewport()&&event->type()==QEvent::MouseButtonRelease){auto* mouse=static_cast<QMouseEvent*>(event);if(mouse->button()==Qt::LeftButton&&mouse->position().x()>=pages_[2].list->viewport()->width()-34){const auto pos=mouse->position().toPoint();if(auto* item=pages_[2].list->itemAt(pos)){pages_[2].list->setCurrentItem(item);contextMenu(2,pos);return true;}}}
     if(object==pages_[0].list&&(event->type()==QEvent::Show||event->type()==QEvent::Resize)
         &&pages_[0].list->property("pgn_initial_scroll").toBool())settleInitialChat(pages_[0].list);

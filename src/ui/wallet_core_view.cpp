@@ -267,6 +267,24 @@ void stopWalletCoreForUpdate(QWidget* widget,std::function<void(QString)> done){
 void readWalletSigningIdentity(QWidget* widget,const QString& address,std::function<void(QJsonValue,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->serviceWalletRequest("getaddressinfo",{address},std::move(consume));else consume({},"Wallet signing identity unavailable");}
 void requestWalletAudit(QWidget* widget,const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->auditRequest(method,params,std::move(consume));else consume({},"Wallet audit view unavailable");}
 void signWalletAudit(QWidget* widget,const QString& address,const QString& challenge,std::function<void(QJsonValue,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->signAuditChallenge(address,challenge,std::move(consume));else consume({},"Wallet audit view unavailable");}
+QString walletSocialBinding(QWidget* widget){auto* view=dynamic_cast<WalletCoreView*>(widget);return view&&view->networkRuntime()->connected()?view->networkRuntime()->walletBinding():QString{};}
+void readWalletSocialContext(QWidget* widget,const QString& address,std::function<void(QJsonObject,QString)> consume){
+ auto* view=dynamic_cast<WalletCoreView*>(widget);if(!view){consume({},"Wallet Social view unavailable");return;}
+ const QPointer<pgn::wallet::CoreRuntime> core(view->networkRuntime());const auto binding=core->walletBinding();
+ if(address.isEmpty()){core->readSocialIdentity(std::move(consume));return;}
+ core->readLocalConnection([core,binding,address,consume](QJsonObject local,QString error){
+  if(!core||binding!=core->walletBinding()||!error.isEmpty()){consume({},error.isEmpty()?QString("Wallet Social binding changed"):error);return;}
+  const auto genesis=local.value("genesis").toString();core->serviceWalletRequest("getaddressinfo",{address},[core,binding,address,genesis,consume](QJsonValue value,QString error){
+   if(!core||binding!=core->walletBinding()||!error.isEmpty()){consume({},error.isEmpty()?QString("Wallet Social binding changed"):error);return;}
+   const auto info=value.toObject();const auto script=info.value("scriptPubKey").toString();
+   if(!info.value("ismine").toBool()||!QRegularExpression("^0014[0-9a-f]{40}$").match(script).hasMatch()||genesis!=core->networkGenesis()){consume({},"Social address is not owned by this verified wallet");return;}
+   consume(QJsonObject{{"genesis",genesis},{"address",address},{"script",script},{"binding",binding}},{});
+  });
+ });
+}
+void requestWalletSocial(QWidget* widget,const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->socialRequest(method,params,std::move(consume));else consume({},"Wallet Social connection unavailable");}
+void signWalletSocial(QWidget* widget,const QString& address,const QString& genesis,const QString& script,const QByteArray& message,std::function<void(QJsonValue,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->signSocialEnvelope(address,genesis,script,message,std::move(consume));else consume({},"Wallet Social signer unavailable");}
+void verifyWalletSocial(QWidget* widget,const QString& genesis,const QString& script,const QByteArray& message,const QString& signature,std::function<void(bool,QString)> consume){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->networkRuntime()->verifySocialEnvelope(genesis,script,message,signature,std::move(consume));else consume(false,"Wallet Social verifier unavailable");}
 void inspectWalletBlock(QWidget* widget,const QString& hash){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->inspectBlock(hash);}
 void bindWalletNetworkMetrics(QWidget* widget,QWidget* owner,std::function<void(const QJsonObject&,const QString&)> receive){if(auto* view=dynamic_cast<WalletCoreView*>(widget))view->observeNetworkMetrics(owner,std::move(receive));else receive({},"Wallet network view unavailable");}
 

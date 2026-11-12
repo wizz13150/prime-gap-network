@@ -32,5 +32,13 @@ int main(int argc,char** argv){
  pageState.insert("large_page_workers",4);pageState.insert("large_page_bytes_in_use","0");partialPages.insert("memory_pages",pageState);require(!cpuMemoryPagesPresentation(partialPages,true).active);
  auto foreign=state;auto wrongRates=foreign.value("mining_rates").toObject();wrongRates.insert("request_sha256",QString(64,'b'));foreign.insert("mining_rates",wrongRates);require(!cpuCardMetrics(foreign,true,true,QColor())[5].value);
  auto legacy=state;legacy.remove("mining_rates");require(!cpuCardMetrics(legacy,true,true,QColor())[5].value);
+ auto handoff=state;handoff.insert("resident_result_handoff",true);handoff.insert("enabled",true);handoff.insert("resident_workers",4);handoff.insert("resource_completed_positions","120000000000");handoff.insert("resource_positions_per_second",2.5e9);handoff.insert("rate_positions_per_second",0.);
+ require(cpuCardMetrics(handoff,true,false,QColor())[1].value==2.5e9);
+ handoff.insert("session","session-a");handoff.insert("resource_dispatch_threads",4);handoff.insert("result_resident_policy",true);handoff.insert("normal_cycle_mode","qualification");handoff.insert("result_ready",true);handoff.insert("state","CPU_WORK_SOURCE_PROOF_PENDING");
+ handoff.insert("resource_rates",QJsonObject{{"schema","PGN_CPU_RESOURCE_RATES_V1"},{"source","verified_closed_native_pieces"},{"session","session-a"},{"positions","120000000000"},{"positions_per_second",2.5e9},{"tests_per_second",6.5e6},{"gaps_per_second",.01}});
+ handoff.insert("compute_started",false);require(!cpuResourceSessionActive(handoff,true));require(cpuCardMetrics(handoff,true,false,QColor())[1].value==0.);require(cpuCardMetrics(handoff,true,false,QColor())[2].value==0.);require(!cpuActivityCaption(handoff,true).contains("RUNNING"));
+ handoff.insert("compute_started",true);handoff.insert("state","RUNNING");handoff.insert("result_ready",false);require(cpuResourceSessionActive(handoff,true));require(cpuCardMetrics(handoff,true,false,QColor())[2].value==6.5e6);require(cpuActivityCaption(handoff,true).contains("RUNNING"));
+ auto foreignResource=handoff;foreignResource.insert("session","other-session");require(cpuResourceRates(foreignResource,true).isEmpty());
+ handoff.insert("resident_workers",0);handoff.insert("state","OFF");require(cpuCardMetrics(handoff,true,false,QColor())[1].value==0.);
  std::cout<<"PASS "<<checks<<" CPU presentation checks: real telemetry, shared science units, real durable counters, zero known idle, stale/foreign refusal, startup/disconnect/hugepages\n";
 }

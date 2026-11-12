@@ -45,12 +45,22 @@ inline CpuMemoryPagesPresentation cpuMemoryPagesPresentation(const QJsonObject& 
  }
  return {active,active?QString("HUGE PAGES ON"):QString("HUGE PAGES OFF"),explanation,QColor(active?"#69efc5":"#ff718b")};
 }
+inline QJsonObject cpuResourceRates(const QJsonObject& status,bool connected){
+ const auto data=status.value("resource_rates").toObject();
+ if(!connected||data.value("schema")!="PGN_CPU_RESOURCE_RATES_V1"||data.value("source")!="verified_closed_native_pieces"||data.value("session")!=status.value("session")||!data.value("session").isString()||data.value("positions")!=status.value("resource_completed_positions"))return {};
+ return data;
+}
+inline bool cpuResourceSessionActive(const QJsonObject& status,bool connected){
+ const auto rates=cpuResourceRates(status,connected);const auto speed=cpuMetricNumber(rates,"positions_per_second");
+ return connected&&status.value("compute_started")==true&&status.value("enabled")==true&&status.value("resident_workers").toInt()>0&&status.value("resource_dispatch_threads").toInt()>0&&status.value("result_resident_policy")==true&&!status.value("budget_refused").toBool()&&status.value("error").toString().isEmpty()&&speed&&*speed>0;
+}
 inline QString cpuActivityCaption(const QJsonObject& status,bool connected,const QString& assignmentStatus={}){
  if(!connected)return "DISCONNECTED · activity unconfirmed";
  if(status.value("normal_cycle_mode")=="qualification"){
   const auto state=status.value("state").toString();
+  if(cpuResourceSessionActive(status,connected))return "QUALIFICATION · RUNNING · no network credit";
   if(status.value("qualification_reason_code")=="unsupported_domain")return "CPU INACTIVE · unsupported ticket domain";
-  if(state=="RUNNING")return "QUALIFICATION · RUNNING · no network credit";
+  if(state=="RUNNING")return status.value("compute_started")==false?"QUALIFICATION · waiting for CPU work":"QUALIFICATION · RUNNING · no network credit";
   if(state=="BUDGET_PAUSED"||state=="DRAINING_BUDGET")return "QUALIFICATION · CPU load protection";
   if(status.value("result_ready")==true)return "QUALIFICATION · COMPUTED · no network credit";
   if(state.startsWith("DRAINING"))return "QUALIFICATION · saving CPU frontier";
@@ -59,7 +69,7 @@ inline QString cpuActivityCaption(const QJsonObject& status,bool connected,const
  }
 
  const auto state=status.value("state").toString();const QString role=status.value("validation_only")==true?"LOCAL CHECK":"AUDIT";
- if(state=="RUNNING")return role+" · RUNNING";
+ if(state=="RUNNING")return role+(status.value("compute_started")==false?" · waiting for CPU work":" · RUNNING");
  if(state=="BUDGET_PAUSED")return role+" · PAUSED · CPU load protection";
  if(state=="DRAINING_BUDGET")return role+" · PAUSING · CPU load protection";
  if(state=="WAITING_AUDIT"||state=="IDLE"){
@@ -77,6 +87,9 @@ inline QJsonObject cpuMiningRates(const QJsonObject& status,bool connected){
  if(!connected||data.value("schema")!="PGN_CPU_MINING_RATES_V1"||data.value("source")!="durable_completed_counts"||!data.contains("request_sha256")||data.value("request_sha256")!=status.value("request_sha256")||data.value("positions")!=status.value("durable_completed_positions"))return {};
  return data;
 }
+inline QJsonObject cpuVisibleRates(const QJsonObject& status,bool connected){
+ const auto resource=cpuResourceRates(status,connected);return resource.isEmpty()?cpuMiningRates(status,connected):resource;
+}
 inline QVector<CpuCardMetric> cpuCardMetrics(const QJsonObject& status,bool connected,bool expanded,const QColor& accent){
  const auto telemetry=status.value("cpu_telemetry").toObject();const bool typed=telemetry.value("schema")=="PGN_CPU_TELEMETRY_V1";
  const auto busy=connected&&typed?cpuMetricNumber(telemetry,"worker_busy_percent"):std::nullopt;
@@ -85,12 +98,14 @@ inline QVector<CpuCardMetric> cpuCardMetrics(const QJsonObject& status,bool conn
  const auto memoryUsed=connected&&typed?cpuMetricInteger(telemetry,"host_memory_used_bytes"):std::nullopt;
  const auto engineMemory=connected&&typed?cpuMetricInteger(telemetry,"engine_working_set_bytes"):std::nullopt;
  auto rate=connected?cpuMetricNumber(status,"rate_positions_per_second"):std::nullopt;
+ if(connected&&status.value("resident_result_handoff")==true&&status.value("enabled")==true&&status.value("resident_workers").toInt()>0&&cpuMetricInteger(status,"resource_completed_positions"))rate=cpuMetricNumber(status,"resource_positions_per_second");
  const auto state=status.value("state").toString();const int resident=status.value("resident_workers").toInt(-1);
  const bool stopped=connected&&resident==0&&QSet<QString>{"IDLE","OFF","PAUSED","PAUSED_RECOVERED","WAITING_AUDIT","WAITING_NORMAL_CYCLE","BUDGET_PAUSED","CLOSED","AUDIT_COMPUTED_SOURCE_PROOF_PENDING","CPU_WORK_SOURCE_PROOF_PENDING","PROBE_COMPLETE"}.contains(state);
- if(stopped)rate=0.;
- const auto mining=cpuMiningRates(status,connected);
+ const bool idle=connected&&status.value("compute_started")==false;
+ if(stopped||idle)rate=0.;
+ const auto mining=cpuVisibleRates(status,connected);
  auto tests=cpuMetricNumber(mining,"tests_per_second"),gaps=cpuMetricNumber(mining,"gaps_per_second");
- if(stopped&&!mining.isEmpty()){tests=0.;gaps=0.;}
+ if((stopped||idle)&&!mining.isEmpty()){tests=0.;gaps=0.;}
  const auto percent=[](std::optional<double> value){return value?QString::number(*value,'f',0)+"%":QString("—");};
  const auto memoryFraction=memoryUsed&&memoryTotal&&*memoryTotal>0?std::optional<double>(*memoryUsed/ *memoryTotal):std::nullopt;
  const QString rateText=rate?compactCardMetricCaption(rate):(connected&&state=="RUNNING"?QString("START"):QString("—"));

@@ -1,7 +1,8 @@
 #include <windows.h>             // needed for VERSIONINFO
-#include "clientversion.h"       // holds the needed client version information
+#include "clientversion.h"       // retained upstream base information
+#include "pgn/component_version.h"
 
-#define VER_PRODUCTVERSION     CLIENT_VERSION_MONTH,CLIENT_VERSION_REVISION
+#define VER_PRODUCTVERSION     PGN_CORE_WINDOWS_VERSION
 #define VER_FILEVERSION        VER_PRODUCTVERSION
 
 VS_VERSION_INFO VERSIONINFO
@@ -16,13 +17,13 @@ BEGIN
         BEGIN
             VALUE "CompanyName",        "Prime Gap Network project"
             VALUE "FileDescription",    "PGN Core (Prime Gap Network node; based on Riecoin Core)"
-            VALUE "FileVersion",        CLIENT_VERSION_STRING
+            VALUE "FileVersion",        PGN_CORE_COMPONENT_VERSION
             VALUE "InternalName",       "pgn-core"
             VALUE "LegalCopyright",     COPYRIGHT_STR
             VALUE "LegalTrademarks1",   "Distributed under the MIT software license, see the accompanying file COPYING or http://www.opensource.org/licenses/mit-license.php."
             VALUE "OriginalFilename",   "pgn-core.exe"
             VALUE "ProductName",        "PGN Core"
-            VALUE "ProductVersion",     CLIENT_VERSION_STRING
+            VALUE "ProductVersion",     PGN_CORE_COMPONENT_VERSION
         END
     END
 

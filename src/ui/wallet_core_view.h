@@ -18,6 +18,11 @@ void readWalletAuditDetails(QWidget*,const QString&,std::function<void(QJsonObje
 void readWalletSigningIdentity(QWidget*,const QString&,std::function<void(QJsonValue,QString)>);
 void requestWalletAudit(QWidget*,const QString&,const QJsonArray&,std::function<void(QJsonValue,QString)>);
 void signWalletAudit(QWidget*,const QString&,const QString&,std::function<void(QJsonValue,QString)>);
+QString walletSocialBinding(QWidget*);
+void readWalletSocialContext(QWidget*,const QString&,std::function<void(QJsonObject,QString)>);
+void requestWalletSocial(QWidget*,const QString&,const QJsonArray&,std::function<void(QJsonValue,QString)>);
+void signWalletSocial(QWidget*,const QString&,const QString&,const QString&,const QByteArray&,std::function<void(QJsonValue,QString)>);
+void verifyWalletSocial(QWidget*,const QString&,const QString&,const QByteArray&,const QString&,std::function<void(bool,QString)>);
 void inspectWalletBlock(QWidget*,const QString&);
 void bindWalletNetworkMetrics(QWidget*,QWidget* owner,std::function<void(const QJsonObject&,const QString&)>);
 }

@@ -6,6 +6,7 @@
 #include <riecoin-build-config.h> // IWYU pragma: keep
 
 #include <clientversion.h>
+#include <pgn/component_version.h>
 
 #include <tinyformat.h>
 #include <util/string.h>
@@ -56,7 +57,7 @@ static std::string FormatVersion(int nVersion)
 
 std::string FormatFullVersion()
 {
-    static const std::string CLIENT_BUILD(BUILD_DESC BUILD_SUFFIX);
+    static const std::string CLIENT_BUILD(PGN_CORE_COMPONENT_VERSION);
     return CLIENT_BUILD;
 }
 
@@ -67,5 +68,5 @@ std::string FormatSubVersion(const std::string& name, int nClientVersion, const 
 {
     std::string comments_str;
     if (!comments.empty()) comments_str = strprintf("(%s)", Join(comments, "; "));
-    return strprintf("/%s:%s%s/", name, FormatVersion(nClientVersion), comments_str);
+    return strprintf("/%s:%s%s/", name, name == "PGN-Core" ? std::string(PGN_CORE_COMPONENT_VERSION) : FormatVersion(nClientVersion), comments_str);
 }

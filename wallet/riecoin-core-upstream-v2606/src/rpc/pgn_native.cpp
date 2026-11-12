@@ -8,6 +8,8 @@
 #include <pgn/rpc_history_cache.h>
 #include <pgn/rpc_public_attribution.h>
 #include <pgn/native_network_metrics.h>
+#include <pgn/native_leaderboard.h>
+#include <pgn/leaderboard_snapshot_cache.h>
 #include <pgn/audit_activity_selection.h>
 #include <pgn/ticket_atlas_projection.h>
 #include <pgn/proposed_ticket_requests.h>
@@ -29,6 +31,7 @@
 #include <logging.h>
 #include <set>
 #include <memory>
+#include <mutex>
 using namespace pgn::core;
 namespace {
 void RequireNative(const ChainstateManager& manager){
@@ -87,6 +90,7 @@ std::shared_ptr<const NativeAuditLedger> ReadRpcAuditLedger(ChainstateManager& m
 
  return snapshot;
 }
+#include <rpc/pgn_leaderboard.inc>
 RPCMethod getpgnstate(){
  return RPCMethod{"getpgnstate","Read actual native issuance, target and assigned ranges at the current tip.",{{"offset",RPCArg::Type::NUM,RPCArg::Default{0},"First lease, ordered newest issue height first, then lower range bound"},{"limit",RPCArg::Type::NUM,RPCArg::Default{100},"Page size 1 through 100"},{"request_id",RPCArg::Type::STR_HEX,RPCArg::Optional::OMITTED,"Exact owned request lookup"}},
  RPCResult{RPCResult::Type::OBJ,"","Native state",{
@@ -821,6 +825,6 @@ RPCMethod getpgnnetworkmetrics(){
 
 }
 void RegisterPgnNativeRPCCommands(CRPCTable& table){
- static const CRPCCommand commands[]{{"mining",&getpgnstate},{"mining",&getpgnticketrequest},{"mining",&getpgnbootstraptemplate},{"mining",&getpgnscientificwork},{"mining",&getpgnscientifictemplate},{"mining",&getpgnreportcommit},{"mining",&getpgnreports},{"mining",&getpgnauditevent},{"mining",&getpgnauditstate},{"mining",&getpgnauditactivity},{"mining",&getpgnparticipants},{"mining",&getpgnworkdutystatus},{"mining",&getpgnnetworkmetrics},{"mining",&getpgnworkview},{"mining",&getpgnticketatlas}};
+ static const CRPCCommand commands[]{{"mining",&getpgnstate},{"mining",&getpgnticketrequest},{"mining",&getpgnbootstraptemplate},{"mining",&getpgnscientificwork},{"mining",&getpgnscientifictemplate},{"mining",&getpgnreportcommit},{"mining",&getpgnreports},{"mining",&getpgnauditevent},{"mining",&getpgnauditstate},{"mining",&getpgnauditactivity},{"mining",&getpgnparticipants},{"mining",&getpgnleaderboard},{"mining",&getpgnworkdutystatus},{"mining",&getpgnnetworkmetrics},{"mining",&getpgnworkview},{"mining",&getpgnticketatlas}};
  for(const auto& command:commands)table.appendCommand(command.name,&command);
 }

@@ -12,6 +12,7 @@
 #include <QHash>
 #include <QTableWidget>
 #include <QRegularExpression>
+#include <QSignalBlocker>
 #include <cmath>
 
 namespace pgn::ui {
@@ -93,20 +94,28 @@ protected:
    painter.setPen(Qt::NoPen);painter.setBrush(color);painter.drawEllipse(at,radius,radius);painter.restore();
   };
   const QColor incoming=rail_->flow_.audit()?QColor("#62cfff"):QColor("#bde9e4");
-  if (rail_->flow_.moving()) {
-   const int population=3+int(rail_->flow_.activity()*13);
+  const auto incomingFlow=[&](const QString& producer,double activity,bool audit){
+   const auto color=audit?QColor("#62cfff"):QColor("#bde9e4");
+   const int population=3+int(activity*13);
    for (int i=0;i<population;++i) {
-    const double rhythm=flowSeed(i+37),travel=seconds*(.18+rail_->flow_.activity()*.27+rhythm*.19)+rhythm*13;
+    const double rhythm=flowSeed(i+37+qHash(producer)%997),travel=seconds*(.18+activity*.27+rhythm*.19)+rhythm*13;
     const auto cycle=std::uint32_t(std::floor(travel));const double u=travel-std::floor(travel);
     const double seed=flowSeed(std::uint32_t(i)*65537+cycle*7919+17);
-    const auto from=source(rail_->flow_.producer(),seed);
+    const auto from=source(producer,seed);
     const auto at=livingFlowPoint(from,center,u,seed,seconds,30.);
     const auto tail=livingFlowPoint(from,center,std::max(0.,u-.035),seed,seconds,30.);
-    painter.setPen(QPen(faded(incoming,40),.7));painter.drawLine(tail,at);
-    particle(at,incoming,.16+.38*std::sin(u*3.14159265),.9+seed*.8);
-    if(i==0&&rail_->flow_.audit())workMark(painter,at,"A",incoming,false,.65+.35*std::sin(u*3.14159265));
+    painter.setPen(QPen(faded(color,40),.7));painter.drawLine(tail,at);
+    particle(at,color,.16+.38*std::sin(u*3.14159265),.9+seed*.8);
+    if(i==0&&audit)workMark(painter,at,"A",color,false,.65+.35*std::sin(u*3.14159265));
    }
+  };
+  if(rail_->flow_.moving()&&!rail_->resourceActivity_.rows().contains(rail_->flow_.producer()))incomingFlow(rail_->flow_.producer(),rail_->flow_.activity(),rail_->flow_.audit());
+  QJsonArray resourceFlows;
+  for(auto it=rail_->resourceActivity_.rows().cbegin();it!=rail_->resourceActivity_.rows().cend();++it){
+   if(it->moving)incomingFlow(it.key(),it->activity,false);
+   const auto origin=source(it.key(),.5);resourceFlows.append(QJsonObject{{"device",it.key()},{"active",it->moving},{"x",origin.x()},{"y",origin.y()}});
   }
+  rail_->setProperty("pgn_ticket_resource_flows",resourceFlows);
   QVector<const GapFlowEvent*> labels;
   for (const auto& event : rail_->flow_.events()) if (event.tier!=MeritTier::Ordinary && now-event.born>3000) labels.append(&event);
   std::sort(labels.begin(),labels.end(),[this](const auto* a,const auto* b) {
@@ -137,7 +146,7 @@ protected:
    workTokens.append(QJsonObject{{"ticket_id",entry.ticket},{"request_id",entry.request},{"kind","range"},{"report_included",entry.confirmed},{"audited",entry.audited},{"x",position.x()},{"y",position.y()}});
   }
   rail_->setProperty("pgn_ticket_work_tokens",workTokens);
-  const bool alive=rail_->flow_.moving()||!rail_->flow_.events().isEmpty()||!rail_->flow_.collected().isEmpty()||!rail_->flow_.departing().isEmpty();const double beat=alive?seconds:0;
+  const bool alive=rail_->flow_.moving()||rail_->resourceActivity_.moving()||!rail_->flow_.events().isEmpty()||!rail_->flow_.collected().isEmpty()||!rail_->flow_.departing().isEmpty();const double beat=alive?seconds:0;
   // The right-hand collector is a destination, not a declaration that an audit
   // or a monetary reward has passed. The underlying Best table retains results.
   painter.setBrush(Qt::NoBrush);
@@ -281,8 +290,14 @@ private:
 };
 MiningTicketProgress::MiningTicketProgress(QWidget* parent):QWidget(parent){
  setObjectName("pgn-ticket-progress-rail");setFixedHeight(120);setMouseTracking(true);clock_.start();timer_.setInterval(33);
+ workSelector_=new QComboBox(this);workSelector_->setObjectName("pgn-work-source");workSelector_->addItem("GPU work","GPU");workSelector_->setGeometry(16,94,160,22);
+ workSelector_->hide(); // The operator rejected the dropdown presentation.
+ workSelector_->setToolTip("Choose which resource's ticket, progress and results to inspect. Mining controls remain independent.");
+ workSelector_->setStyleSheet("QComboBox{background:#0b2932;color:#d7efec;border:1px solid #315d68;border-radius:5px;padding:2px 7px;font:12px 'Segoe UI';}QComboBox QAbstractItemView{background:#0b2932;color:#d7efec;selection-background-color:#1b655f;}");
+ connect(workSelector_,&QComboBox::currentIndexChanged,this,[this](int index){selectWorkSource(workSelector_->itemData(index).toString());});
  connect(&timer_,&QTimer::timeout,this,[this]{if(!isVisible())return;const bool wasMoving=flow_.moving();flow_.expire(clock_.elapsed());pollLandings();if(results_)flow_.setVisibleBest(results_->property("pgn_visible_best").toJsonObject(),clock_.elapsed());setProperty("pgn_ticket_collection_size",flow_.collected().size());setProperty("pgn_ticket_collection_departing",flow_.departing().size());
-  if(wasMoving!=flow_.moving()||flow_.moving()||workMarksActive(clock_.elapsed())||!flow_.events().isEmpty()||!flow_.collected().isEmpty()||!flow_.departing().isEmpty()||frame_.value("phase")=="Starting"||frame_.value("phase")=="Stopping"){
+  const bool resourceChanged=resourceActivity_.expire(clock_.elapsed());
+  if(resourceChanged||resourceActivity_.moving()||wasMoving!=flow_.moving()||flow_.moving()||workMarksActive(clock_.elapsed())||!flow_.events().isEmpty()||!flow_.collected().isEmpty()||!flow_.departing().isEmpty()||frame_.value("phase")=="Starting"||frame_.value("phase")=="Stopping"){
    update();ensureOverlay();if(overlay_){overlay_->synchronize();overlay_->update();}
   }});timer_.start();
 }
@@ -292,7 +307,32 @@ void MiningTicketProgress::ensureOverlay(){if(!overlay_&&canvas_&&parentWidget()
 void MiningTicketProgress::bindSourceCanvas(QWidget* canvas){canvas_=canvas;if(canvas_)canvas_->setProperty("pgn_card_geometry_enabled",true);ensureOverlay();}
 void MiningTicketProgress::bindResultsView(QWidget* view){results_=view;}
 void MiningTicketProgress::setRecordEligibility(const QJsonArray& pairs){flow_.setEligibility(pairs);if(overlay_)overlay_->update();}
+void MiningTicketProgress::presentResourceActivity(const QString& device,const QJsonObject& status,bool connected){
+ resourceActivity_.observe(device,status,connected,clock_.elapsed());ensureOverlay();if(overlay_){overlay_->synchronize();overlay_->update();}
+}
+bool MiningTicketProgress::selectWorkSource(const QString& source){
+ if(source!=workSource_&&!workViews_.contains(source))return false;
+ if(source!=workSource_){auto& old=workViews_[workSource_];old.flow=flow_;old.cycle=cycleHistory_;workSource_=source;const auto view=workViews_.value(source);flow_=view.flow;cycleHistory_=view.cycle;frame_={};}
+ {const QSignalBlocker block(workSelector_);workSelector_->setCurrentIndex(workSelector_->findData(source));}
+ auto value=workViews_.value(source).frame;
+ if(value.isEmpty())value={{"schema","PGN_HORIZON_MINING_VIEW_V1"},{"phase","Waiting for a ticket"},{"source_device",source},{"source_stale",true},{"scopes",QJsonObject{}}};
+ applyFrame(value);if(onWorkSelected)onWorkSelected(value);
+ setProperty("pgn_selected_work_source",source);return true;
+}
 void MiningTicketProgress::present(const QJsonObject& frame){
+ if(!coherentMiningCycleFrame(frame))return;
+ const auto device=frame.value("source_device").toString();const auto source=device.startsWith("CPU/")?device:QString("GPU");
+ if(source!="GPU"&&!QRegularExpression("^CPU/[A-Za-z0-9_.-]{1,100}/[0-9]+$").match(source).hasMatch())return;
+ if(!workViews_.contains(source)){
+  if(workViews_.size()>=9)return;
+  if(source!="GPU")workSelector_->addItem(QString("CPU %1").arg(source.section('/',1,1)),source);
+ }
+ workViews_[source].frame=frame;
+ if(source!=workSource_){workViews_[source].cycle.observe(frame);return;}
+ applyFrame(frame);if(onWorkSelected)onWorkSelected(frame);
+ setProperty("pgn_selected_work_source",source);
+}
+void MiningTicketProgress::applyFrame(const QJsonObject& frame){
  const auto remember=[this](const QJsonObject& packet){
   if(packet.value("work_role")=="audit")return;
   const auto ticket=packet.value("ticket_id").toString(),request=packet.value("request_id").toString();
@@ -305,7 +345,8 @@ void MiningTicketProgress::present(const QJsonObject& frame){
  if(frame_.value("ticket_id")!=frame.value("ticket_id"))remember(frame_);
  if(frame.value("phase")=="Report ready")remember(frame);
  cycleHistory_.observe(frame);
- frame_=frame;flow_.observe(frame,canvas_?canvas_->property("pgn_managed_source_device").toString():QString{},clock_.elapsed());
+ const auto producer=frame.value("source_device").toString();
+ frame_=frame;flow_.observe(frame,!producer.isEmpty()?producer:canvas_?canvas_->property("pgn_managed_source_device").toString():QString{},clock_.elapsed());
  setToolTip({});
  setProperty("pgn_ticket_flow_received",QVariant::fromValue(flow_.received()));setProperty("pgn_ticket_flow_coalesced",QVariant::fromValue(flow_.coalesced()));
  ensureOverlay();update();if(overlay_){overlay_->synchronize();overlay_->update();}
@@ -369,15 +410,15 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  // One measured row keeps the tables close to the live track. Reserve the
  // changing state/ETA first, then elide metadata instead of resizing fonts.
  constexpr double rowY=94.,rowHeight=22.,gap=16.;
- const int available=std::max(1,width()-36);
+ const int contentLeft=16,available=std::max(1,width()-contentLeft-18);
  QFont metricFont("Consolas");metricFont.setPixelSize(12);
  const QFontMetrics metricMetrics(metricFont);
  const QString activity=status+(remaining.isEmpty()?QString{}:QString("  ·  ")+remaining);
  const int activityWidth=std::min(available*3/5,metricMetrics.horizontalAdvance(activity)+2);
  const int titleWidth=std::min(std::max(1,available-activityWidth-int(gap)),painter.fontMetrics().horizontalAdvance(title)+2);
- painter.setPen(QColor("#e1f6f0"));painter.drawText(QRectF(18,rowY,titleWidth,rowHeight),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(title,Qt::ElideRight,titleWidth));
+ painter.setPen(QColor("#e1f6f0"));painter.drawText(QRectF(contentLeft,rowY,titleWidth,rowHeight),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(title,Qt::ElideRight,titleWidth));
  QFont detailFont("Segoe UI");detailFont.setPixelSize(12);painter.setFont(detailFont);painter.setPen(QColor("#9cbdbb"));
- const int detailLeft=18+titleWidth+int(gap),detailWidth=std::max(0,width()-18-activityWidth-int(gap)-detailLeft);
+ const int detailLeft=contentLeft+titleWidth+int(gap),detailWidth=std::max(0,width()-18-activityWidth-int(gap)-detailLeft);
  if(detailWidth>0)painter.drawText(QRectF(detailLeft,rowY,detailWidth,rowHeight),Qt::AlignLeft|Qt::AlignVCenter,painter.fontMetrics().elidedText(positions,Qt::ElideRight,detailWidth));
  painter.setFont(metricFont);painter.setPen(accent);painter.drawText(QRectF(width()-18-activityWidth,rowY,activityWidth,rowHeight),Qt::AlignRight|Qt::AlignVCenter,metricMetrics.elidedText(activity,Qt::ElideRight,activityWidth));
  setProperty("pgn_ticket_header_rows",1);setProperty("pgn_ticket_header_height",120);

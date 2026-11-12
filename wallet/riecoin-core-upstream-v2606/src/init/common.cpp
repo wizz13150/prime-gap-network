@@ -153,6 +153,6 @@ void LogPackageVersion()
 #else
     version_string += " (release build)";
 #endif
-    LogInfo(CLIENT_NAME " version %s", version_string);
+    LogInfo("PGN Core version %s (native base " CLIENT_VERSION_STRING ")", version_string);
 }
 } // namespace init

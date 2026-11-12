@@ -17,6 +17,7 @@
 #include <btcsignals.h>
 #include <chain.h>
 #include <chainparams.h>
+#include <pgn/social.h>
 #include <chainparamsbase.h>
 #include <clientversion.h>
 #include <common/args.h>
@@ -286,6 +287,8 @@ static void ShutdownNotify(const ArgsManager& args)
 
 void Interrupt(NodeContext& node)
 {
+    // Stop Social workers before native cryptographic/global teardown.
+    pgn::social::Shutdown();
 #if HAVE_SYSTEM
     ShutdownNotify(*node.args);
 #endif
@@ -486,6 +489,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-help-debug", "Print help message with debugging options and exit", ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST); // server-only for now
 
     init::AddLoggingArgs(argsman);
+    argsman.AddArg("-pgnsocial", "Enable off-chain Social relay over existing PGN peers; -pgnsocial=0 opts out (default:1)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
 
     const auto defaultBaseParams = CreateBaseChainParams(ChainType::MAIN);
     const auto testnetBaseParams = CreateBaseChainParams(ChainType::TESTNET);
@@ -1501,6 +1505,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
      * available in the GUI RPC console even if external calls are disabled.
      */
     RegisterAllCoreRPCCommands(tableRPC);
+    RegisterPgnSocialRPCCommands(tableRPC);
     for (const auto& client : node.chain_clients) {
         client->registerRpcs();
     }
@@ -1878,6 +1883,8 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     ChainstateManager& chainman = *Assert(node.chainman);
     auto& kernel_notifications{*Assert(node.notifications)};
 
+    // Start asynchronous Social storage/verifier before native net threads.
+    pgn::social::Start();
     assert(!node.peerman);
     node.peerman = PeerManager::make(*node.connman, *node.addrman,
                                      node.banman.get(), chainman,

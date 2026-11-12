@@ -72,11 +72,12 @@ struct Entry {
 struct Provenance { QString genesis, source; QDateTime observedUtc; bool authenticated{}; };
 struct Counter { std::optional<QString> value; Provenance provenance; };
 struct Activity { std::optional<QDateTime> value; Provenance provenance; };
-struct Miner { QString id, name; Counter acceptedGold, validatedAudits; Activity lastActivity;QString socialMemberId; };
+struct Miner { QString id, name; Counter acceptedGold, validatedAudits; Activity lastActivity;QString socialMemberId;Counter ticketsReported,ticketsValidated,validatedSearchPositions,lastActivityHeight; };
 struct ReadRequest { Section section; Identity identity; Window window{Window::AllTime}; QString cursor; int limit{100};QString channel; };
 struct SendAvailability {bool allowed{};QString reason;};
+struct ConnectionSummary {QString networkLabel;int connectedPeers{};};
 struct SendRequest {Identity identity;QString channel,requestId,bbcode;};
-enum class SendOutcome {Accepted,Rejected,Uncertain};
+enum class SendOutcome {Accepted,Posted,Rejected,Uncertain};
 struct SendResult {Identity identity;QString channel,requestId;SendOutcome outcome{SendOutcome::Uncertain};QString messageId,reason;};
 struct Snapshot {
     Identity identity; Section section{}; bool authenticated{};
@@ -88,6 +89,7 @@ struct Snapshot {
     std::optional<QVector<Participant>> participants;
     std::optional<AccessSnapshot> access;
     std::optional<SendAvailability> chatSend;
+    std::optional<ConnectionSummary> connection;
 };
 struct ThreadRequest {Identity identity;QString topic,cursor;int limit{50};};
 struct ThreadSnapshot {Identity identity;QString topic,source;bool authenticated{};QDateTime observedUtc;QVector<Reply> replies;QString nextCursor;};
@@ -127,6 +129,7 @@ inline QString validate(const Snapshot& v,const ReadRequest& r,QDateTime now=QDa
         return "Response does not match the authenticated identity and genesis.";
     if(v.source.trimmed().isEmpty()||v.source.size()>160||!current(v.observedUtc,now))
         return "The response has no current, valid provenance.";
+    if(v.connection&&(v.connection->networkLabel.size()>80||v.connection->connectedPeers<0||v.connection->connectedPeers>1000000))return "Invalid connection summary.";
     if(r.limit<1||r.limit>100||v.entries.size()>r.limit||v.miners.size()>r.limit)return "The bounded page limit was exceeded.";
     if(r.cursor.size()>256||v.nextCursor.size()>256||(!v.nextCursor.isEmpty()&&v.nextCursor==r.cursor))
         return "Invalid or repeated pagination token.";
@@ -145,7 +148,7 @@ inline QString validate(const Snapshot& v,const ReadRequest& r,QDateTime now=QDa
         for(const auto& m:v.miners) {
             if(m.id.isEmpty()||m.id.size()>256||ids.contains(m.id)||m.name.trimmed().isEmpty()||m.name.size()>160||m.socialMemberId.size()>256)
                 return "Invalid or duplicate miner identity.";
-            for(const auto* c:{&m.acceptedGold,&m.validatedAudits})
+            for(const auto* c:{&m.acceptedGold,&m.validatedAudits,&m.ticketsReported,&m.ticketsValidated,&m.validatedSearchPositions,&m.lastActivityHeight})
                 if(c->value&&(!decimal.match(*c->value).hasMatch()||!validProvenance(c->provenance,r.identity,now)))
                     return "A miner counter lacks valid same-genesis provenance.";
             if(m.lastActivity.value&&(!m.lastActivity.value->isValid()||*m.lastActivity.value>now.addSecs(60)

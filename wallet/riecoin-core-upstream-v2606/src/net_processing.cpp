@@ -5,6 +5,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <net_processing.h>
+#include <pgn/social.h>
 
 #include <addrman.h>
 #include <arith_uint256.h>
@@ -244,6 +245,10 @@ struct Peer {
 
     //! Whether this peer is an inbound connection
     const bool m_is_inbound;
+
+    // Assigned once after VERACK, read on message thread; closed after last PeerRef.
+    std::shared_ptr<pgn::social::Link> m_social_link;
+    ~Peer() { pgn::social::Close(m_social_link); }
 
     // Native scientific headers acquire work only after full body validation.
     // Keep one untrusted body request per peer, outside the accepted index.
@@ -3652,6 +3657,18 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         }
 
         pfrom.fSuccessfullyConnected = true;
+        peer.m_social_link = pgn::social::Open(pfrom.GetId());
+        return;
+    }
+
+    if (msg_type == NetMsgType::PGNSOCIAL) {
+        // No JSON parsing, crypto or IO on the shared native message thread.
+        // Oversize/invalid Social input never changes Core peer misbehavior.
+        if (!pfrom.fSuccessfullyConnected || !peer.m_social_link || vRecv.size() > pgn::social::MAX_FRAME) return;
+        std::string payload;
+        try { vRecv >> LIMITED_STRING(payload, pgn::social::MAX_FRAME - 9); } catch (const std::exception&) { return; }
+        if (!vRecv.empty()) return;
+        pgn::social::Receive(peer.m_social_link, std::move(payload));
         return;
     }
 
@@ -5970,5 +5987,12 @@ bool PeerManagerImpl::SendMessages(CNode& node)
             MakeAndPushMessage(node, NetMsgType::GETDATA, vGetData);
     } // release cs_main
     MaybeSendFeefilter(node, peer, current_time);
+    // Native block/tx work has priority. At most one Social frame per turn;
+    // no synchronous verification, wallet, disk or cs_main work here.
+    if (peer.m_social_link) {
+        pgn::social::Tick(peer.m_social_link);
+        if (auto payload = pgn::social::Drain(peer.m_social_link))
+            MakeAndPushMessage(node, NetMsgType::PGNSOCIAL, *payload);
+    }
     return true;
 }

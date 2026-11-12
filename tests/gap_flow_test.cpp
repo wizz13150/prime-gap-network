@@ -21,6 +21,33 @@ static QJsonObject frame(QJsonArray rows={}){return {{"schema","PGN_HORIZON_MINI
     {"title","Ticket 857"},{"bits",68},{"target_merit",28.5},{"record_pairs",rows},{"phase","Searching"},
     {"work_role","search"},{"start","150000000000000000000"},{"end","150000200000000000000"},
     {"positions_total","200000000000000"},{"positions","100000000000000"},{"speed_rate",1e12},{"eta_rate",1e12}};}
+static void resourceActivity(){
+ ResourceFlowActivity activity;QJsonObject status{{"enabled",true},{"compute_started",true},{"positions_per_second",2e9}};
+ activity.observe("CPU/ALEX/0",status,true,0);require(activity.moving(),"Active CPU has no independent activity stream");
+ activity.observe("CPU/WIZZ/0",status,true,0);require(activity.rows().size()==2,"CPU sources collapsed into one producer");
+ auto off=status;off.insert("enabled",false);activity.observe("CPU/ALEX/0",off,true,10);
+ require(!activity.rows()["CPU/ALEX/0"].moving&&activity.rows()["CPU/WIZZ/0"].moving,"CPU OFF suppressed the other device or stayed active");
+ activity.observe("CPU/WIZZ/0",status,false,11);require(!activity.moving(),"Disconnected CPU emits activity");
+ activity.observe("CPU/ALEX/0",status,true,20);activity.expire(3021);require(!activity.moving(),"Stale CPU telemetry emits activity");
+ auto noRate=status;noRate.insert("positions_per_second",QJsonValue{});activity.observe("CPU/ALEX/0",noRate,true,3030);require(!activity.moving(),"Unknown CPU speed was invented");
+ auto retained=status;retained.insert("compute_started",false);retained.insert("resident_result_handoff",true);retained.insert("resident_workers",4);retained.insert("resource_dispatch_threads",4);retained.insert("resource_positions_per_second",2e9);activity.observe("CPU/ALEX/0",retained,true,3031);require(!activity.moving(),"Retained average hid real CPU idle");
+ for(int i=0;i<30;++i)activity.observe("CPU/EXTRA/"+QString::number(i),status,true,4000);require(activity.rows().size()==8,"Resource activity cache is unbounded");
+}
+static void resourceWorkSelection(){
+ MiningTicketProgress rail;rail.resize(1366,120);QJsonObject selected;int changes=0;
+ rail.onWorkSelected=[&](const QJsonObject& value){selected=value;++changes;};
+ auto gpu=frame();gpu.insert("ticket_id",QString(64,'a'));gpu.insert("positions","100000000000000");rail.present(gpu);
+ auto cpu=frame();cpu.insert("source_device","CPU/ALEX/0");cpu.insert("ticket_id",QString(64,'b'));cpu.insert("positions","1000");cpu.insert("positions_total","10000");rail.present(cpu);
+ require(changes==1&&selected.value("ticket_id")==QString(64,'a'),"Background CPU overwrote selected GPU work");
+ require(rail.selectWorkSource("CPU/ALEX/0")&&selected.value("positions")=="1000","CPU selection did not restore its own snapshot");
+ auto pausedGpu=gpu;pausedGpu.insert("phase","Paused");pausedGpu.insert("positions","110000000000000");rail.present(pausedGpu);
+ require(selected.value("ticket_id")==QString(64,'b')&&selected.value("phase")=="Searching","GPU control/recovery overwrote selected CPU work");
+ require(rail.selectWorkSource("GPU")&&selected.value("positions")=="110000000000000"&&selected.value("phase")=="Paused","GPU selection did not retain its updated snapshot");
+ require(rail.selectWorkSource("CPU/ALEX/0")&&selected.value("ticket_id")==QString(64,'b'),"Switching mixed resource identities");
+ require(!rail.selectWorkSource("CPU/UNKNOWN/0"),"Unknown resource borrowed another ticket");
+ auto* selector=rail.findChild<QComboBox*>("pgn-work-source");require(selector&&selector->count()==2,"Work selector duplicated or lost resources");
+ require(selector->geometry().bottom()<rail.height(),"Work selection added another header row");
+}
 static void storageWaitPresentation(){
  for(int kind:{0,1,2}){
   QWidget canvas,results;canvas.setProperty("pgn_network_desired_on",true);
@@ -67,12 +94,37 @@ static void storageWaitPresentation(){
  std::cout<<"PASS storage-wait actual renderer: search/regular audit/catch-up, retained fraction/segments/results/ON, hidden stale ETA and fresh resumption; no image files or GPU/Core\n";
 }
 int main(int argc,char** argv){
- QApplication app(argc,argv);try{storageWaitPresentation();}catch(const std::exception& error){std::cerr<<"FAIL storage wait: "<<error.what()<<"\n";return 77;}GapFlowModel model;auto old=row(1,29.);auto gold=row(2,30.);
+ QApplication app(argc,argv);try{storageWaitPresentation();resourceActivity();resourceWorkSelection();}catch(const std::exception& error){std::cerr<<"FAIL storage/resource presentation: "<<error.what()<<"\n";return 77;}GapFlowModel model;auto old=row(1,29.);auto gold=row(2,30.);
  QJsonObject cycleMeta{{"schema","PGN_MINING_CYCLE_VIEW_V1"},{"request_id",QString(64,'f')},{"ticket_number","857"},{"search_positions","1800"},{"active_index",0},{"audits",QJsonArray{QJsonObject{{"state","assigned"},{"positions","100"}},QJsonObject{{"state","assigned"},{"positions","100"}}}}};
  auto cycleFrame=frame();cycleFrame.insert("work_role","audit");cycleFrame.insert("positions_total","100");cycleFrame.insert("positions","50");cycleFrame.insert("eta_rate",10);cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});auto firstCycle=miningCycleProgress(cycleFrame);
  require(firstCycle.known&&std::abs(firstCycle.fraction-.025)<1e-12&&firstCycle.taskEta==5&&firstCycle.cycleEta==195,"First audit uses first5percent and complete measured ETA");
  auto auditStates=cycleMeta["audits"].toArray();auto firstState=auditStates[0].toObject();firstState.insert("state","committed");auditStates[0]=firstState;cycleMeta.insert("audits",auditStates);cycleMeta.insert("active_index",1);cycleFrame.insert("positions","0");cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});require(std::abs(miningCycleProgress(cycleFrame).fraction-.05)<1e-12,"Second audit starts at5percent without reset");
  auto secondState=auditStates[1].toObject();secondState.insert("state","committed");auditStates[1]=secondState;cycleMeta.insert("audits",auditStates);cycleMeta.insert("active_index",2);cycleFrame.insert("positions_total","1800");cycleFrame.insert("positions","900");cycleFrame.insert("work_role","search");cycleFrame.insert("audit_service",QJsonObject{{"cycle",cycleMeta}});const auto searchCycle=miningCycleProgress(cycleFrame);require(std::abs(searchCycle.fraction-.55)<1e-12&&searchCycle.cycleEta==90,"Search occupies last90percent, preserves completed audit slices");
+ // Native service credits already fill both regular slots. An actual extra
+ // audit must keep its orange slot even when it is the first observed job.
+ {
+  auto nativeMeta=cycleMeta;nativeMeta.insert("catch_up",true);nativeMeta.insert("active_index",0);
+  auto nativeFrame=cycleFrame;nativeFrame.insert("work_role","audit");nativeFrame.insert("ticket_id","native-extra");nativeFrame.insert("positions_total","100");nativeFrame.insert("positions","50");nativeFrame.insert("audit_service",QJsonObject{{"cycle",nativeMeta}});
+  MiningCycleHistory nativeHistory;nativeHistory.observe(nativeFrame);auto native=miningCycleProgress(nativeFrame,nativeHistory.audits());
+  require(native.slices.size()==4&&native.slices[0].fraction==1&&native.slices[1].fraction==1&&native.slices[2].role=="catch_up"&&native.slices[2].fraction==.5,"Native catch-up replaced a completed regular service slot");
+  nativeFrame.insert("positions","100");nativeHistory.observe(nativeFrame);nativeMeta.insert("catch_up",false);nativeMeta.insert("active_index",2);nativeFrame.insert("work_role","search");nativeFrame.insert("positions_total","1800");nativeFrame.insert("positions","900");nativeFrame.insert("audit_service",QJsonObject{{"cycle",nativeMeta}});nativeHistory.observe(nativeFrame);native=miningCycleProgress(nativeFrame,nativeHistory.audits(),nativeHistory.search());
+  require(native.slices.size()==4&&native.slices[2].role=="catch_up"&&native.slices[2].fraction==1&&native.slices[3].fraction==.5,"Native completed catch-up disappeared when search resumed");
+ }
+ // Arrival order is not admission authority: an unrelated previous audit
+ // cannot become a second orange slice in a cycle with one admitted extra.
+ {
+  auto explicitMeta=cycleMeta;explicitMeta.insert("extra_audit_ids",QJsonArray{"real-extra"});
+  auto explicitFrame=cycleFrame;explicitFrame.insert("audit_service",QJsonObject{{"cycle",explicitMeta}});
+  const QJsonArray observed{QJsonObject{{"identity","previous-audit"},{"catch_up",true},{"fraction",1.}},QJsonObject{{"identity","real-extra"},{"catch_up",true},{"fraction",1.}}};
+  const auto explicitCycle=miningCycleProgress(explicitFrame,observed);
+  require(explicitCycle.slices.size()==4&&explicitCycle.slices[2].role=="catch_up","Frame order manufactured a second catch-up despite the execution journal");
+  explicitMeta.insert("completed_extra_audit_ids",QJsonArray{"real-extra","not-admitted"});
+  explicitFrame.insert("audit_service",QJsonObject{{"cycle",explicitMeta}});
+  const auto durableExtra=miningCycleProgress(explicitFrame);
+  require(durableExtra.slices.size()==4&&durableExtra.slices[2].fraction==1.,"Confirmed extra stays complete after missed final frame or attachment; unadmitted completion cannot manufacture a slot");
+  explicitMeta.insert("active_audit_id","real-extra");explicitFrame.insert("work_role","audit");explicitFrame.insert("ticket_id","previous-audit");explicitFrame.insert("audit_service",QJsonObject{{"cycle",explicitMeta}});
+  require(!coherentMiningCycleFrame(explicitFrame),"Cross-job audit frame accepted a different active audit's cycle metadata");
+ }
  // Laboratory catch-up work must occupy the first two real audit slots,
  // even when the server waived its independent-service credit stages.
  cycleMeta.insert("catch_up",true);cycleMeta.insert("audits",QJsonArray{QJsonObject{{"state","unavailable"}},QJsonObject{{"state","unavailable"}}});
@@ -135,12 +187,13 @@ int main(int argc,char** argv){
  QWidget parent;parent.setAutoFillBackground(true);auto palette=parent.palette();palette.setColor(QPalette::Window,QColor("#031116"));parent.setPalette(palette);auto* layout=new QVBoxLayout(&parent);auto* canvas=new QWidget;canvas->setFixedHeight(120);
  canvas->setProperty("pgn_managed_source_device","gpu");canvas->setProperty("pgn_card_layout",QJsonArray{
     QJsonObject{{"id","gpu"},{"visible",true},{"rect",QJsonArray{10,4,240,110}}},
-    QJsonObject{{"id","cpu"},{"visible",true},{"rect",QJsonArray{270,4,240,90}}}});
+    QJsonObject{{"id","CPU/ALEX/0"},{"visible",true},{"rect",QJsonArray{270,4,240,90}}}});
  auto* button=new QPushButton("Existing control",canvas);button->setGeometry(15,10,100,24);
  auto* rail=new MiningTicketProgress;layout->addWidget(canvas);layout->addWidget(rail);layout->addStretch();
  auto* results=new QWidget(&parent);auto* table=new QTableWidget(results);table->setObjectName("pgn-results-best");table->setColumnCount(1);table->setRowCount(1);auto* item=new QTableWidgetItem("1004");const auto pair=gold.value("lower_prime").toString()+":1004";item->setData(Qt::UserRole,pair);table->setItem(0,0,item);results->setProperty("pgn_visible_best",snapshot({gold,row(54,28.),row(53,27.),row(52,26.)}));results->hide();rail->bindResultsView(results);
  rail->bindSourceCanvas(canvas);parent.resize(1100,400);parent.show();app.processEvents();
  rail->present(frame());rail->present(frame({gold,row(54,28.),row(53,27.),row(52,26.)}));rail->setRecordEligibility({gold});
+ rail->presentResourceActivity("CPU/ALEX/0",{{"enabled",true},{"compute_started",true},{"positions_per_second",2e9}},true);
  QEventLoop measured;QTimer::singleShot(1950,&measured,&QEventLoop::quit);measured.exec();
  for(int width:{640,1100,1920}){
   parent.resize(width,400);app.processEvents();QImage image(parent.size(),QImage::Format_ARGB32);image.fill(Qt::transparent);parent.render(&image);
@@ -148,6 +201,8 @@ int main(int argc,char** argv){
   require(rail->property("pgn_ticket_eta_seconds").toDouble()==100.,"Animation changed ETA");
   require(rail->height()<=156,"Animation exceeded twice the original reserved height");
   auto* overlay=parent.findChild<QWidget*>("pgn-card-gap-flow");require(overlay&&overlay->testAttribute(Qt::WA_TransparentForMouseEvents),"Overlay blocks card controls");
+  const auto resourceFlows=rail->property("pgn_ticket_resource_flows").toJsonArray();require(resourceFlows.size()==1&&resourceFlows[0].toObject().value("active")==true&&resourceFlows[0].toObject().value("device")=="CPU/ALEX/0","Concurrent CPU card has no activity flow");
+  require(std::abs(resourceFlows[0].toObject().value("x").toDouble()-390.)<30,"CPU flow originates outside its own card");
   if(argc>1){QDir().mkpath(QString::fromLocal8Bit(argv[1]));require(image.save(QString::fromLocal8Bit(argv[1])+QString("/flow-%1.png").arg(width)),"Render receipt failed");}
  }
  QEventLoop collected;QTimer::singleShot(1900,&collected,&QEventLoop::quit);collected.exec();app.processEvents();
