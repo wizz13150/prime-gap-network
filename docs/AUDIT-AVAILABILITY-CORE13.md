@@ -1,6 +1,6 @@
 # Core13 / GPU62: audit availability on the current testnet
 
-Core13 enables the testnet audit-operator rule at candidate block16064, only
+Core13 enables the testnet audit-operator rule at candidate block16640, only
 for genesis0ccd1f2349ed75f9cf4d0279871a204e107683e5baa1dd6641c4e6f08a25a17d.
 Earlier heights keep their original rules. Clients must update Core as well
 as the controller before using this testnet rule; mainnet is unchanged.
