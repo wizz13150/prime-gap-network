@@ -463,7 +463,9 @@ class WorkCycleJournal:
         # Explicitly empty regular slots may be filled by the lab lanes. They
         # occupy the first two visual audit sections, rather than catch-up.
         regular = sum(bool(task and task['stage'] == 'unavailable') for task in cycle['audits'])
-        return audit_id in admitted or len(admitted) < 2 + regular
+        # One catch-up in addition to the two regular audits. Previously
+        # admitted identities remain resumable across an engine update.
+        return audit_id in admitted or len(admitted) < 1 + regular
 
     def may_extra_audit(self, request, audit_id):
         if not identity(audit_id):
@@ -481,7 +483,7 @@ class WorkCycleJournal:
             if audit_id in self.extra.get(request, []):
                 return # No journal rewrite between this audit's partitions.
             if not self.extra_audit_available(cycle, audit_id, self.extra.get(request, [])):
-                raise BufferError('Two catch-up audits already admitted for this ticket')
+                raise BufferError('One catch-up audit already admitted for this ticket')
             hot = {item['work']['request_id'] for item in self.value['cycles']}
             candidate = {key: list(value) for key, value in self.extra.items() if key in hot}
             candidate.setdefault(request, []).append(audit_id)

@@ -4,6 +4,7 @@ from pathlib import Path
 from copy import deepcopy
 from types import SimpleNamespace
 import json
+import hashlib
 import threading
 import time
 from horizon_network_audits import NetworkAudits
@@ -77,11 +78,11 @@ class AuditGpuProxy:
             raise ValueError('Queued audit partition differs from its confirmed assignment')
         presentation = audit_presentation(audit, part,
                             self.flow.worker.root / 'tickets' / ticket['ticket_id'])
-        if audit.get("work_cycle"):
-            cycle = self.flow.cycles.snapshot(audit["work_cycle"])
+        if audit.get("physical_cycle") or audit.get("work_cycle"):
+            cycle = self.flow.cycles.snapshot(audit.get("physical_cycle") or audit["work_cycle"])
             presentation["title"] = "Ticket " + cycle["work"]["ticket_number"] + " · Audit " + str(self.position + 1) + "/2"
         future = self.flow.gpu.submit(ticket, dict(role="audit", presentation=presentation,
-                                     work_cycle=audit.get("work_cycle"), audit_position=self.position,
+                                     work_cycle=audit.get("physical_cycle") or audit.get("work_cycle"), physical_cycle=bool(audit.get("physical_cycle")), audit_position=self.position,
                                      audit_request_id=audit["request_id"], audit_slot=audit["slot"],
                                      audit_attempt=audit["attempt"]), maximum_piece)
         self.prepared[ticket['ticket_id']] = (deepcopy(ticket), maximum_piece, future)
@@ -112,6 +113,8 @@ class MiningFlow:
             retain()
         self.preseal = PresealQueue(worker.root)
         self.cycles = WorkCycleJournal(worker.root / "work-cycles", worker.args.genesis)
+        from horizon_cycle_execution import CycleExecution
+        self.physical_audits = CycleExecution(worker.root / "work-cycles", worker.args.genesis)
         self.changed = threading.Event()
         self.prior_active = read(worker.root / "gpu-active.json") if (worker.root / "gpu-active.json").exists() else {}
         current = read(worker.root / "controller.json") if (worker.root / "controller.json").exists() else {}
@@ -201,18 +204,46 @@ class MiningFlow:
         if (job.context['role'] == 'search' and self.finalizer is not None
                 and not self.preseal.capacity_available()):
             return False
+        # Assignment can be prefetched before the next ticket exists. Adopt
+        # its still-unaccounted work at admission, never rewrite its results or
+        # current.json from the GPU thread. The preparation thread persists
+        # this additive binding at its next normal boundary.
+        if job.context['role'] == 'audit' and not job.context.get('work_cycle'):
+            physical = getattr(self, 'physical_audits', None)
+            index = job.context.get('audit_position')
+            if physical is not None and index in (0, 1):
+                audit = self.audit_lanes[index].current_audit
+                if audit is not None and (audit.get('request_id'), audit.get('slot'), audit.get('attempt')) == (job.context.get('audit_request_id'), job.context.get('audit_slot'), job.context.get('audit_attempt')):
+                    target = audit.get('physical_cycle') or physical.pending(index, self.cycles.value['cycles'])
+                    counted_extra = self.cycles.extra_audit_cycle(job.context.get('presentation', {}).get('audit_id'))
+                    if target and not counted_extra:
+                        physical.bind(target, index, audit)
+                        audit['physical_cycle'] = target
+                        job.context.update(work_cycle=target, physical_cycle=True)
+                        self.cycle_audit_positions[(target, index)] = sum(int(r['end'])-int(r['start']) for r in audit['ranges'])
         cycle = job.context.get("work_cycle")
         if job.context["role"] == "audit":
             if cycle is not None:
+                if job.context.get("physical_cycle"):
+                    return not self.cycles.snapshot(cycle)["hold"] and self.physical_audits.may_audit(cycle, job.context["audit_position"])
                 return self.cycles.may_audit(cycle, job.context["audit_position"])
             owner = self.extra_audit_owner(job)
             return owner is None or self.cycles.may_extra_audit(owner, job.context['presentation']['audit_id'])
         if job.context.get("legacy_assignment"):
             return True
         state = self.cycles.snapshot(cycle)
-        return not state["hold"] and (self.cycles.may_search(cycle) or
+        return not state["hold"] and self.physical_ready(cycle) and (self.cycles.may_search(cycle) or
                                       state["stage"] == "running" or
                                       state["stage"] == "completed" and not job.context.get("prepared"))
+
+    def physical_ready(self, cycle):
+        journal = getattr(self, 'physical_audits', None)
+        return journal is None or journal.ready(cycle)
+
+    def pending_audit(self, position):
+        journal = getattr(self, 'physical_audits', None)
+        physical = journal.pending(position, self.cycles.value['cycles']) if journal is not None else None
+        return physical or self.cycles.pending(position, retry_permissions=True)
 
     def extra_audit_owner(self, job):
         audit_id = job.context.get('presentation', {}).get('audit_id')
@@ -237,6 +268,20 @@ class MiningFlow:
         return None
 
     def bind_audit_cycle(self, position, audit):
+        physical = getattr(self, 'physical_audits', None)
+        cycle = audit.get('physical_cycle') or audit.get('work_cycle')
+        if physical is not None:
+            if not cycle:
+                ident = hashlib.sha256(canonical_bytes(dict(domain='PGN_HORIZON_AUDIT_VIEW_V1', request=audit['request_id'], slot=audit['slot'], attempt=audit['attempt']))).hexdigest()
+                if self.cycles.extra_audit_cycle(ident):
+                    return  # This whole audit already belongs to a prior extra section.
+                cycle = physical.pending(position, self.cycles.value['cycles'])
+            if cycle and physical.snapshot(cycle) is not None:
+                physical.bind(cycle, position, audit)
+                audit.update(physical_cycle=cycle)
+                self.cycle_audit_positions[(cycle, position)] = sum(int(r['end'])-int(r['start']) for r in audit['ranges'])
+                save(self.audit_lanes[position].folder / 'current.json', audit)
+                return
         cycle = audit.get("work_cycle") or self.cycles.bound_audit(audit["request_id"], audit["slot"], audit["attempt"], position)
         if cycle:
             state = self.cycles.snapshot(cycle)
@@ -265,6 +310,8 @@ class MiningFlow:
         cycle = audit.get("work_cycle")
         if cycle is None:
             return True
+        if audit.get("physical_cycle"):
+            return self.physical_audits.may_audit(audit["physical_cycle"], position)
         while not self.worker.quitting.is_set() and self.worker.running.is_set():
             state = self.cycles.snapshot(cycle)
             replay = self.replaying_audit(state, position, audit)
@@ -281,6 +328,15 @@ class MiningFlow:
         return False
 
     def audit_committed(self, position, audit, block):
+        physical = getattr(self, 'physical_audits', None)
+        if physical is not None and not audit.get('physical_cycle'):
+            ident = hashlib.sha256(canonical_bytes(dict(domain='PGN_HORIZON_AUDIT_VIEW_V1',request=audit['request_id'],slot=audit['slot'],attempt=audit['attempt']))).hexdigest()
+            owner = self.cycles.extra_audit_cycle(ident)
+            if owner:physical.completed_extra(owner, ident, block)
+        if audit.get('physical_cycle'):
+            self.physical_audits.committed(audit['physical_cycle'], position, audit, block) if self.physical_audits.snapshot(audit['physical_cycle']) is not None else None
+            self.gpu.wake()
+            return
         cycle = audit.get("work_cycle") or self.cycles.bound_audit(audit["request_id"], audit["slot"], audit["attempt"], position)
         if cycle:
             if audit.get('replay_previous_block'):
@@ -298,6 +354,12 @@ class MiningFlow:
             self.gpu.wake()
 
     def reopen_audit_cycle(self, position, audit, previous_block):
+        if audit.get('physical_cycle'):
+            self.physical_audits.retire(audit['physical_cycle'], position, audit)
+            self.physical_audits.bind(audit['physical_cycle'], position, audit)
+            audit['replay_previous_block'] = previous_block
+            self.gpu.wake()
+            return
         cycle = audit.get('work_cycle') or self.cycles.bound_audit(audit['request_id'], audit['slot'], audit['attempt'], position)
         if cycle:
             started = self.cycles.reopen_audit(cycle, position, audit['request_id'], audit['slot'], audit['attempt'], previous_block)
@@ -309,6 +371,11 @@ class MiningFlow:
             self.gpu.wake()
 
     def retire_audit_cycle(self, position, audit, anchor):
+        if audit.get('physical_cycle'):
+            self.physical_audits.retire(audit['physical_cycle'], position, audit)
+            audit.pop('physical_cycle', None)
+            self.gpu.wake()
+            return
         cycle = audit.get('work_cycle') or self.cycles.bound_audit(audit['request_id'], audit['slot'], audit['attempt'], position)
         if cycle:
             self.cycles.retire_assignment(cycle, position, audit['request_id'], audit['slot'], audit['attempt'])
@@ -365,6 +432,9 @@ class MiningFlow:
         return cycle['stage'] == 'completed' and self.cycles.ready(cycle)
 
     def audit_reassignment_needed(self, position, audit):
+        if audit.get('physical_cycle'):
+            tasks = self.physical_audits.snapshot(audit['physical_cycle'])
+            return bool(tasks and tasks[position] and tasks[position]['stage'] == 'committed')
         cycle = audit.get('work_cycle') or self.cycles.bound_audit(audit['request_id'], audit['slot'], audit['attempt'], position)
         if not cycle:
             return False
@@ -395,7 +465,14 @@ class MiningFlow:
         if getattr(self.worker, 'cpu_only', False):
             from horizon_cycle_retirement import reconcile_cpu_capacity
             reconcile_cpu_capacity(self, work)
-        return self.cycles.prepare(work, native_service=native)
+        changed = self.cycles.prepare(work, native_service=native)
+        physical = getattr(self, 'physical_audits', None)
+        state = self.cycles.snapshot(work['request_id'])
+        if physical is not None and native is not None and not getattr(self.worker, 'cpu_only', False) and state['stage'] == 'prepared':
+            hot = {c['work']['request_id'] for c in self.cycles.value['cycles']}
+            physical.prepare(work['request_id'], hot)
+            self.cycle_audit_positions = {key: value for key, value in self.cycle_audit_positions.items() if key[0] in hot}
+        return changed
 
     def promote(self, work, sequence):
         with self.worker.state_lock:
@@ -437,7 +514,10 @@ class MiningFlow:
         if bind is not None:
             cycle = job.context.get("work_cycle")
             if cycle:
-                bind(job.ticket, job.context, self.cycles.snapshot(cycle))
+                state = self.cycles.snapshot(cycle)
+                if job.context.get("physical_cycle"):
+                    state["audits"] = self.physical_audits.snapshot(cycle)
+                bind(job.ticket, job.context, state)
             else:
                 worker.source.clear_cycle()
         save(worker.root / "gpu-active.json", dict(ticket_id=job.ticket["ticket_id"],
@@ -553,6 +633,28 @@ class MiningFlow:
         self.worker.message(detail, "Waiting for next ticket")
 
     def failed(self, error):
+        from pgn_index import SessionIndexWalBudgetExceeded
+        if isinstance(error, SessionIndexWalBudgetExceeded):
+            causes = [dict(error_type=type(error).__name__, resource="session index",
+                           module="pgn_index", summary=str(error)[:400])]
+            observation = getattr(error, "observation", None) or {}
+            for sample in observation.get("attempts", [])[:2]:
+                summary = (f"attempt={sample['attempt']}; checkpoint={sample.get('checkpoint')}; "
+                           f"WAL={sample.get('wal_before_bytes')}->{sample.get('wal_after_bytes')} B; "
+                           f"elapsed={sample.get('elapsed_ms', 0):.0f} ms; "
+                           f"sqlite_error={sample.get('sqlite_errorcode')}/{sample.get('sqlite_errorname')}")
+                causes.append(dict(error_type="SQLite checkpoint", resource="session index",
+                                   module="pgn_index", summary=summary[:400]))
+            self.worker.emit(dict(
+                schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1",
+                phase="Waiting for storage",
+                message="Data storage is busy. Work is saved; retrying automatically.",
+                failure=dict(schema="PGN_RUNTIME_FAILURE_V1",
+                             at_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                             step=("session_index_writer_admission"
+                                   if observation.get("stage") == "writer_admission"
+                                   else "session_index_checkpoint"), causes=causes)))
+            return
         self.worker.message(str(error), "Needs attention")
 
     def publish_reports(self):
@@ -641,11 +743,19 @@ class MiningFlow:
                 value['cycle_notice'] = 'Work cycle presentation changed; awaiting next frame'
                 cycle = None
         if cycle:
+            physical = getattr(self, 'physical_audits', None)
+            execution = physical.snapshot(cycle) if physical is not None else None
+            if execution is not None:
+                state['audits'] = execution
             totals = getattr(self, 'cycle_audit_positions', {})
             value['cycle'] = dict(schema='PGN_MINING_CYCLE_VIEW_V1', request_id=cycle,
                 ticket_number=state['work']['ticket_number'], search_positions=state['work']['length'],
                 active_index=2 if context.get('role') == 'search' else context.get('audit_position', 0),
-                catch_up=catch_up, audits=[dict(state=(task or {}).get('stage', 'pending'),
+                catch_up=catch_up,
+                active_audit_id=context.get('presentation', {}).get('audit_id', ''),
+                extra_audit_ids=list(getattr(self.cycles, 'extra', {}).get(cycle, [])),
+                completed_extra_audit_ids=physical.completed_extras(cycle) if physical is not None else [],
+                audits=[dict(state=(task or {}).get('stage', 'pending'),
                     positions=str(totals[(cycle, i)]) if (cycle, i) in totals else None)
                     for i, task in enumerate(state['audits'])])
         value["measurement_notice"] = self.audit_pressure_notice
@@ -683,7 +793,7 @@ class MiningFlow:
             if not self.worker.running.wait(.2):
                 continue
             try:
-                pending = self.cycles.pending(position, retry_permissions=True)
+                pending = self.pending_audit(position)
                 outcome = audit.process_one()
                 audit.last_error = None
                 audit.recovery_pending = None
@@ -694,7 +804,7 @@ class MiningFlow:
                     with self.gpu.condition:
                         active = self.gpu.active
                         at_boundary = active is None or active.context.get("work_cycle") == pending
-                    if pending and at_boundary and self.cycles.pending(position, retry_permissions=True) == pending:
+                    if pending and at_boundary and self.pending_audit(position) == pending:
                         reason = proposal.get("unavailable_reason")
                         if proposal.get("genesis") != self.worker.args.genesis:
                             raise ValueError("Audit availability belongs to another or unknown chain")
@@ -702,7 +812,11 @@ class MiningFlow:
                             # Availability and its anchor must come from the
                             # same Core read, not a later unrelated tip query.
                             anchor = proposal.get("parent")
-                            self.cycles.attach(pending, position, dict(stage="unavailable", anchor=anchor, reason=reason), permission_verified=True)
+                            physical = getattr(self, 'physical_audits', None)
+                            if physical is not None and physical.snapshot(pending) is not None:
+                                physical.unavailable(pending, position, anchor)
+                            else:
+                                self.cycles.attach(pending, position, dict(stage="unavailable", anchor=anchor, reason=reason), permission_verified=True)
                             self.gpu.wake()
                         elif reason in ("auditor_not_registered", "audit_permission_disabled"):
                             self.cycles.hold_permission(pending, reason)
