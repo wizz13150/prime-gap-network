@@ -20,6 +20,27 @@ class CliTests(unittest.TestCase):
  def test_authenticated_available_version_and_preparation(self):
   result=self.call();self.assertTrue(result['publisher_authenticated']);self.assertEqual(result['components'][0]['version'],'1.0.0')
   self.request['action']='prepare';result=self.call();self.assertTrue(result['publisher_authenticated']);self.assertFalse(result['installation_performed'])
+ def test_diagnostic_storage_inspection_and_cleanup_are_offline_and_conserve_unknown_data(self):
+  self.request['action']='prepare';prepared=self.call();scratch=Path(prepared['stage'])
+  cache=Path(self.request['cache']);unknown=cache/'user-note.txt';unknown.write_bytes(b'KEEP USER DATA')
+  history={p:p.read_bytes()for p in cache.rglob('*')if p.is_file()and'metadata'in p.parts}
+  def no_network(*args,**kwargs):raise AssertionError('Offline cleanup attempted a network fetch')
+  with patch.object(cli.AuthenticatedUpdates,'_updater',side_effect=no_network):
+   self.request['action']='inspect_storage';before=self.call()
+   self.assertEqual(before['schema'],'PGN_DIAGNOSTIC_STORAGE_V1')
+   self.assertGreater(before['cache']['reclaimable_bytes'],0)
+   self.assertFalse(before['cleaned']);self.assertTrue(scratch.is_dir())
+   self.request['action']='clean_storage';after=self.call()
+  self.assertTrue(after['cleaned']);self.assertGreater(after['reclaimed_bytes'],0)
+  self.assertFalse(after['process_control_performed']);self.assertNotIn('publisher_authenticated',after)
+  self.assertFalse(scratch.exists());self.assertEqual(unknown.read_bytes(),b'KEEP USER DATA')
+  for p,raw in history.items():self.assertEqual(p.read_bytes(),raw)
+ def test_diagnostic_cleanup_respects_an_existing_update_cache_lock(self):
+  self.request['action']='prepare';prepared=self.call();cache=Path(self.request['cache'])
+  with cli.stage.owned_lock(cache):
+   self.request['action']='clean_storage'
+   with self.assertRaises((cli.stage.StageError,OSError)):self.call()
+  self.assertTrue(Path(prepared['stage']).exists())
  def test_check_reclaims_obsolete_programs_left_by_an_older_helper(self):
   base=InstallTests();base.setUp()
   try:

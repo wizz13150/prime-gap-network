@@ -11,6 +11,9 @@
 #include <QTimer>
 #include <QJsonDocument>
 #include <QDateTime>
+#include <QFrame>
+#include <QPointer>
+#include <cmath>
 #include <memory>
 
 namespace pgn::ui {
@@ -20,6 +23,29 @@ constexpr int SampleLimit=1800;
 class DiagnosticCaptureView final:public QWidget {
  QString exporter_;std::function<QJsonObject()> sample_;QTimer timer_;QJsonArray samples_;qsizetype bytes_{};bool exporting_{};
  QLabel* status_{};QPushButton *start_{},*stop_{},*save_{};
+ QLabel* storageStatus_{};QPushButton *inspectStorage_{},*cleanStorage_{};DiagnosticStorageRequest storageRequest_;bool storageBusy_{};quint64 storageGeneration_{};
+ void storage(const QString& action){
+  if(!storageRequest_||storageBusy_)return;
+  storageBusy_=true;const auto generation=++storageGeneration_;inspectStorage_->setEnabled(false);cleanStorage_->setEnabled(false);
+  storageStatus_->setText(action=="clean_storage"?"Cleaning verified unused files…":"Inspecting local update storage…");
+  const QPointer<DiagnosticCaptureView> guard(this);
+  storageRequest_(action,[guard,generation](const QJsonObject& result,const QString& error){
+   if(!guard||generation!=guard->storageGeneration_)return;
+   guard->storageBusy_=false;guard->inspectStorage_->setEnabled(true);
+   const auto cache=result.value("cache").toObject();
+   const auto number=[](const QJsonValue& v){return v.isDouble()&&std::isfinite(v.toDouble())&&v.toDouble()>=0;};
+   const bool valid=result.value("schema")=="PGN_DIAGNOSTIC_STORAGE_V1"&&number(cache.value("total_bytes"))&&number(cache.value("reclaimable_bytes"))&&!cache.value("path").toString().isEmpty();
+   if(!error.isEmpty()||!valid){guard->storageStatus_->setText(error.isEmpty()?"Storage inspection returned no valid result.":error);return;}
+   guard->cleanStorage_->setEnabled(true);
+   const auto mib=[](double bytes){return QString::number(bytes/1048576.0,'f',1)+" MiB";};
+   const bool cleaned=result.value("cleaned").toBool();
+   QString text=cleaned?"Update cache reclaimed: "+mib(result.value("reclaimed_bytes").toDouble()):"Update cache: "+mib(cache.value("total_bytes").toDouble())+" · reclaimable: "+mib(cache.value("reclaimable_bytes").toDouble());
+   text+="\nCache: "+cache.value("path").toString()+"\nProgram copies: "+result.value("installation_path").toString();
+   const auto removal=result.value("installation_cleanup").toObject();if(cleaned&&removal.contains("removed"))text+="\nUnused installations removed: "+QString::number(removal.value("removed").toInt());
+   const auto warning=result.value("warning").toString();if(!warning.isEmpty())text+="\n"+warning;
+   guard->storageStatus_->setText(text);guard->setProperty("pgn_storage_maintenance",result);
+  });
+ }
  void state(const QString& message){status_->setText(message);setProperty("pgn_capture_status",message);setProperty("pgn_capture_samples",samples_.size());setProperty("pgn_capture_bytes",bytes_);}
  void capture(){
   auto value=sample_?sample_():QJsonObject{};value.insert("observed_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
@@ -39,7 +65,16 @@ public:
   start_->setStyleSheet("font-size:12px;font-weight:600;padding:6px 16px;background:#e8bf74;color:#091820;border:1px solid #e8bf74;border-radius:7px;");
   start_->setToolTip("Start a new recording; replaces the current unsaved capture");stop_->setEnabled(false);save_->setEnabled(false);
   actions->addWidget(start_);actions->addWidget(stop_);actions->addWidget(save_);actions->addStretch();box->addLayout(actions);
-  status_=new QLabel(this);status_->setObjectName("pgn-diagnostics-status");status_->setWordWrap(true);status_->setStyleSheet("font-size:13px;color:#91dfbb;padding:14px;background:#071e26;border:1px solid #28515b;border-radius:8px;");box->addWidget(status_);box->addStretch();state("No recording · no diagnostic file has been created");
+  status_=new QLabel(this);status_->setObjectName("pgn-diagnostics-status");status_->setWordWrap(true);status_->setStyleSheet("font-size:13px;color:#91dfbb;padding:14px;background:#071e26;border:1px solid #28515b;border-radius:8px;");box->addWidget(status_);state("No recording · no diagnostic file has been created");
+  auto* maintenance=new QFrame(this);maintenance->setObjectName("pgn-diagnostics-storage");auto* storageBox=new QVBoxLayout(maintenance);storageBox->setContentsMargins(14,12,14,12);storageBox->setSpacing(10);
+  auto* storageTitle=new QLabel("Storage cleanup",maintenance);storageTitle->setStyleSheet("font-size:15px;font-weight:600;");storageBox->addWidget(storageTitle);
+  auto* storageDescription=new QLabel("Inspect and remove downloaded update files and unused program copies. Wallets, mining results and trusted update history are preserved.",maintenance);storageDescription->setWordWrap(true);storageBox->addWidget(storageDescription);
+  auto* storageButtons=new QHBoxLayout;inspectStorage_=new QPushButton("Analyze storage",maintenance);cleanStorage_=new QPushButton("Clean unused files",maintenance);
+  inspectStorage_->setObjectName("pgn-diagnostics-storage-inspect");cleanStorage_->setObjectName("pgn-diagnostics-storage-clean");
+  for(auto* button:{inspectStorage_,cleanStorage_}){button->setMinimumHeight(34);button->setEnabled(false);storageButtons->addWidget(button);}storageButtons->addStretch();storageBox->addLayout(storageButtons);
+  storageStatus_=new QLabel("Storage maintenance is not configured.",maintenance);storageStatus_->setObjectName("pgn-diagnostics-storage-status");storageStatus_->setTextFormat(Qt::PlainText);storageStatus_->setWordWrap(true);storageStatus_->setTextInteractionFlags(Qt::TextSelectableByMouse);storageBox->addWidget(storageStatus_);
+  maintenance->setStyleSheet("QFrame#pgn-diagnostics-storage{background:#071e26;border:1px solid #28515b;border-radius:8px;}");box->addWidget(maintenance);box->addStretch();
+  connect(inspectStorage_,&QPushButton::clicked,this,[this]{storage("inspect_storage");});connect(cleanStorage_,&QPushButton::clicked,this,[this]{storage("clean_storage");});
   timer_.setInterval(1000);connect(&timer_,&QTimer::timeout,this,[this]{capture();});
   connect(start_,&QPushButton::clicked,this,[this]{if(exporting_)return;samples_={};bytes_=0;setProperty("pgn_capture_saved",QVariant{});start_->setEnabled(false);stop_->setEnabled(true);save_->setEnabled(false);timer_.start();capture();});
   connect(stop_,&QPushButton::clicked,this,[this]{stop();});
@@ -48,6 +83,7 @@ public:
    if(!file.isEmpty())exportTo(file);
   });
  }
+ void setStorageActions(DiagnosticStorageRequest request){storageRequest_=std::move(request);inspectStorage_->setEnabled(bool(storageRequest_));cleanStorage_->setEnabled(false);storageStatus_->setText(storageRequest_?"Analyze storage to see its locations and reclaimable space.":"Storage maintenance is unavailable.");}
  void exportTo(const QString& file){
   if(exporting_||samples_.isEmpty()||file.isEmpty())return;stop();
   const auto input=QJsonDocument(QJsonObject{{"schema","PGN_DIAGNOSTIC_CAPTURE_V1"},{"samples",samples_}}).toJson(QJsonDocument::Compact);
@@ -73,5 +109,6 @@ public:
 };
 }
 QWidget* createDiagnosticCaptureView(QString exporter,std::function<QJsonObject()> sample,QWidget* parent){return new DiagnosticCaptureView(std::move(exporter),std::move(sample),parent);}
+void setDiagnosticStorageActions(QWidget* view,DiagnosticStorageRequest request){if(auto* capture=dynamic_cast<DiagnosticCaptureView*>(view))capture->setStorageActions(std::move(request));}
 void saveDiagnosticCapture(QWidget* view,const QString& filename){if(auto* capture=dynamic_cast<DiagnosticCaptureView*>(view))capture->exportTo(filename);}
 }

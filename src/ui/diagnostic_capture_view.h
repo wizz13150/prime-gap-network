@@ -8,6 +8,9 @@
 class QWidget;
 namespace pgn::ui {
 QWidget* createDiagnosticCaptureView(QString exporter,std::function<QJsonObject()> sample,QWidget* parent=nullptr);
+using DiagnosticStorageReply=std::function<void(const QJsonObject&,const QString&)>;
+using DiagnosticStorageRequest=std::function<void(const QString&,DiagnosticStorageReply)>;
+void setDiagnosticStorageActions(QWidget*,DiagnosticStorageRequest);
 void saveDiagnosticCapture(QWidget*,const QString& filename);
 // Reuse the verified component inventory. Never copy file paths, arbitrary
 // reasons or credentials into a tester capture, and never invent a version.
