@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QStorageInfo>
 #include <QCoreApplication>
 #include <QUuid>
 #include <QNetworkReply>
@@ -29,6 +30,8 @@
 #include <limits>
 #ifdef Q_OS_LINUX
 #include <signal.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -52,12 +55,86 @@ bool processIdentity(qint64 pid,QString& birth,QString& image,bool* exited=nullp
  if(exited)*exited=false;
  if(pid<=0||pid>std::numeric_limits<int>::max())return false;
  const auto root=QString("/proc/%1/").arg(pid);QFile stat(root+"stat");if(!stat.open(QIODevice::ReadOnly))return false;const auto bytes=stat.read(8193);if(bytes.size()>8192)return false;const auto end=bytes.lastIndexOf(')');if(end<0)return false;const auto fields=bytes.sliced(end+2).split(' ');if(fields.size()<=19)return false;
- if(fields[0]=="Z"||fields[0]=="X"){if(exited)*exited=true;return false;}
  bool valid=false;const auto ticks=fields[19].toULongLong(&valid);if(!valid||!ticks)return false;
- QFile boot("/proc/sys/kernel/random/boot_id");if(!boot.open(QIODevice::ReadOnly))return false;const auto id=boot.read(128).trimmed();if(id.size()!=36)return false;image=QFileInfo(root+"exe").symLinkTarget();if(image.isEmpty()||!QFileInfo(image).isFile())return false;birth=QString::fromLatin1(id)+":"+QString::number(ticks);return true;
+ QFile boot("/proc/sys/kernel/random/boot_id");if(!boot.open(QIODevice::ReadOnly))return false;const auto id=boot.read(128).trimmed();if(id.size()!=36)return false;birth=QString::fromLatin1(id)+":"+QString::number(ticks);
+  if(fields[0]=="Z"||fields[0]=="X"){if(exited)*exited=true;return false;}
+  image=QFileInfo(root+"exe").symLinkTarget();if(image.isEmpty()||!QFileInfo(image).isFile())return false;birth=QString::fromLatin1(id)+":"+QString::number(ticks);return true;
 }
 
 #endif
+
+QByteArray nativeFileIdentity(const QString& path,bool directory){
+ const QFileInfo info(path);
+ if(!info.exists()||info.isSymLink()||info.isDir()!=directory)return {};
+#ifdef Q_OS_WIN
+ if(info.isJunction())return {};
+ QString native=QDir::toNativeSeparators(info.absoluteFilePath());
+ if(!native.startsWith("\\\\?\\"))native=native.startsWith("\\\\")?"\\\\?\\UNC\\"+native.mid(2):"\\\\?\\"+native;
+ HANDLE handle=CreateFileW(reinterpret_cast<const wchar_t*>(native.utf16()),FILE_READ_ATTRIBUTES,
+  FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,directory?FILE_FLAG_BACKUP_SEMANTICS:0,nullptr);
+ if(handle==INVALID_HANDLE_VALUE)return {};
+ BY_HANDLE_FILE_INFORMATION identity{};const bool okay=GetFileInformationByHandle(handle,&identity);CloseHandle(handle);
+ if(!okay||(identity.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT))return {};
+ return QByteArray::number(identity.dwVolumeSerialNumber,16)+":"+
+  QByteArray::number((quint64(identity.nFileIndexHigh)<<32)|identity.nFileIndexLow,16);
+#elif defined(Q_OS_LINUX)
+ struct stat value{};const auto encoded=QFile::encodeName(info.canonicalFilePath());
+ if(::stat(encoded.constData(),&value)!=0)return {};
+ return QByteArray::number(quint64(value.st_dev),16)+":"+QByteArray::number(quint64(value.st_ino),16);
+#else
+ return {};
+#endif
+}
+QByteArray boundedProfileBytes(const QString& runtime){
+ QFile file(runtime+"/wallet-core.json");
+ if(!file.open(QIODevice::ReadOnly)||file.size()>32768)return {};
+ return file.readAll();
+}
+bool defaultBlocksLayout(const CoreProfile& profile){
+ // This is a bounded rejection of path overrides, not a second Core config
+ // parser. Unknown/indirect layouts keep manual launch and disable auto retry.
+ const auto indirect=[](QString key){
+  key=key.trimmed().toLower();while(key.startsWith('-'))key.remove(0,1);
+  key=key.section('.',-1);if(key.startsWith("no"))key.remove(0,2);
+  return key=="blocksdir"||key=="includeconf"||key=="conf"||key=="settings";
+ };
+ for(const auto& name:{"pgn.conf","riecoin.conf"}){
+  const auto path=profile.dataDirectory+"/"+name;QFile file(path);
+  if(!file.exists())continue;
+  if(nativeFileIdentity(path,false).isEmpty()||!file.open(QIODevice::ReadOnly)||file.size()>65536)return false;
+  for(const auto& raw:file.readAll().split('\n')){
+   const auto line=QString::fromUtf8(raw).trimmed();
+   if(line.isEmpty()||line.startsWith('#'))continue;
+   if(line.startsWith('[')){if(!line.endsWith(']'))return false;continue;}
+   const auto equals=line.indexOf('=');if(equals<0||indirect(line.left(equals)))return false;
+  }
+ }
+ const auto path=profile.networkDataDirectory()+"/settings.json";QFile settings(path);
+ if(settings.exists()){
+  if(nativeFileIdentity(path,false).isEmpty()||!settings.open(QIODevice::ReadOnly)||settings.size()>65536)return false;
+  QJsonParseError error;const auto document=QJsonDocument::fromJson(settings.readAll(),&error);
+  if(error.error!=QJsonParseError::NoError||!document.isObject())return false;
+  const auto object=document.object();for(auto i=object.begin();i!=object.end();++i)if(indirect(i.key()))return false;
+ }
+ return true;
+}
+CoreProfilePreparation prepareRecoveryProfile(const QString& root,const QString& runtime,const QString& chain,const QByteArray& expected){
+ CoreProfilePreparation result;
+ const auto bytes=boundedProfileBytes(runtime);
+ if(bytes.isEmpty()||QCryptographicHash::hash(bytes,QCryptographicHash::Sha256)!=expected){
+  result.error="Core recovery stopped: the approved profile changed";return result;
+ }
+ for(const auto& name:{"wallet-pending-setup.json","wallet-core-rebind.json","wallet-launch-intent.json"})
+  if(QFileInfo::exists(runtime+"/"+name)){result.error="Core recovery stopped: a pending setup, relocation or launch needs explicit resolution";return result;}
+ result.profile=CoreProfile::fromJson(QJsonDocument::fromJson(bytes).object());
+ if(result.profile.chain!=chain){result.error="Core recovery stopped: network selection changed";return result;}
+ result.error=result.profile.validate(root);
+ if(!result.error.isEmpty())return result;
+ QFile executable(result.profile.executable);QCryptographicHash hash(QCryptographicHash::Sha256);
+ if(!executable.open(QIODevice::ReadOnly)||!hash.addData(&executable)){result.error="Core recovery could not read the approved executable";return result;}
+ result.digest=QString::fromLatin1(hash.result().toHex());return result;
+}
+
 CoreOwnerPresence coreOwnerPresence(const CoreProfile& profile,const QJsonObject& saved){
  bool valid=false;const auto pid=saved.value("pid").toString().toLongLong(&valid);
  const auto savedBirth=saved.value("birth").toString();
@@ -86,6 +163,8 @@ CoreOwnerPresence coreOwnerPresence(const CoreProfile& profile,const QJsonObject
 CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString directory):QObject(parent),root_(std::move(root)),runtimeDirectory_(directory.isEmpty()?root_+(testnet?"/data/testnet/ui-runtime":"/data/runtime"):std::move(directory)),expectedChain_(testnet?QStringLiteral("test"):QStringLiteral("main")){
  profile_.chain=expectedChain_;
  clock_.setInterval(1000);connect(&clock_,&QTimer::timeout,this,[this]{inspect();});
+ recoveryTime_.start();recoveryClock_.setInterval(5000);
+ connect(&recoveryClock_,&QTimer::timeout,this,[this]{recoveryTick();});
  network_.setProxy(QNetworkProxy::NoProxy);
  walletManager_=new WalletManager([this](const QString& method,const QJsonArray& params,const QString& name,WalletReply consume){
   if(!connected_||!processAlive()){consume({},"Verified Core connection required");return;}
@@ -96,8 +175,18 @@ CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString direc
  // Redirect to preserved files rather than allowing an unread process pipe
  // to block the wallet. They contain no candidate stream from the GPU.
  connect(&verifier_,&QFutureWatcher<CoreProfilePreparation>::finished,this,[this]{
+  // STOP/maintenance may arrive while the immutable hash task is in flight.
+  // Discard its result before any launch intent, directory or owner write.
+  if(!recovery_.permits(preparationGeneration_)){
+   launching_=false;allowNew_=false;if(ownershipLock_)ownershipLock_->unlock();
+   setLinkState(CoreLinkState::Stopped,"Core startup was cancelled by an explicit stop or update");
+   report("CORE STARTUP CANCELLED");return;
+  }
   const auto preparation=verifier_.result();
   if(!preparation.error.isEmpty()){failStart(preparation.error);return;}
+  if(preparationAutomatic_&&(!recoveryBindingValid_||!recoveryBindingMatches(readRecoveryStorage(preparation.profile,runtimeDirectory_))||!departedOwnerAbsent())){
+   failStart("Core recovery stopped: profile, data folder or storage identity changed");return;
+  }
   profile_=preparation.profile;if(!preparation.notice.isEmpty())report(preparation.notice);
   managedUpgradePending_=preparation.ownedUpgradePending;
   const QString digest=preparation.digest;
@@ -118,9 +207,10 @@ CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString direc
   if(!launching_)return; // Invalid/ambiguous existing owner fails closed.
   if(pending){failStart("An unresolved detached Core may still exist; preserved launch intent blocks a duplicate client");return;}
   if(!allowNew_){failStart("No live owned Core to reattach; no new client launched");return;}
-   const auto setupError=activatePendingWalletSetup(runtimeDirectory_,root_,profile_);
+   const auto setupError=preparationAutomatic_?QString{}:activatePendingWalletSetup(runtimeDirectory_,root_,profile_);
    if(!setupError.isEmpty()){failStart(setupError);return;}
-  if(!QDir().mkpath(profile_.dataDirectory)){failStart("Private PGN wallet directory could not be created");return;}
+  if(preparationAutomatic_&&!QFileInfo(profile_.dataDirectory).isDir()){failStart("Core recovery will not create a missing data directory");return;}
+  if(!preparationAutomatic_&&!QDir().mkpath(profile_.dataDirectory)){failStart("Private PGN wallet directory could not be created");return;}
   QProcess launcher;launcher.setProgram(profile_.executable);
   QStringList args{"-datadir="+profile_.dataDirectory,profile_.chain=="test"?QString("-testnet=1"):QString("-chain=main"),"-server=1",
    "-rpcbind=127.0.0.1","-rpcallowip=127.0.0.1","-rpcport="+QString::number(profile_.rpcPort),
@@ -134,6 +224,8 @@ CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString direc
   launcher.setArguments(args);launcher.setWorkingDirectory(QFileInfo(profile_.executable).absolutePath());
   launcher.setStandardOutputFile(profile_.dataDirectory+"/core.stdout",QIODevice::Append);
   launcher.setStandardErrorFile(profile_.dataDirectory+"/core.stderr",QIODevice::Append);
+  if(!recovery_.permits(preparationGeneration_)){launching_=false;if(ownershipLock_)ownershipLock_->unlock();return;}
+  captureRecoveryBinding();
   QSaveFile prepared(intent.fileName());
   const auto journal=QJsonDocument(coreLaunchIntent(profile_,QUuid::createUuid().toString(QUuid::Id128),
       QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs))).toJson(QJsonDocument::Compact);
@@ -156,10 +248,11 @@ CoreRuntime::CoreRuntime(QString root,QObject* parent,bool testnet,QString direc
      !persistOwned()){failStart("Core ownership could not be persisted; client left intact, integration/mutations refused");return;}
   if(!intent.remove()){failStart("Core owner saved but launch intent could not be settled; reattach exact owner before any new launch");return;}
   launching_=false;
-  clock_.start();report("CORE STARTED · checking exact chain identity");inspect();
+  recoveryClock_.start();clock_.start();report("CORE STARTED · checking exact chain identity");inspect();
  });
 }
 CoreRuntime::~CoreRuntime(){
+ recovery_.suppress();recoveryClock_.stop();
  verifier_.waitForFinished();
  clock_.stop();
  connected_=false;peerBootstrap_.reset();
@@ -169,6 +262,7 @@ CoreRuntime::~CoreRuntime(){
 #endif
 }
 void CoreRuntime::failStart(const QString& error){
+ recovery_.attention();recoveryClock_.stop();
  setLinkState(CoreLinkState::Rejected,error);
  connected_=false;
   peerBootstrap_.reset();
@@ -227,34 +321,149 @@ bool CoreRuntime::recoverOwned(){
   CloseHandle(handle);failStart("Saved Core image changed within the same process; no integration or second launch");return false;
  }
  processHandle_=handle;pid_=savedPid;processBirth_=birth;launching_=false;
- clock_.start();report("EXISTING OWNED CORE RECOVERED · checking exact chain identity");inspect();return true;
+  captureRecoveryBinding();recoveryClock_.start();clock_.start();report("EXISTING OWNED CORE RECOVERED · checking exact chain identity");inspect();return true;
 #elif defined(Q_OS_LINUX)
  QString birth,image;if(!processIdentity(savedPid,birth,image)){if(::kill(pid_t(savedPid),0)<0&&errno==ESRCH)return false;failStart("Saved Core process identity could not be inspected");return false;}
  if(birth!=savedBirth){report("Previous Core process exited; its number was reused");return false;}
- if(!verifyCoreOwnership(profile_,saved,savedPid,birth,image).isEmpty()){failStart("Saved Core image changed within the same process");return false;}pid_=savedPid;processBirth_=birth;launching_=false;clock_.start();report("EXISTING OWNED CORE RECOVERED · checking exact chain identity");inspect();return true;
+ if(!verifyCoreOwnership(profile_,saved,savedPid,birth,image).isEmpty()){failStart("Saved Core image changed within the same process");return false;}pid_=savedPid;processBirth_=birth;launching_=false;captureRecoveryBinding();recoveryClock_.start();clock_.start();report("EXISTING OWNED CORE RECOVERED · checking exact chain identity");inspect();return true;
 #else
  failStart("Native process ownership is not qualified on this platform");return false;
 #endif
 }
 bool CoreRuntime::processAlive(){
+ bool confirmedExit=false,exitKindAllowed=true;
 #ifdef Q_OS_WIN
- if(processHandle_&&WaitForSingleObject(static_cast<HANDLE>(processHandle_),0)==WAIT_TIMEOUT)return true;
+ const auto wait=processHandle_?WaitForSingleObject(static_cast<HANDLE>(processHandle_),0):WAIT_FAILED;
+ if(wait==WAIT_TIMEOUT)return true;
+ if(wait==WAIT_OBJECT_0){
+  DWORD code{};confirmedExit=true;
+  exitKindAllowed=GetExitCodeProcess(static_cast<HANDLE>(processHandle_),&code)&&(code==EXIT_SUCCESS||code==EXIT_FAILURE);
+ }
  if(processHandle_){CloseHandle(static_cast<HANDLE>(processHandle_));processHandle_=nullptr;}
 #elif defined(Q_OS_LINUX)
- if(pid_>0){QString birth,image;if(processIdentity(pid_,birth,image)&&birth==processBirth_&&QFileInfo(image).canonicalFilePath()==QFileInfo(profile_.executable).canonicalFilePath())return true;}
+ if(pid_>0){
+  QString birth,image;bool exited{};
+  if(processIdentity(pid_,birth,image,&exited)&&birth==processBirth_&&QFileInfo(image).canonicalFilePath()==QFileInfo(profile_.executable).canonicalFilePath())return true;
+  confirmedExit=(exited&&birth==processBirth_)||(::kill(pid_t(pid_),0)<0&&errno==ESRCH);
+ }
 #endif
- if(pid_){++identityGeneration_;pid_=0;processBirth_.clear();clock_.stop();connected_=false;checking_=false;stopping_=false;walletChecking_=walletReady_=false;
-   peerBootstrap_.reset();
-  walletManager_->invalidate();setLinkState(CoreLinkState::Stopped,"The owned Core process exited");
+ if(pid_){
+  const auto departed=coreOwnershipBinding(profile_,pid_,processBirth_);
+  readRecoveryLog(true);
+  const bool known=confirmedExit&&exitKindAllowed&&faultEvidence_.knownDiskFull();
+  const bool same=recoveryBindingValid_&&recoveryBindingMatches(readRecoveryStorage(profile_,runtimeDirectory_));
+  ++identityGeneration_;pid_=0;processBirth_.clear();clock_.stop();connected_=false;checking_=false;stopping_=false;walletChecking_=walletReady_=false;
+  peerBootstrap_.reset();walletManager_->invalidate();
+  setLinkState(CoreLinkState::Stopped,"The owned Core process exited");
   if(onObservation)onObservation(std::nullopt);
   if(ownershipLock_)ownershipLock_->unlock();
-  if(onStopped)onStopped();report("CORE PROCESS EXITED · wallet detached from this view");
-  if(restartAfterManagedUpgrade_){
+  if(onStopped)onStopped();
+  if(restartAfterManagedUpgrade_&&recovery_.permits(recovery_.generation())){
    restartAfterManagedUpgrade_=false;managedUpgradePending_=false;
-   QTimer::singleShot(0,this,[this]{begin(true);});
+   const auto generation=recovery_.generation();
+   QTimer::singleShot(0,this,[this,generation]{if(recovery_.permits(generation))begin(true);});
+  }else if(recovery_.diskExit(known,same,recoveryTime_.elapsed())){
+   departedOwner_=departed;recoveryClock_.start();
+   setLinkState(CoreLinkState::Stopped,"Core stopped because storage filled; saved wallet and chain are retained. Waiting for stable free space before retrying.");
+   report("CORE WAITING FOR STORAGE · automatic recovery is armed");
+  }else{
+   recoveryClock_.stop();
+   report(recovery_.state()==CoreRecoveryPolicy::State::Suppressed?
+    "CORE STOPPED BY REQUEST · automatic restart is suspended":
+    "CORE STOPPED · cause or ownership could not be verified for automatic recovery; wallet and chain are unchanged");
   }
  }
  return false;
+}
+CoreRuntime::RecoveryStorage CoreRuntime::readRecoveryStorage(const CoreProfile& profile,const QString& runtime){
+ RecoveryStorage sample;
+ sample.layoutKnown=defaultBlocksLayout(profile);
+ if(!sample.layoutKnown){sample.reason="Configured blocks location is indirect or unverified";return sample;}
+ sample.dataPath=QFileInfo(profile.dataDirectory).canonicalFilePath();
+ sample.runtimePath=QFileInfo(runtime).canonicalFilePath();
+ sample.blocksPath=QFileInfo(profile.networkDataDirectory()+"/blocks").canonicalFilePath();
+ if(sample.dataPath.isEmpty()||sample.runtimePath.isEmpty()||sample.blocksPath.isEmpty())return sample;
+ sample.dataId=nativeFileIdentity(sample.dataPath,true);sample.runtimeId=nativeFileIdentity(sample.runtimePath,true);
+ sample.blocksId=nativeFileIdentity(sample.blocksPath,true);
+ QStorageInfo data(sample.dataPath),owner(sample.runtimePath),blocks(sample.blocksPath);data.refresh();owner.refresh();blocks.refresh();
+ sample.dataDevice=data.device();sample.runtimeDevice=owner.device();sample.blocksDevice=blocks.device();
+ sample.ready=!sample.dataId.isEmpty()&&!sample.runtimeId.isEmpty()&&!sample.blocksId.isEmpty()&&data.isValid()&&data.isReady()&&!data.isReadOnly()&&
+  blocks.isValid()&&blocks.isReady()&&!blocks.isReadOnly()&&blocks.bytesAvailable()>=0&&
+  owner.isValid()&&owner.isReady()&&!owner.isReadOnly()&&data.bytesAvailable()>=0&&owner.bytesAvailable()>=0;
+ if(sample.ready)sample.available=std::min({data.bytesAvailable(),owner.bytesAvailable(),blocks.bytesAvailable()});
+ return sample;
+}
+void CoreRuntime::captureRecoveryBinding(){
+ const auto bytes=boundedProfileBytes(runtimeDirectory_);
+ recoveryProfileDigest_=bytes.isEmpty()?QByteArray{}:QCryptographicHash::hash(bytes,QCryptographicHash::Sha256);
+ recoveryStorage_=readRecoveryStorage(profile_,runtimeDirectory_);
+ recoveryBindingValid_=!recoveryProfileDigest_.isEmpty()&&recoveryStorage_.layoutKnown&&!recoveryStorage_.dataId.isEmpty()&&
+  !recoveryStorage_.runtimeId.isEmpty()&&!recoveryStorage_.blocksId.isEmpty();
+ recoveryLog_.path=profile_.networkDataDirectory()+"/debug.log";
+ recoveryLog_.identity=nativeFileIdentity(recoveryLog_.path,false);
+ recoveryLog_.offset=QFileInfo(recoveryLog_.path).size();
+ recoveryLog_.awaitingCreation=launching_&&!QFileInfo::exists(recoveryLog_.path);
+ faultEvidence_=CoreFaultEvidence{};
+ if(recoveryLog_.identity.isEmpty()&&!recoveryLog_.awaitingCreation)faultEvidence_.invalidate();
+}
+bool CoreRuntime::recoveryBindingMatches(const RecoveryStorage& sample)const{
+ const auto bytes=boundedProfileBytes(runtimeDirectory_);
+ return recoveryBindingValid_&&!bytes.isEmpty()&&recoveryStorage_.sameIdentity(sample)&&
+  QCryptographicHash::hash(bytes,QCryptographicHash::Sha256)==recoveryProfileDigest_;
+}
+void CoreRuntime::readRecoveryLog(bool final){
+ if(!faultEvidence_.usable())return;
+ const auto identity=nativeFileIdentity(recoveryLog_.path,false);
+ if(recoveryLog_.awaitingCreation){
+  if(identity.isEmpty()){if(final)faultEvidence_.invalidate();return;}
+  recoveryLog_.identity=identity;recoveryLog_.offset=0;recoveryLog_.awaitingCreation=false;
+ }
+ QFile file(recoveryLog_.path);
+ if(identity.isEmpty()||identity!=recoveryLog_.identity||!file.open(QIODevice::ReadOnly)||file.size()<recoveryLog_.offset||
+    file.size()-recoveryLog_.offset>65536||!file.seek(recoveryLog_.offset)){
+  faultEvidence_.invalidate();return;
+ }
+ const auto wanted=file.size()-recoveryLog_.offset;const auto bytes=file.read(wanted);
+ if(bytes.size()!=wanted){faultEvidence_.invalidate();return;}
+ recoveryLog_.offset+=bytes.size();
+ faultEvidence_.feed(std::string_view(bytes.constData(),std::size_t(bytes.size())),final);
+}
+bool CoreRuntime::departedOwnerAbsent()const{
+ bool valid{};const auto oldPid=departedOwner_.value("pid").toString().toLongLong(&valid);
+ const auto oldBirth=departedOwner_.value("birth").toString();
+ if(!valid||oldPid<=0||oldPid>std::numeric_limits<int>::max()||!verifyCoreOwnership(profile_,departedOwner_,oldPid,oldBirth,profile_.executable).isEmpty())return false;
+ QFile file(runtimeDirectory_+"/wallet-owned.json");
+ if(!file.open(QIODevice::ReadOnly)||file.size()>8192||QJsonDocument::fromJson(file.readAll()).object()!=departedOwner_)return false;
+#ifdef Q_OS_WIN
+ HANDLE handle=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,DWORD(oldPid));
+ if(!handle)return GetLastError()==ERROR_INVALID_PARAMETER;
+ QString birth,image;const bool identified=processIdentity(handle,birth,image);
+ const auto wait=WaitForSingleObject(handle,0);CloseHandle(handle);
+ // A recycled PID is deliberately not an automatic-recovery witness.
+ return identified&&birth==oldBirth&&wait==WAIT_OBJECT_0;
+#elif defined(Q_OS_LINUX)
+ QString birth,image;bool exited{};
+ if(processIdentity(oldPid,birth,image,&exited))return false;
+ if(exited)return birth==oldBirth;
+ return ::kill(pid_t(oldPid),0)<0&&errno==ESRCH;
+#else
+ return false;
+#endif
+}
+void CoreRuntime::recoveryTick(){
+ const auto now=recoveryTime_.elapsed();
+ if(processAlive()){
+  readRecoveryLog(false);
+  if(connected_&&walletReady_)recovery_.ready(now);
+  return;
+ }
+ if(!recovery_.waiting())return;
+ const auto sample=readRecoveryStorage(profile_,runtimeDirectory_);
+ if(!recoveryBindingMatches(sample)||!departedOwnerAbsent()){
+  recovery_.attention();recoveryClock_.stop();
+  report("Core recovery stopped: approved profile, process ownership or storage identity changed; no client launched");return;
+ }
+ if(recovery_.probe(now,sample.ready,true,true,sample.available))begin(true,true);
 }
 void CoreRuntime::report(const QString& text){if(onStatus)onStatus(text);}
 void CoreRuntime::setLinkState(CoreLinkState state,const QString& detail){
@@ -264,14 +473,15 @@ void CoreRuntime::setLinkState(CoreLinkState state,const QString& detail){
  if(onLinkState)onLinkState(state,bounded);
 }
 void CoreRuntime::launch(){
- begin(true);
+ if(launching_||verifier_.isRunning()){report("The owned Core preparation is still in progress");return;}
+ recovery_.explicitStart();begin(true);
 }
 void CoreRuntime::reattach(){
- if(QFileInfo::exists(runtimeDirectory_+"/wallet-owned.json"))begin(false);
+ if(QFileInfo::exists(runtimeDirectory_+"/wallet-owned.json")){recovery_.explicitStart();begin(false);}
 }
-void CoreRuntime::begin(bool allowNew){
+void CoreRuntime::begin(bool allowNew,bool automatic){
  if(orphanedStart_){report("An unbound detached Core may still exist; no second launch permitted");return;}
- if(launching_||processAlive()){report("The owned Core client is already starting/running");return;}
+ if(launching_||verifier_.isRunning()||processAlive()){report("The owned Core client is already starting/running");return;}
  ++identityGeneration_;
  setLinkState(CoreLinkState::Starting,"Checking the owned Core deployment");
  QFile receipt(runtimeDirectory_+"/wallet-core.json");
@@ -282,22 +492,34 @@ void CoreRuntime::begin(bool allowNew){
   failStart(QString("This wallet is set to %1, but the saved Core profile is for %2. Open wallet setup to use a matching profile.")
       .arg(expectedChain_=="test"?QString("testnet"):QString("mainnet"),configuredProfile.chain=="test"?QString("testnet"):QString("mainnet")));return;
  }
- profile_=configuredProfile;
+  if(automatic){
+   const auto current=boundedProfileBytes(runtimeDirectory_);
+   if(!recoveryBindingValid_||current.isEmpty()||QCryptographicHash::hash(current,QCryptographicHash::Sha256)!=recoveryProfileDigest_||
+      !recoveryBindingMatches(readRecoveryStorage(configuredProfile,runtimeDirectory_))||!departedOwnerAbsent()){
+    recovery_.attention();recoveryClock_.stop();report("Core recovery stopped: the approved owner, profile or storage identity changed");return;
+   }
+  }
+  profile_=configuredProfile;
  if(!QDir().mkpath(runtimeDirectory_)){failStart("Wallet ownership directory unavailable");return;}
  ownershipLock_=std::make_unique<QLockFile>(runtimeDirectory_+"/wallet-owned.lock");
  if(!ownershipLock_->tryLock(0)){failStart("Another PGN GUI owns wallet lifecycle; no duplicate client launched");return;}
  allowNew_=allowNew;
- launching_=true;report("Checking pinned Core executable once, outside the GUI/mining loop");
+  preparationGeneration_=recovery_.generation();preparationAutomatic_=automatic;automaticRun_=automatic;
+  launching_=true;report("Checking pinned Core executable once, outside the GUI/mining loop");
  const auto root=managedCoreBundleRoot(root_,QCoreApplication::applicationDirPath()),runtime=runtimeDirectory_,chain=expectedChain_;
- verifier_.setFuture(QtConcurrent::run([root,runtime,chain,allowNew]{
-  return prepareManagedCoreProfile(root,runtime,chain,allowNew,coreOwnerPresence);
- }));
+  const auto pinned=recoveryProfileDigest_;const auto fixture=preparationForTest_;
+  verifier_.setFuture(QtConcurrent::run([root,runtime,chain,allowNew,automatic,pinned,fixture]{
+   if(fixture)return fixture();
+   return automatic?prepareRecoveryProfile(root,runtime,chain,pinned):
+    prepareManagedCoreProfile(root,runtime,chain,allowNew,coreOwnerPresence);
+  }));
 }
 void CoreRuntime::rpc(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume,bool wallet,int timeoutMs,const QString& walletName){
  rpcWire(method,QJsonDocument(params).toJson(QJsonDocument::Compact),[consume=std::move(consume)](CoreRpcResult result,QByteArray){consume(result.value,result.error);},wallet,timeoutMs,walletName);
 }
 void CoreRuntime::consoleRequest(const QString& method,const QByteArray& params,bool displayedWallet,std::function<void(QByteArray,QString)> consume){
- const auto validation=validateConsoleCommand(method,params);if(!validation.isEmpty()){consume({},validation);return;}
+  const auto validation=validateConsoleCommand(method,params);if(!validation.isEmpty()){consume({},validation);return;}
+  if(method=="stop")suspendRecoveryForMaintenance();
  if(stopping_||!connected_||!processAlive()||(displayedWallet&&!displayWalletReady())){consume({},"Verified Core connection required");return;}
  const auto owner=epoch();const auto display=walletManager_->displayGeneration();const auto name=walletManager_->displayWallet();
  if(displayedWallet&&!walletManager_->holdDisplayOperation()){consume({},"Wait for the current wallet operation to finish");return;}
@@ -570,7 +792,7 @@ void CoreRuntime::ensureWallet(const CoreEpoch& owner){
    if(!owner.matches(epoch())||!processAlive())return;
    if(!error.isEmpty()){walletChecking_=false;report("Wallet directory unavailable; nothing created");return;}
    bool exists=false;for(const auto& wallet:value.toObject().value("wallets").toArray())exists=exists||wallet.toObject().value("name").toString()==profile_.walletName;
-   if(!exists&&!(profile_.userSelectedDirectory&&profile_.createWallet)){walletChecking_=false;report("Selected wallet is unavailable; setup or restore it explicitly");return;}
+   if(!exists&&(automaticRun_||!(profile_.userSelectedDirectory&&profile_.createWallet))){walletChecking_=false;report("Selected wallet is unavailable; setup or restore it explicitly");return;}
    const auto method=exists?QString("loadwallet"):QString("createwallet");
    const QJsonArray args=exists?QJsonArray{profile_.walletName,true}:QJsonArray{profile_.walletName,false,false,QJsonValue{},false,true,false};
    rpc(method,args,[this,owner](QJsonValue,QString error){
@@ -590,7 +812,7 @@ void CoreRuntime::verifyLoadedWallet(const CoreEpoch& owner){
 }
 void CoreRuntime::walletInitialized(const CoreEpoch& owner){
  walletChecking_=false;if(!owner.matches(epoch())||!connected_||!processAlive())return;
- if(profile_.userSelectedDirectory&&profile_.createWallet){
+ if(profile_.userSelectedDirectory&&profile_.createWallet&&!automaticRun_){
   QFile input(runtimeDirectory_+"/wallet-core.json");
   if(!input.open(QIODevice::ReadOnly)||input.size()>32768){report("Wallet is retained; setup confirmation could not be saved");return;}
   auto json=QJsonDocument::fromJson(input.readAll()).object();input.close();
@@ -599,7 +821,7 @@ void CoreRuntime::walletInitialized(const CoreEpoch& owner){
   if(!output.open(QIODevice::WriteOnly)||output.write(bytes)!=bytes.size()||!output.commit()){report("Wallet is retained; setup confirmation could not be committed");return;}
   profile_.createWallet=false;
  }
- if(!walletReady_){walletReady_=true;if(!walletManager_->ready())walletManager_->activate(profile_.genesisHash,profile_.chain,profile_.dataDirectory,profile_.walletName,runtimeDirectory_+"/wallet-view.json");if(onReady)onReady(pid_);}
+ if(!walletReady_){captureRecoveryBinding();recoveryClock_.start();walletReady_=true;if(!walletManager_->ready())walletManager_->activate(profile_.genesisHash,profile_.chain,profile_.dataDirectory,profile_.walletName,runtimeDirectory_+"/wallet-view.json");if(onReady)onReady(pid_);}
 }
 void CoreRuntime::inspect(){
  if(!processAlive()||checking_||stopping_)return;checking_=true;
@@ -612,13 +834,13 @@ void CoreRuntime::inspect(){
    if(!ownerEpoch.matches(epoch())||!processAlive())return;
     if(!error.isEmpty()){checking_=false;connected_=false;setLinkState(CoreLinkState::RpcUnavailable,error);if(onObservation)onObservation(std::nullopt);report("CORE READ UNAVAILABLE · retrying automatically");return;}
    const auto projected=projectChainObservation(ownerEpoch,profile_,chain.toObject(),genesis.toString(),observedUtc);
-    if(!projected.observation){checking_=false;connected_=false;clock_.stop();setLinkState(CoreLinkState::Rejected,projected.error);if(onObservation)onObservation(std::nullopt);
+    if(!projected.observation){checking_=false;connected_=false;clock_.stop();recovery_.attention();recoveryClock_.stop();setLinkState(CoreLinkState::Rejected,projected.error);if(onObservation)onObservation(std::nullopt);
     report(projected.error+" · refusing wallet integration/RPC mutations; client left intact");return;}
-   if(!connected_)connected_=true;
+   if(!connected_){connected_=true;if(!recoveryBindingValid_&&!automaticRun_)captureRecoveryBinding();}
    if(managedUpgradePending_){
     // Adopt a manually rebuilt portable Core through the same verified RPC
     // shutdown path. No wallet/worker readiness is published for the old image.
-    checking_=false;restartAfterManagedUpgrade_=true;stop();return;
+    checking_=false;restartAfterManagedUpgrade_=true;recoveryClock_.stop();stopOwned();return;
    }
     if(!walletManager_->ready())walletManager_->activate(profile_.genesisHash,profile_.chain,profile_.dataDirectory,profile_.walletName,runtimeDirectory_+"/wallet-view.json");
     ensurePeerBootstrap();
@@ -642,7 +864,13 @@ void CoreRuntime::inspect(){
   });
  });
 }
+void CoreRuntime::suspendRecoveryForMaintenance(){
+ recovery_.suppress();recoveryClock_.stop();restartAfterManagedUpgrade_=false;managedUpgradePending_=false;
+}
 void CoreRuntime::stop(){
+ suspendRecoveryForMaintenance();stopOwned();
+}
+void CoreRuntime::stopOwned(){
  if(!connected_||!processAlive()||stopping_)return;stopping_=true;clock_.start();
  const auto ownerEpoch=epoch();
  rpc("stop",{},[this,ownerEpoch](QJsonValue,QString error){

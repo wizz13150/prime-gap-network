@@ -14,10 +14,33 @@ if not getattr(sys,'frozen',False):
 import stage_component_bundle as stage
 from horizon_update_bootstrap import REPOSITORIES
 from horizon_update_client import AuthenticatedUpdates
-from horizon_component_install import CohortStore, _write
+from horizon_component_install import CohortStore, _write, MARKER as INSTALL_MARKER
 import horizon_update_progress as progress
 
-VERSION='2026.11.11.22'
+VERSION='2026.11.12.23'
+
+
+def maintain_installation(cache,context,context_sha,result):
+    """Catch up old-helper installations on the next authenticated check."""
+    root=cache.parent/'installation'
+    if not root.exists():return result
+    try:
+        if stage._read_plain(root/'.owner',128)!=INSTALL_MARKER:return result
+        current=stage._json(stage._read_plain(root/'current.json',stage.MAX_MANIFEST))
+        protected={current['cohort']}
+        if current.get('previous'):protected.add(current['previous']['cohort'])
+        cohorts=root/'cohorts';retirements=root/'retirements'
+        # Normal checks remain cheap once only current/backup are retained.
+        needed=(retirements.exists()and any(retirements.iterdir()))or(cohorts.exists()and any(
+            p.is_dir()and len(p.name)==20 and str(p)not in protected for p in cohorts.iterdir()))
+        if not needed:return result
+        with stage.owned_lock(root):
+            store=CohortStore(root,context,context_sha)
+            result['installation_cleanup']=store._prune_retired(store.current())
+            if store.commit_warning:result['warning']=' '.join(filter(None,[result.get('warning'),store.commit_warning]))
+    except Exception as error:
+        result['warning']=' '.join(filter(None,[result.get('warning'),'Old-program cleanup deferred: '+str(error)[:240]]))
+    return result
 
 
 def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,recovery_factory=None):
@@ -60,7 +83,7 @@ def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,
     stage.require(type(selected)is list and 1<=len(selected)<=4 and all(type(x)is str and x in stage.IDS for x in selected)and len(set(selected))==len(selected),'Choose one to four unique component IDs')
     stage.require(type(request['cache'])is str and Path(request['cache']).is_absolute(),'Absolute owned update-cache path required')
     client=AuthenticatedUpdates(Path(request['cache']),repository['root'].encode(),repository['root_sha256'],repository['metadata_url'],repository['targets_url'],context,context_sha,fetcher=fetcher)
-    if action=='check':return client.refresh(selected)
+    if action=='check':return maintain_installation(client.cache,context,context_sha,client.refresh(selected))
     if action=='prepare':return client.prepare(selected)
     stage.require(all(type(request[k])is str and Path(request[k]).is_absolute()for k in ('base_cohort','installation_store')),'Absolute code/store paths required')
     store_path=Path(request['installation_store'])
