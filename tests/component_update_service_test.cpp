@@ -24,6 +24,11 @@ int main(int argc,char** argv){
   if(fixture=="malformed"){std::cout<<"invalid JSON";return 0;}
   if(fixture=="failure"){std::cout<<"{\"error\":\"Fixture refused\"}";return 1;}
   if(fixture=="progress"){std::cerr<<"{\"schema\":\"PGN_UPDATE_PROGRESS_V1\",\"stage\":\"download\",\"component\":\"\",\"completed\":5,\"total\":10}\n"<<std::flush;}
+  if(request.value("action")=="inspect_storage"||request.value("action")=="clean_storage"){
+   QJsonObject result{{"schema","PGN_DIAGNOSTIC_STORAGE_V1"},{"cleaned",request.value("action")=="clean_storage"},{"process_control_performed",fixture=="storage-process"},{"cache",QJsonObject{{"path","fixture/cache"},{"total_bytes",100},{"reclaimable_bytes",50}}}};
+   if(fixture=="storage-wrong-action")result.insert("cleaned",!result.value("cleaned").toBool());
+   std::cout<<QJsonDocument(result).toJson(QJsonDocument::Compact).toStdString();return 0;
+  }
   const auto schema=fixture=="wrong-type"?"WRONG":request.value("action")=="check"?"PGN_AUTHENTICATED_COMPONENT_VIEW_V1":request.value("action")=="prepare"?"PGN_AUTHENTICATED_STAGE_RECEIPT_V1":"PGN_UPDATE_INSTALL_PREPARATION_V1";
   std::cout<<QJsonDocument(QJsonObject{{"schema",schema},{"publisher_authenticated",true},{"installation_performed",false}}).toJson(QJsonDocument::Compact).toStdString();return 0;
  }
@@ -86,6 +91,12 @@ int main(int argc,char** argv){
    for(const auto threads:{0,257})require(!pgn::update::validMiningResumeDevices({QJsonObject{{"kind","cpu"},{"device","CPU/local/0"},{"threads",threads}}}),"Unsafe thread count admitted");
    pgn::update::saveMiningUpdateResume(data,genesis,{},1000);require(pgn::update::takeMiningUpdateResume(data,genesis,true,1001).isEmpty(),"All-OFF update enabled resources");
    require(refused([&]{pgn::update::saveMiningUpdateResume(data+"/missing-parent",genesis,devices,1000);}),"Failed state write was treated as successful");
+  }
+  for(const auto& action:{QString("inspect_storage"),QString("clean_storage")}){
+   const auto before=results;require(service.start(QJsonObject{{"action",action}}),"Offline maintenance refused");wait();require(results==before+1,"Local storage result incorrectly required online publisher authentication");
+  }
+  for(const auto& fixture:{QString("storage-process"),QString("storage-wrong-action")}){
+   const auto before=errors;require(service.start(QJsonObject{{"action","inspect_storage"},{"fixture",fixture}}),"Invalid-storage fixture refused before validation");wait();require(errors==before+1,"Unexpected storage process control or operation accepted");
   }
   std::cout<<"PASS "<<checks<<" updater transport/lifecycle checks; inert helper only, no network/GPU/wallet/installed code touched\n";return 0;
  }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

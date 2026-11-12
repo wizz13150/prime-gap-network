@@ -264,6 +264,8 @@ int main(int argc,char** argv) {
     receipt.insert("card_layout",inspectCanvas->property("pgn_card_layout").toJsonArray());
     if(auto* tab=inspectCanvas->window()->findChild<QPushButton*>("pgn-primary-mining-tab"))receipt.insert("pgn_tab_device_states",QJsonValue::fromVariant(tab->property("miningCardStates")));
     receipt.insert("cpu_controllers",inspectCanvas->property("pgn_cpu_controller_states").toJsonObject());
+    receipt.insert("cpu_normal_frame",inspectCanvas->property("pgn_cpu_normal_frame").toJsonObject());
+    receipt.insert("cpu_normal_preparation",inspectCanvas->property("pgn_cpu_normal_preparation").toString());
     receipt.insert("mining_control",pgn::ui::diagnosticMiningStartup(inspectCanvas));
     if(auto* capture=inspectCanvas->window()->findChild<QWidget*>("pgn-test-diagnostics"))receipt.insert("diagnostic_capture",QJsonObject{{"samples",capture->property("pgn_capture_samples").toInt()},{"bytes",capture->property("pgn_capture_bytes").toInt()},{"saved",QJsonValue::fromVariant(capture->property("pgn_capture_saved"))},{"status",capture->property("pgn_capture_status").toString()}});
     if(auto* summary=inspectCanvas->window()->findChild<QWidget*>("pgn-session-statistics"))receipt.insert("mining_network_summary",summary->property("pgn_network_summary").toJsonObject());
@@ -597,6 +599,18 @@ int main(int argc,char** argv) {
    const auto software=pgn::ui::diagnosticComponentSnapshot(components?components->property("pgn_component_local_snapshot").toJsonObject():QJsonObject{});
    return QJsonObject{{"network",network},{"software",software},{"hardware",canvas->property("pgn_diagnostic_hardware").toJsonObject()},{"cpu",cpus},{"mining_control",pgn::ui::diagnosticMiningStartup(canvas)},
     {"ticket",select(canvas->property("pgn_network_ticket_frame").toJsonObject(),{"ticket_number","ticket_id","work_role","phase","bits","start","end","positions","positions_total","current","minimum_gap","speed_rate","average_rate","compute_tests_rate","source_age_ns","network_notice"})}};
+  });
+  pgn::ui::setDiagnosticStorageActions(diagnostics,[diagnostics,root,testnetMode](const QString& action,pgn::ui::DiagnosticStorageReply reply){
+   try{
+    const auto context=pgn::ui::walletComponentVersionsContext(root,pgn::wallet::coreRuntimeDirectory(root,testnetMode),testnetMode);
+    const auto codeRoot=QFileInfo(context.manifestPath).absolutePath();auto deployment=pgn::update::componentUpdateDeployment(codeRoot,testnetMode);
+    if(!context.genesisHash.isEmpty()&&context.genesisHash!=deployment.context.value("genesis_hash").toString())throw std::runtime_error("Storage maintenance belongs to a different network configuration");
+    const auto request=pgn::update::componentUpdateRequest(deployment,{},codeRoot,context.mutableDataRoot,action,{"ui"});
+    auto* service=new pgn::update::ComponentUpdateService(std::move(deployment),diagnostics);
+    service->onResult=[service,reply](const QJsonObject& value){reply(value,{});service->deleteLater();};
+    service->onError=[service,reply](const QString& error){reply({},error);service->deleteLater();};
+    if(!service->start(request)){service->deleteLater();reply({},"Storage maintenance could not start.");}
+   }catch(const std::exception& error){reply({},QString::fromUtf8(error.what()));}
   });
   tabs->addTab(diagnostics,"Diagnostics");
  }

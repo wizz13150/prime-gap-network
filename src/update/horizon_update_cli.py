@@ -17,7 +17,7 @@ from horizon_update_client import AuthenticatedUpdates
 from horizon_component_install import CohortStore, _write, MARKER as INSTALL_MARKER
 import horizon_update_progress as progress
 
-VERSION='2026.11.12.23'
+VERSION='2026.11.12.24'
 
 
 def maintain_installation(cache,context,context_sha,result):
@@ -46,7 +46,7 @@ def maintain_installation(cache,context,context_sha,result):
 def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,recovery_factory=None):
     stage.require(type(request)is dict,'JSON request object required')
     action=request.get('action')
-    stage.require(action in ('check','prepare','prepare_install','install','recover'),'Unknown update operation')
+    stage.require(action in ('check','prepare','prepare_install','install','recover','inspect_storage','clean_storage'),'Unknown update operation')
     fields='schema action context cache'
     if action!='recover':fields+=' selected'
     if action=='recover':fields+=' installation_store'
@@ -83,6 +83,21 @@ def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,
     stage.require(type(selected)is list and 1<=len(selected)<=4 and all(type(x)is str and x in stage.IDS for x in selected)and len(set(selected))==len(selected),'Choose one to four unique component IDs')
     stage.require(type(request['cache'])is str and Path(request['cache']).is_absolute(),'Absolute owned update-cache path required')
     client=AuthenticatedUpdates(Path(request['cache']),repository['root'].encode(),repository['root_sha256'],repository['metadata_url'],repository['targets_url'],context,context_sha,fetcher=fetcher)
+    if action in ('inspect_storage','clean_storage'):
+        # These operations need no Internet and claim no fresh publisher check.
+        # The installed helper and its build-pinned context are still verified.
+        with stage.owned_lock(client.cache):
+            before=client.storage_summary()
+            if action=='clean_storage':client._cleanup_unused()
+            after=client.storage_summary()
+        result=dict(schema='PGN_DIAGNOSTIC_STORAGE_V1',cache=after,
+                    installation_path=str(client.cache.parent/'installation'),
+                    cleaned=action=='clean_storage',
+                    reclaimed_bytes=max(0,before['total_bytes']-after['total_bytes']),
+                    process_control_performed=False,warning=client.cache_cleanup_warning)
+        if action=='clean_storage':
+            maintain_installation(client.cache,context,context_sha,result)
+        return result
     if action=='check':return maintain_installation(client.cache,context,context_sha,client.refresh(selected))
     if action=='prepare':return client.prepare(selected)
     stage.require(all(type(request[k])is str and Path(request[k]).is_absolute()for k in ('base_cohort','installation_store')),'Absolute code/store paths required')

@@ -149,10 +149,7 @@ class AuthenticatedUpdates:
         # The complete tree was checked by _cache_size; no links may be followed.
         shutil.rmtree(path)
 
-    def _quota(self, additional=0, *, discard_unused=False):
-        total, sizes = self._cache_size()
-        if not discard_unused and total + additional <= MAX_CACHE:
-            return
+    def _unused_candidates(self):
         # Reclaim oldest derived artifacts, never TUF metadata/root history,
         # unknown files, installed programs, or a source currently being copied.
         candidates = []
@@ -180,7 +177,23 @@ class AuthenticatedUpdates:
                 if path.is_file() and (re.fullmatch(r'[0-9a-f]{64}-[A-Za-z0-9][A-Za-z0-9._-]{0,180}', path.name)
                                       or re.fullmatch(r'\.pending-download-[0-9a-f]{32}', path.name)):
                     candidates.append((1, path.stat().st_mtime_ns, path, 'target'))
-        for _, _, path, kind in sorted(candidates):
+        return sorted(candidates)
+
+    def storage_summary(self):
+        """Inventory only; use the same ownership checks as actual reclamation."""
+        total, sizes = self._cache_size()
+        candidates = [(path, kind) for _, _, path, kind in self._unused_candidates()
+                      if path not in self._pins]
+        return dict(path=str(self.cache), total_bytes=total,
+                    reclaimable_bytes=sum(sizes.get(path, 0) for path, _ in candidates),
+                    candidate_count=len(candidates),
+                    preserved='Trusted update history, unknown files and active preparations')
+
+    def _quota(self, additional=0, *, discard_unused=False):
+        total, sizes = self._cache_size()
+        if not discard_unused and total + additional <= MAX_CACHE:
+            return
+        for _, _, path, kind in self._unused_candidates():
             if path in self._pins:
                 continue
             if kind == 'stage':

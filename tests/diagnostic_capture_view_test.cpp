@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QThread>
 #include <QJsonDocument>
+#include <QStringList>
 #include <iostream>
 int main(int argc,char** argv){
  if(argc>1&&QString::fromLocal8Bit(argv[1])=="--process-wait"){QThread::msleep(10000);return 0;}
@@ -15,6 +16,23 @@ int main(int argc,char** argv){
   std::cerr<<"Traceback: C:/Users/example/private-folder/engine.py\nModuleNotFoundError: missing_runtime_module\npassword=INERT-SENSITIVE\n";return 7;
  }
  QApplication app(argc,argv);
+ {
+  auto* storage=pgn::ui::createDiagnosticCaptureView({},[] {return QJsonObject{};});
+  auto* analyze=storage->findChild<QPushButton*>("pgn-diagnostics-storage-inspect");auto* clean=storage->findChild<QPushButton*>("pgn-diagnostics-storage-clean");
+  if(!analyze||!clean||analyze->isEnabled()||clean->isEnabled())return 40;
+  QStringList actions;pgn::ui::DiagnosticStorageReply pending;
+  pgn::ui::setDiagnosticStorageActions(storage,[&](const QString& action,pgn::ui::DiagnosticStorageReply reply){actions.append(action);pending=std::move(reply);});
+  analyze->click();analyze->click();if(actions!=QStringList{"inspect_storage"}||clean->isEnabled()||analyze->isEnabled())return 41;
+  QJsonObject result{{"schema","PGN_DIAGNOSTIC_STORAGE_V1"},{"cache",QJsonObject{{"path","C:/outside-Horizon/cache"},{"total_bytes",1048576},{"reclaimable_bytes",524288}}},{"installation_path","C:/outside-Horizon/installation"},{"cleaned",false},{"process_control_performed",false}};
+  pending(result,{});if(!analyze->isEnabled()||!clean->isEnabled())return 42;
+  clean->click();if(actions!=QStringList{"inspect_storage","clean_storage"}||analyze->isEnabled()||clean->isEnabled())return 43;
+  const auto stale=pending;result.insert("cleaned",true);result.insert("reclaimed_bytes",524288);pending(result,{});
+  if(storage->property("pgn_storage_maintenance").toJsonObject().value("reclaimed_bytes")!=524288)return 44;
+  analyze->click();const auto newest=pending;stale(result,{});if(analyze->isEnabled())return 45;
+  newest({},"Another update owns the cache");if(!analyze->isEnabled()||clean->isEnabled())return 46;
+  delete storage;newest(result,{}); // A completed helper may outlive the page.
+ }
+ if(argc==2&&QString::fromLocal8Bit(argv[1])=="--storage-controls-only")return 0;
  if(argc==5&&QString::fromLocal8Bit(argv[1])=="--packaged-startup-probe"){
   const QString host=QString::fromLocal8Bit(argv[2]),bundle=QString::fromLocal8Bit(argv[3]),output=QString::fromLocal8Bit(argv[4]);
   QTemporaryDir state;if(!state.isValid())return 20;QWidget canvas;QProcess process;
