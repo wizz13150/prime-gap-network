@@ -249,6 +249,7 @@ void readWalletLocalConnection(QWidget* widget,std::function<void(QJsonObject,QS
 void stopWalletCoreForUpdate(QWidget* widget,std::function<void(QString)> done){
  auto* view=dynamic_cast<WalletCoreView*>(widget);if(!view){done("Wallet runtime is unavailable");return;}
  const QPointer<pgn::wallet::CoreRuntime> core(view->networkRuntime());
+ core->suspendRecoveryForMaintenance();
  if(core->startPending()){done("Core startup or ownership recovery is still in progress");return;}
  if(!core->processId()){done({});return;}
  if(!core->connected()){done("Core is not verified and connected; no shutdown was attempted");return;}

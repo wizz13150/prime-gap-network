@@ -6,10 +6,12 @@
 #include "wallet/chain_observation.h"
 #include "wallet/core_link_state.h"
 #include "wallet/peer_bootstrap.h"
+#include "wallet/core_recovery_policy.h"
 #include <QObject>
 #include <QProcess>
 #include <QNetworkAccessManager>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QLockFile>
 #include <memory>
@@ -24,6 +26,9 @@ public:
  void launch();
  void reattach();
  void stop();
+ // Suspend background recovery before update code takes any early-return path.
+ // This never stops or kills a process; stop() still uses verified native RPC.
+ void suspendRecoveryForMaintenance();
  // Read-only historical RPC; no wallet mutation, miner input or guessed chain.
  // Account operations stay on the verified owned Core; the view never owns keys.
  void walletRequest(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)>);
@@ -66,6 +71,35 @@ public:
  std::function<void()> onStopped;
  std::function<void(const std::optional<ChainObservation>&)> onObservation;
 private:
+ friend struct CoreRuntimeRecoveryTest;
+ struct RecoveryStorage {
+  QByteArray dataId,runtimeId,blocksId,dataDevice,runtimeDevice,blocksDevice;
+  QString dataPath,runtimePath,blocksPath,reason;
+  qint64 available{-1};bool ready{},layoutKnown{};
+  bool sameIdentity(const RecoveryStorage& other)const{
+   return layoutKnown&&other.layoutKnown&&!dataId.isEmpty()&&!runtimeId.isEmpty()&&!blocksId.isEmpty()&&
+    dataId==other.dataId&&runtimeId==other.runtimeId&&blocksId==other.blocksId&&
+    dataDevice==other.dataDevice&&runtimeDevice==other.runtimeDevice&&blocksDevice==other.blocksDevice&&
+    dataPath==other.dataPath&&runtimePath==other.runtimePath&&blocksPath==other.blocksPath;
+  }
+ };
+ struct RecoveryLog {QString path;QByteArray identity;qint64 offset{};bool awaitingCreation{};};
+ static RecoveryStorage readRecoveryStorage(const CoreProfile&,const QString&);
+ void captureRecoveryBinding();
+ bool recoveryBindingMatches(const RecoveryStorage&)const;
+ void readRecoveryLog(bool final);
+ bool departedOwnerAbsent()const;
+ void recoveryTick();
+ void stopOwned();
+ CoreRecoveryPolicy recovery_;
+ QElapsedTimer recoveryTime_;QTimer recoveryClock_;
+ RecoveryStorage recoveryStorage_;RecoveryLog recoveryLog_;
+ CoreFaultEvidence faultEvidence_;
+ QByteArray recoveryProfileDigest_;QJsonObject departedOwner_;
+ bool recoveryBindingValid_{},automaticRun_{},preparationAutomatic_{};
+ quint64 preparationGeneration_{};
+ // Private fixture seam: no RPC/UI access, no alternate production launcher.
+ std::function<CoreProfilePreparation()> preparationForTest_;
  void readWorkView(const QString&,int,int,const QString&,std::function<void(QJsonObject,QString)>);
  void networkHeaders(const CoreEpoch&,QJsonObject,const QString&,int,QJsonArray,std::function<void(QJsonObject,QString)>);
  void report(const QString&);
@@ -76,7 +110,7 @@ private:
  void verifyLoadedWallet(const CoreEpoch&);
  void walletInitialized(const CoreEpoch&);
  bool processAlive();
- void begin(bool allowNew);
+ void begin(bool allowNew,bool automatic=false);
  void failStart(const QString&);
  bool recoverOwned();
  bool persistOwned();

@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QLockFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -67,8 +68,12 @@ int fake(const QStringList& args){
     const bool configuredLatch=profileMode=="latch-unqualified"&&script.contains("-Action stop-configured");
     const bool readOnly=script.contains("-Action snapshot")||script.contains("-Action 'snapshot'")||stream||profile;
     need(std::fgetc(stdin)==EOF,"Own SSH fixture null stdin");
-    QFile marker(qEnvironmentVariable("PGN_RUNTIME_TEST_MARKER"));need(marker.open(QIODevice::WriteOnly|QIODevice::Append),"Own marker");
-    need(marker.write(configuredLatch?"configured-latch\n":!readOnly?"FORBIDDEN_CONTROL\n":profile?"profile\n":finite?"finite\n":stream?"stream\n":"constant\n")>0&&marker.flush(),"Own marker write");marker.close();
+    {
+        const auto path=qEnvironmentVariable("PGN_RUNTIME_TEST_MARKER");
+        QLockFile writer(path+".writer.lock");need(writer.tryLock(5000),"Own marker writer lock");
+        QFile marker(path);need(marker.open(QIODevice::WriteOnly|QIODevice::Append),"Own marker");
+        need(marker.write(configuredLatch?"configured-latch\n":!readOnly?"FORBIDDEN_CONTROL\n":profile?"profile\n":finite?"finite\n":stream?"stream\n":"constant\n")>0&&marker.flush(),"Own marker write");
+    }
     need(readOnly||configuredLatch,"Own fixture forbids every start/launch action, including positive routing");
     if(finite&&sourceMode=="finite-wait")QThread::msleep(15000);
     if(configuredLatch){

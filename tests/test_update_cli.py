@@ -5,6 +5,7 @@ from unittest.mock import patch
 import contextlib,errno,io,json,sys,unittest
 P=Path(__file__).resolve().parents[1];sys.path[:0]=[str(P/'tools'),str(P/'src/update')]
 import horizon_update_cli as cli
+import horizon_component_install as storemod
 from test_component_install import InstallTests
 import test_authenticated_updates as fixtures
 from horizon_update_client import digest
@@ -19,6 +20,31 @@ class CliTests(unittest.TestCase):
  def test_authenticated_available_version_and_preparation(self):
   result=self.call();self.assertTrue(result['publisher_authenticated']);self.assertEqual(result['components'][0]['version'],'1.0.0')
   self.request['action']='prepare';result=self.call();self.assertTrue(result['publisher_authenticated']);self.assertFalse(result['installation_performed'])
+ def test_check_reclaims_obsolete_programs_left_by_an_older_helper(self):
+  base=InstallTests();base.setUp()
+  try:
+   updates=self.fixture.root/'updates';updates.mkdir();self.request['cache']=str(updates/'cache')
+   context,sha=cli.stage.context_from_bytes(json.dumps(self.request['context'],sort_keys=True,separators=(',',':')).encode())
+   store=storemod.CohortStore.initialize(updates/'installation',base.base,context,sha)
+   old=store.root/'cohorts'/'12345678901234567890';old.parent.mkdir();storemod.shutil.copytree(base.base,old)
+   with patch.object(storemod,'cohort_in_use',return_value=False):result=self.call()
+   self.assertTrue(result['publisher_authenticated']);self.assertFalse(old.exists());self.assertEqual(result['installation_cleanup']['removed'],1)
+   self.assertEqual(store.current()['cohort'],str(base.base))
+  finally:base.tearDown()
+ def test_check_does_not_touch_an_unowned_sibling_installation_folder(self):
+  updates=self.fixture.root/'updates';updates.mkdir();self.request['cache']=str(updates/'cache')
+  root=updates/'installation';root.mkdir();(root/'.owner').write_bytes(b'NOT HORIZON');(root/'wallet.dat').write_bytes(b'KEEP')
+  result=self.call();self.assertTrue(result['publisher_authenticated']);self.assertEqual((root/'wallet.dat').read_bytes(),b'KEEP')
+ def test_cleanup_failure_does_not_turn_authenticated_check_into_failure(self):
+  base=InstallTests();base.setUp()
+  try:
+   updates=self.fixture.root/'updates';updates.mkdir();self.request['cache']=str(updates/'cache')
+   context,sha=cli.stage.context_from_bytes(json.dumps(self.request['context'],sort_keys=True,separators=(',',':')).encode())
+   store=storemod.CohortStore.initialize(updates/'installation',base.base,context,sha)
+   old=store.root/'cohorts'/'12345678901234567890';old.parent.mkdir();storemod.shutil.copytree(base.base,old)
+   with patch.object(storemod,'cohort_in_use',side_effect=RuntimeError('unknown observation')):result=self.call()
+   self.assertTrue(result['publisher_authenticated']);self.assertTrue(old.exists());self.assertIn('cleanup deferred',result['warning'])
+  finally:base.tearDown()
  def test_request_cannot_inject_another_repository_or_trust_key(self):
   for key in ('metadata_url','root','command'):
    self.request[key]='attacker'
