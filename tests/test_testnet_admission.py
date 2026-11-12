@@ -43,6 +43,22 @@ class AdmissionTests(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'admission policy'):join_status(self.rpc,G,'miner')
  def test_registered_permission_and_two_other_groups(self):
   self.rpc.registered=self.rpc.enabled=True;s=join_status(self.rpc,G,'miner');self.assertEqual(s['independent_registered_operators'],2);self.assertTrue(s['own_report_membership_quorum'])
+ def test_activated_single_operator_status_does_not_invent_independence(self):
+  self.rpc.registered=self.rpc.enabled=True;self.rpc.count=1;original=self.rpc.call
+  def call(method,args=None,wallet=False):
+   value=original(method,args,wallet)
+   if method=='getpgnnetworkmetrics':value['height']=1000;value['audit_operator_policy']=dict(schema='PGN_AUDIT_OPERATOR_POLICY_V1',genesis=G,self_rechecks_permitted=True,required_distinct_other_operators=0,activation_height=1001)
+   return value
+  self.rpc.call=call;value=join_status(self.rpc,G,'miner');self.assertTrue(value['self_rechecks_permitted']);self.assertTrue(value['own_report_membership_quorum']);self.assertEqual(value['independent_registered_operators'],0);self.assertEqual(value['required_independent_operators'],0);self.assertEqual(value['blockers'],[])
+ def test_foreign_or_inconsistent_policy_is_rejected(self):
+  for change in (dict(genesis='f'*64),dict(activation_height=1002),dict(required_distinct_other_operators=2),dict(self_rechecks_permitted=1)):
+   self.rpc=Rpc();original=self.rpc.call
+   def call(method,args=None,wallet=False):
+    value=original(method,args,wallet)
+    if method=='getpgnnetworkmetrics':value['height']=1000;value['audit_operator_policy']=dict(dict(schema='PGN_AUDIT_OPERATOR_POLICY_V1',genesis=G,self_rechecks_permitted=True,required_distinct_other_operators=0,activation_height=1001),**change)
+    return value
+   self.rpc.call=call
+   with self.assertRaises(ValueError):join_status(self.rpc,G,'miner')
  def test_alias_addresses_cannot_be_counted_as_independent_operators(self):
   self.rpc.registered=self.rpc.enabled=True;self.rpc.count=1;s=join_status(self.rpc,G,'miner');self.assertEqual(s['independent_registered_operators'],0);self.assertFalse(s['own_report_membership_quorum'])
  def test_missing_registration_is_explicit_not_empty_work(self):

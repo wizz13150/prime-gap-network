@@ -95,9 +95,25 @@ class ArchiveLaneTests(unittest.TestCase):
         with patch.object(lane_module, 'compact_batch', side_effect=lambda root, **kwargs: swept.set()) as sweep:
             self.lane(sweep_seconds=.01)
             self.assertTrue(swept.wait(1))
-            self.assertEqual(sweep.call_args.kwargs['limit'], 1)
+            self.assertEqual(sweep.call_args.kwargs['limit'], 64)
+            self.assertEqual(sweep.call_args.kwargs['time_budget_seconds'], .15)
             self.assertTrue(callable(sweep.call_args.kwargs['_ticket_guard']))
             self.assertEqual(sweep.call_args.args, (self.root,))
+
+    def test_archived_dependency_revisits_shared_owner_without_full_sweep(self):
+        child, owner = self.ticket(20), self.ticket(1)
+        revisited = threading.Event()
+        def compact(folder):
+            if folder == child:
+                return [owner.name]
+            if folder == owner:
+                revisited.set()
+            return []
+        with patch.object(ArchiveLane, '_compact', side_effect=compact), \
+             patch.object(lane_module, 'compact_batch', return_value={'visited': 0}):
+            lane = self.lane(sweep_seconds=3600)
+            lane.offer(child)
+            self.assertTrue(revisited.wait(2), 'Shared owner waited for a whole catalogue sweep')
 
     def test_io_error_is_reported_without_killing_lane(self):
         seen = threading.Event()

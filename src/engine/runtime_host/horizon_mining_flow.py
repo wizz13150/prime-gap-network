@@ -392,6 +392,9 @@ class MiningFlow:
             from horizon_native_work_duty import observe
             with self.worker.network_lock:
                 native = observe(self.worker.rpc, work, self.worker.args.genesis, previous)
+        if getattr(self.worker, 'cpu_only', False):
+            from horizon_cycle_retirement import reconcile_cpu_capacity
+            reconcile_cpu_capacity(self, work)
         return self.cycles.prepare(work, native_service=native)
 
     def promote(self, work, sequence):

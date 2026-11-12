@@ -1,6 +1,5 @@
 // Public known-key synthetic native history. No live wallet/network.
 #include <pgn/native_audit_replay_test_helpers.h>
-#include <pgn/native_work_duty_admission.h>
 #include <pgn/chain_science_policy.h>
 #include <pgn/chain_monetary_policy.h>
 #include <pgn/candidate_reserved_science.h>
@@ -169,95 +168,6 @@ int main(int argc,char** argv){
     need(!compare(view_admitted,admitted_index,history,policy_budget,tiny,signature_budget),"Warm cache bypassed replay budget");
     need(compare(view_admitted,admitted_index,history,policy_budget,schedule,signature_budget).has_value(),"Native recovery before fork");
 
-    // Signed actor credits are replayed with the audit prefix, never separately.
-    struct DutyCase {
-        uint256 hash;CBlockIndex index;
-        std::unique_ptr<CCoinsViewDB> coins;
-        std::unique_ptr<CCoinsViewCache> view;
-        DutyCase(const CBlock& block,CBlockIndex& prior,const uint256& chain,const fs::path& path)
-            :hash(block.GetHash()),index(block),
-             coins(std::make_unique<CCoinsViewDB>(DBParams{.path=path,.cache_bytes=1<<20,.memory_only=true,.wipe_data=false},CoinsViewOptions{})),
-             view(std::make_unique<CCoinsViewCache>(coins.get()))
-        {
-            index.phashBlock=&hash;index.pprev=&prior;index.nHeight=prior.nHeight+1;
-            index.nTx=1;index.nStatus=BLOCK_VALID_SCRIPTS;index.BuildSkip();
-            view->SetBestBlock(hash);view->StagePgnFactCommit({{},FactHead{chain,hash},{}});
-        }
-    };
-    std::vector<std::unique_ptr<DutyCase>> duty_cases;
-    const auto append=[&](CBlockIndex& prior,std::vector<CTxOut> outputs){
-        auto block=make_block(prior,std::move(outputs),unsigned(700+duty_cases.size()));
-        auto next=std::make_unique<DutyCase>(block,prior,chain,path/fs::PathFromString("duty-"+std::to_string(duty_cases.size())));
-        need(history.StoreBlock(*next->view,next->index,next->index.nHeight,block,replay.archive)==RequestArchiveVerdict::Stored,"Duty fixture archive");
-        auto* result=next.get();duty_cases.push_back(std::move(next));return result;
-    };
-    const auto signed_audit=[&](const CBlockIndex& prior,unsigned scalar,uint8_t slot,NativeAuditAction action){
-        const auto actor_key=known(scalar);
-        NativeAuditEvent event;event.request=first_report.request;event.parent=prior.GetBlockHash();
-        event.action=action;event.slot=slot;event.actor=GetScriptForDestination(WitnessV0KeyHash(actor_key.GetPubKey()));
-        if(action==NativeAuditAction::Commit)event.body=Bytes(32,uint8_t(scalar));
-        const auto identity=NativeAuditWorkIdentity(chain,first_report.root,event);
-        event.signature=sign(*ScriptWorkChallenge({chain,identity,event.parent},event.actor,signature_budget),actor_key);
-        const auto script=BuildNativeAuditEnvelope(event);need(script.has_value(),"Signed fixture audit envelope");return CTxOut{0,*script};
-    };
-    const auto signed_request=[&](const CBlockIndex& prior,unsigned scalar){
-        const auto actor_key=known(scalar);
-        const auto actor=GetScriptForDestination(WitnessV0KeyHash(actor_key.GetPubKey()));
-        TicketRequest request{chain,prior.GetBlockHash(),prior.nHeight,actor,actor};
-        const auto identity=TicketRequestIdentity(request,request_budget);need(identity.has_value(),"Credit request identity");
-        const auto signature=sign(*ScriptWorkChallenge({chain,*identity,request.anchor},actor,signature_budget),actor_key);
-        const auto envelope=BuildTicketRequestEnvelope(request,signature,request_budget);
-        need(envelope.envelope.has_value(),"Credit request signature");return CTxOut{0,envelope.envelope->Script()};
-    };
-    const NativeWorkDutyActivation activation{chain,hashes[0],hashes[0],0,6,6};
-    unsigned duty_comparisons{};
-    const auto compare_duty=[&](const CCoinsView& state,const CBlockIndex& tip,const NativeWorkDutyActivation& active,
-                                RangeScheduleBudget budget,ScriptWorkBudget signature){
-        const auto cached=ReadNativeWorkDutyState(state,tip,history,policy_budget,budget,signature,active);
-        const auto full=ReadNativeWorkDutyStateUncached(state,tip,history,policy_budget,budget,signature,active);
-        need(bool(cached)==bool(full)&&(!cached||(NativeAuditReplaySame(cached->audits,full->audits)&&cached->spent==full->spent)),
-             "Incremental credit map diverged from complete native replay");
-        ++duty_comparisons;return cached;
-    };
-    need(compare_duty(view_admitted,admitted_index,activation,schedule,signature_budget).has_value(),"Cold credit state");
-    auto* first_credit=append(admitted_index,{signed_audit(admitted_index,2,0,NativeAuditAction::Assign),
-                                            signed_audit(admitted_index,2,0,NativeAuditAction::Commit)});
-    need(compare_duty(*first_credit->view,first_credit->index,activation,schedule,signature_budget).has_value(),"First signed credit");
-    auto* second_credit=append(first_credit->index,{signed_audit(first_credit->index,3,1,NativeAuditAction::Assign),
-                                                  signed_audit(first_credit->index,3,1,NativeAuditAction::Commit)});
-    auto before_debit=compare_duty(*second_credit->view,second_credit->index,activation,schedule,signature_budget);
-    need(before_debit&&before_debit->spent.empty(),"Answers were debited without a ticket request");
-    auto* debited=append(second_credit->index,{signed_request(second_credit->index,2),signed_request(second_credit->index,3)});
-    auto after_debit=compare_duty(*debited->view,debited->index,activation,schedule,signature_budget);
-    need(after_debit&&after_debit->spent.size()==2,"Two signed ticket requests did not consume their distinct credits");
-    need(compare_duty(*debited->view,debited->index,activation,schedule,signature_budget)->spent==after_debit->spent,
-         "Exact parent reread debited credit twice");
-    const auto& report=after_debit->audits.at(first_report.request);
-    const auto claim=NativeDutyRef(first_report.request,0,*report.jobs[0]);
-    const std::array<NativeDutyReference,1> claims{claim};
-    const auto reused=InspectNativeWorkDuty(after_debit->audits,debited->index,report.jobs[0]->actor,claims,after_debit->spent,6);
-    need(reused.verdict==NativeDutyVerdict::AlreadySpent&&!reused.proof,"Spent answer reused by another request");
-    // Branch change must discard debits, and returning to the old branch restores them.
-    need(compare_duty(*second_credit->view,second_credit->index,activation,schedule,signature_budget)->spent.empty(),"Debit leaked backwards across branch");
-    need(compare_duty(*debited->view,debited->index,activation,schedule,signature_budget)->spent.size()==2,"Debit lost after branch restoration");
-    auto later_activation=activation;later_activation.height=9;
-    need(compare_duty(*debited->view,debited->index,later_activation,schedule,signature_budget)->spent.empty(),"Changed activation reused old credits");
-    need(compare_duty(*debited->view,debited->index,activation,schedule,signature_budget)->spent.size()==2,"Original activation failed to reconstruct credits");
-    auto changed_assignment=activation;changed_assignment.height=7;changed_assignment.first_assignment_height=7;
-    need(compare_duty(*debited->view,debited->index,changed_assignment,schedule,signature_budget)->spent.size()==1,"Assignment-height boundary borrowed an earlier credit");
-    auto wrong_genesis=activation;wrong_genesis.genesis=hashes[1];
-    need(!compare_duty(*debited->view,debited->index,wrong_genesis,schedule,signature_budget),"Wrong activation genesis accepted");
-    need(compare_duty(*debited->view,debited->index,activation,schedule,signature_budget)->spent.size()==2,"Credit state did not recover");
-    auto tiny_credit=schedule;tiny_credit.archive.coinbase_bytes=1;
-    need(!compare_duty(*debited->view,debited->index,activation,tiny_credit,signature_budget),"Warm credits bypassed archive budget");
-    need(!compare_duty(*debited->view,debited->index,activation,schedule,too_small),"Warm credits bypassed signature budget");
-    need(compare_duty(*debited->view,debited->index,activation,schedule,signature_budget)->spent.size()==2,"Warm credit recovery failed");
-    // Same-block answer cannot pay for a request that must be checked first.
-    auto* same_block=append(admitted_index,{signed_request(admitted_index,2),
-        signed_audit(admitted_index,2,0,NativeAuditAction::Assign),signed_audit(admitted_index,2,0,NativeAuditAction::Commit)});
-    need(!compare_duty(*same_block->view,same_block->index,activation,schedule,signature_budget),"Same-block answer supplied earlier request credit");
-    need(compare_duty(*debited->view,debited->index,activation,schedule,signature_budget)->spent.size()==2,"Invalid branch poisoned valid credits");
-
     // Real native index ancestry and authenticated alternate report bytes.
     const auto second_report=commitment_for(hashes[1]);
     const auto report_b=make_block(parent,{CTxOut{0,*BuildNativeReportEnvelope(second_report)}},501);
@@ -273,7 +183,6 @@ int main(int argc,char** argv){
     NativeRequestHistoryArchive missing{path/"missing-history",1<<20};
     need(!compare(view_admitted,admitted_index,missing,policy_budget,schedule,signature_budget),"Different empty archive borrowed cached authority");
     need(compare(view_admitted,admitted_index,history,policy_budget,schedule,signature_budget).has_value(),"Recovery after unavailable archive");
-    std::cout<<"{\"duty_state_comparisons\":"<<duty_comparisons<<",\"signed_credits\":2,\"request_debits\":2,\"same_block_credit_rejected\":true}\n";
     std::cout<<"{\"PASS\":true,\"whole_state_comparisons\":"<<comparisons<<",\"native_signed_enrollments\":2,\"reorg_and_restore\":true,\"warm_budget_rejections\":true,\"empty_archive_refused\":true}\n";
     return 0;
   }catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}

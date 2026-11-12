@@ -26,6 +26,23 @@ def script_for(rpc, value):
 from horizon_network_summary import summarize
 import copy
 
+def audit_operator_policy(metrics, genesis):
+    value = metrics.get('audit_operator_policy')
+    if value is None:
+        return dict(self_rechecks_permitted=False, required_distinct_other_operators=2)
+    if (not isinstance(value, dict) or value.get('schema') != 'PGN_AUDIT_OPERATOR_POLICY_V1'
+            or value.get('genesis') != genesis):
+        raise ValueError('Audit operator policy belongs to another network')
+    active, activation = value.get('self_rechecks_permitted'), value.get('activation_height')
+    height, required = metrics.get('height'), value.get('required_distinct_other_operators')
+    if (type(active) is not bool or type(height) is not int or not 0 <= height < 2**31 - 1
+            or activation is not None and (type(activation) is not int or not 0 <= activation < 2**31)
+            or active != (activation is not None and height + 1 >= activation)
+            or type(required) is not int or required != (0 if active else 2)):
+        raise ValueError('Invalid authenticated audit operator policy')
+    return copy.deepcopy(value)
+
+
 def join_status(rpc, genesis, signer):
     identity(genesis)
     signing_script = script_for(rpc, signer)
@@ -54,6 +71,8 @@ def join_status(rpc, genesis, signer):
         if mode not in ('registered', 'open'):
             raise ValueError('Unsupported network admission policy')
         public = mode == 'open'
+        operator_policy = audit_operator_policy(metrics, genesis)
+        required = operator_policy['required_distinct_other_operators']
         enabled = public or bool(member and member['may_audit'])
         if enabled and not public and count < 1:
             raise ValueError('Enabled participant is missing from operator count')
@@ -63,7 +82,7 @@ def join_status(rpc, genesis, signer):
         if not public:
             if member is None: blockers.append('registration_required')
             elif not enabled: blockers.append('audit_permission_required')
-            if independent is not None and independent < 2: blockers.append('more_independent_registered_operators_required')
+            if independent is not None and independent < required: blockers.append('more_independent_registered_operators_required')
         return dict(schema='PGN_NORMAL_MINER_JOIN_STATUS_V1', genesis=genesis,
                     parent=tip, signing_address=signer, signing_script=signing_script,
                     operator_id=member['operator_id'] if member else None,
@@ -71,8 +90,10 @@ def join_status(rpc, genesis, signer):
                     admission_mode=mode,
                     normal_cycle_permission=enabled,
                     independent_registered_operators=independent,
-                    required_independent_operators=2,
-                    own_report_membership_quorum=independent is not None and independent >= 2,
+                    required_independent_operators=required,
+                    self_rechecks_permitted=operator_policy['self_rechecks_permitted'],
+                    audit_operator_policy=operator_policy,
+                    own_report_membership_quorum=enabled and (required == 0 or independent is not None and independent >= required),
                     operator_count_scope='registered_permissions_not_online_or_completed_checks',
                     authority_script=members.get('authority_script'),
                     authority_request=members.get('authority_request'), blockers=blockers,

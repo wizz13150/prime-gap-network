@@ -87,9 +87,19 @@ class ArchiveLane:
             for owner in folder.glob("native-owner-*"):
                 if owner.is_dir():
                     retire_completed_owner_output(owner)
+            return outcome.get('owner_tickets', [])
+        return []
+
+    def _offer_dependencies(self, folder, outcome):
+        # A shared stream can live in another, already archived ticket folder.
+        # Revisit it when a dependent archive commits instead of waiting for
+        # a complete historical sweep. Full closure/ACK verification still applies.
+        for ticket in outcome.get('owner_tickets', []):
+            self.offer(self.root / 'tickets' / ticket)
 
     def _run(self):
-        next_sweep = time.monotonic() + self.sweep_seconds
+        next_sweep = time.monotonic()
+        catch_up, pass_reclaimed = True, 0
         while True:
             with self.condition:
                 while not self.stopping and not self.pending and time.monotonic() < next_sweep:
@@ -102,13 +112,21 @@ class ArchiveLane:
                 if folder is not None:
                     with self._ticket_guard(folder) as allowed:
                         if allowed:
-                            self._compact(folder)
+                            owners = self._compact(folder) or []
+                            self._offer_dependencies(folder, {'owner_tickets': owners})
                 if time.monotonic() >= next_sweep:
-                    # The persistent cursor advances even past active or refused
-                    # tickets. One candidate per sweep bounds foreground I/O duty.
+                    # Catch up old work by elapsed I/O cost, not one historical
+                    # directory per thirty seconds. The 10% duty wait below
+                    # still charges enumeration, verification and filesystem work.
                     if (self.root / "tickets").is_dir():
-                        compact_batch(self.root, limit=1, _ticket_guard=self._ticket_guard)
-                    next_sweep = time.monotonic() + self.sweep_seconds
+                        result = compact_batch(self.root, limit=64, time_budget_seconds=.15,
+                            _ticket_guard=self._ticket_guard, _on_compacted=self._offer_dependencies) or {}
+                        pass_reclaimed += result.get('reclaimed_bytes', 0)
+                        if result.get('wrapped'):
+                            catch_up, pass_reclaimed = pass_reclaimed > 0, 0
+                        if not result.get('visited'):
+                            catch_up = False
+                    next_sweep = time.monotonic() + (min(.25, self.sweep_seconds) if catch_up else self.sweep_seconds)
             except Exception as error:
                 self._report(error)
                 next_sweep = time.monotonic() + self.sweep_seconds

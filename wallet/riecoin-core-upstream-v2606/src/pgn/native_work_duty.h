@@ -61,10 +61,10 @@ inline NativeDutyCheck InspectNativeWorkDuty(const NativeAuditLedger& ledger,con
             return {NativeDutyVerdict::InvalidClaim,{}};
         const auto& report=found->second;const auto& job=report.jobs[claim.slot];
         if(!job||!NativeDutyDelivered(*job,actor,first_assignment_height)||job->attempt!=claim.attempt||
-           job->commitment!=claim.commitment||NativeAuditOperator(ledger,report.owner)==NativeAuditOperator(ledger,actor))
+           job->commitment!=claim.commitment)
             return {NativeDutyVerdict::InvalidClaim,{}};
         const auto& other=report.jobs[1-claim.slot];
-        if(other&&NativeAuditOperator(ledger,other->actor)==NativeAuditOperator(ledger,actor))
+        if(!NativeAuditActorAllowed(ledger,report,actor,claim.slot,parent.nHeight))
             return {NativeDutyVerdict::InvalidClaim,{}};
         if(spent.contains(claim))return {NativeDutyVerdict::AlreadySpent,{}};
     }
@@ -73,7 +73,7 @@ inline NativeDutyCheck InspectNativeWorkDuty(const NativeAuditLedger& ledger,con
         // another completed answer, an outstanding own assignment, or an
         // automatically selectable independent task at this exact parent.
         for(const auto& [id,report]:ledger){
-            if(report.report.height>=parent.nHeight||NativeAuditOperator(ledger,report.owner)==NativeAuditOperator(ledger,actor))continue;
+            if(report.report.height>=parent.nHeight||(!NativeAuditRecheckAt(ledger,parent.nHeight)&&NativeAuditOperator(ledger,report.owner)==NativeAuditOperator(ledger,actor)))continue;
             for(uint8_t slot=0;slot<2;++slot){
                 const auto& job=report.jobs[slot];if(!job||job->actor!=actor)continue;
                 const auto ref=NativeDutyRef(id,slot,*job);
@@ -109,11 +109,11 @@ inline NativeAutomaticWorkDuty InspectAutomaticNativeWorkDuty(const NativeAuditL
     using Candidate=std::pair<int32_t,NativeDutyReference>;
     std::vector<Candidate> oldest;
     for(const auto& [id,report]:ledger){
-        if(report.report.height>=parent.nHeight||NativeAuditOperator(ledger,report.owner)==NativeAuditOperator(ledger,actor))continue;
+        if(report.report.height>=parent.nHeight||(!NativeAuditRecheckAt(ledger,parent.nHeight)&&NativeAuditOperator(ledger,report.owner)==NativeAuditOperator(ledger,actor)))continue;
         for(uint8_t slot=0;slot<2;++slot){
             const auto& job=report.jobs[slot];if(!job||!NativeDutyDelivered(*job,actor,first_assignment_height))continue;
             const auto& other=report.jobs[1-slot];
-            if(other&&NativeAuditOperator(ledger,other->actor)==NativeAuditOperator(ledger,actor))continue;
+            if(!NativeAuditActorAllowed(ledger,report,actor,slot,parent.nHeight))continue;
             auto ref=NativeDutyRef(id,slot,*job);if(spent.contains(ref))continue;
             oldest.emplace_back(report.report.height,std::move(ref));
             std::sort(oldest.begin(),oldest.end());if(oldest.size()>2)oldest.pop_back();

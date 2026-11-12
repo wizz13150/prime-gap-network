@@ -107,6 +107,50 @@ class ArchiveBatchTests(unittest.TestCase):
         self.assertEqual(archive.compact_batch(self.root, 1)['retained'], 1)
         self.assertIsNotNone(archive.load(complete))
 
+    def test_elapsed_budget_commits_only_considered_cursor_and_resumes_without_skip(self):
+        first, report = self.ticket(1)
+        second, _ = self.ticket(2)
+        third, _ = self.ticket(3)
+        clock = iter((0, 1))
+        with patch.object(archive, 'time', type('Clock', (), {'monotonic': staticmethod(lambda: next(clock))})):
+            result = archive.compact_batch(self.root, 64, time_budget_seconds=.15)
+        self.assertEqual(result['visited'], 1)
+        self.assertTrue(result['time_budget_exhausted'])
+        self.assertEqual(result['next_after'], first.name)
+        self.assertEqual(archive.load(first)['report'], report)
+        self.assertFalse((second / archive.ARCHIVE_NAME).exists())
+        resumed = archive.compact_batch(self.root, 64)
+        self.assertEqual(resumed['visited'], 2)
+        self.assertEqual(resumed['next_after'], third.name)
+
+    def test_slow_directory_scan_still_makes_one_atomic_candidate_of_progress(self):
+        first, _ = self.ticket(1)
+        self.ticket(2)
+        now = [0]
+        real_names = archive._batch_names
+        def slow_names(*args):
+            now[0] = 10
+            return real_names(*args)
+        with patch.object(archive, 'time', type('Clock', (), {'monotonic': staticmethod(lambda: now[0])})), \
+             patch.object(archive, '_batch_names', side_effect=slow_names):
+            result = archive.compact_batch(self.root, 64, time_budget_seconds=.15)
+        # The first candidate is unconditional even if the budget is spent in enumeration.
+        self.assertGreaterEqual(result['visited'], 1)
+        self.assertEqual(result['visited'], 1)
+        self.assertIsNotNone(archive.load(first))
+
+    def test_compaction_returns_only_exact_shared_owner_hints(self):
+        folder, _ = self.ticket(1)
+        meta = json.loads((folder / 'session.json').read_bytes())
+        owner = f'{2:064x}'
+        meta['closed_chunks'] = [dict(instance=dict(output_owner=dict(owner_ticket_id=value)))
+                                 for value in (owner, '../foreign', owner, 'A' * 64)]
+        (folder / 'session.json').write_bytes(archive.canonical(meta))
+        seen = []
+        result = archive.compact_batch(self.root, 1, _on_compacted=lambda f, value: seen.append((f, value['owner_tickets'])))
+        self.assertEqual(result['compacted'], 1)
+        self.assertEqual(seen, [(folder, [owner])])
+
     def test_crash_before_cursor_commit_repeats_compaction_idempotently(self):
         folder, report = self.ticket(1)
         self.ticket(2)
