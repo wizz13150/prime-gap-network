@@ -100,6 +100,19 @@ class CpuSourceTests(unittest.TestCase):
     def test_global_off_does_not_execute_a_quantum(self):
         s=self.open();s.running=threading.Event()
         self.assertEqual(s.run_ticket(ticket(),10000)['state'],'PAUSED');self.assertIsNone(self.endpoint.request)
+    def test_averaged_resource_rate_never_hides_a_real_idle_period(self):
+        s=self.open();_,state=s._state(ticket(),s.grant);status=self.endpoint.status()
+        status.update(session='owned-session',enabled=True,result_resident_policy=True,resident_workers=1,resource_dispatch_threads=1,
+            resource_rates=dict(schema='PGN_CPU_RESOURCE_RATES_V1',source='verified_closed_native_pieces',session='owned-session',positions_per_second=2000.,tests_per_second=100.))
+        s._present(ticket(),state,'CPU/TEST/0',status)
+        self.assertEqual(s.current_frame['phase'],'Starting');self.assertIsNone(s.current_frame['speed_rate'])
+        status['compute_started']=True;s._present(ticket(),state,'CPU/TEST/0',status)
+        self.assertEqual(s.current_frame['phase'],'Searching');self.assertEqual(s.current_frame['speed_rate'],2000.)
+        self.assertEqual(s.current_frame['source_device'],'CPU/TEST/0');self.assertEqual(s.current_frame['tests'],'17')
+        status['compute_started']=False;status['resource_rates']['session']='foreign-session';s._present(ticket(),state,'CPU/TEST/0',status)
+        self.assertEqual(s.current_frame['phase'],'Starting')
+        status['resource_rates']['session']='owned-session';status['resource_dispatch_threads']=0;s._present(ticket(),state,'CPU/TEST/0',status)
+        self.assertEqual(s.current_frame['phase'],'Starting')
     def test_ticket_threshold_cannot_be_replaced(self):
         s=self.open();bad=ticket();bad['threshold_policy']['sha256']='0'*64
         with self.assertRaises(ValueError):s.run_ticket(bad,10000)

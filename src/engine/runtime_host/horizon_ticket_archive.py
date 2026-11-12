@@ -9,6 +9,7 @@ import zlib
 import heapq
 import os
 import re
+import time
 
 from pgn_session import SessionControllerLock, atomic_bytes, read_session_metadata
 
@@ -24,6 +25,25 @@ WORK_FILES = (
 BATCH_CURSOR_SCHEMA = "PGN_HORIZON_RETENTION_CURSOR_V1"
 OWNER_RETIREMENT_SCHEMA = "PGN_ARCHIVED_OWNER_OUTPUT_V1"
 MAXIMUM_OWNER_JOBS = 4096
+
+
+def _owner_ticket_hints(metadata):
+    """Locators only schedule another verified pass; they never authorize deletion."""
+    chunks = metadata.get('closed_chunks', [])
+    if not isinstance(chunks, list):
+        return []
+    current = metadata.get('current_chunk')
+    chunks = chunks[-128:] + ([current] if isinstance(current, dict) else [])
+    owners = set()
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        instance = chunk.get('instance')
+        locator = instance.get('output_owner') if isinstance(instance, dict) else None
+        ticket = locator.get('owner_ticket_id') if isinstance(locator, dict) else None
+        if isinstance(ticket, str) and re.fullmatch(r'[0-9a-f]{64}', ticket):
+            owners.add(ticket)
+    return sorted(owners)[:32]
 
 
 def ticket_folder(folder):
@@ -162,7 +182,7 @@ def frame(folder):
     value = dict(body["frame"])
     if _audit_attribution(Path(folder),body):
         value.update(work_role='audit',record_pairs=[],
-                     validation_state='Independent audit computation; original discovery attribution retained')
+                     validation_state='Assigned audit computation; original discovery attribution retained')
     value["source_observed_utc"] = value.get("observed_utc")
     value["observed_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
     value["archived"] = True
@@ -318,6 +338,7 @@ def compact(folder, dry_run=False):
         encoded = gzip.compress(raw, mtime=0)
         if dry_run:
             return {"compacted": True, "dry_run": True, "archive_bytes": len(encoded),
+                    "owner_tickets": _owner_ticket_hints(metadata),
                     "reclaimable_bytes": sum((folder / name).stat().st_size
                                              for name in WORK_FILES if (folder / name).is_file())}
         from horizon_scientific_gaps import create
@@ -337,7 +358,8 @@ def compact(folder, dry_run=False):
         atomic_bytes(folder / "session.json", canonical(marker) + b"\n")
         load(folder)
         reclaimed = _purge_work_files(folder,body)
-        return {"compacted": True, "reclaimed_bytes": reclaimed, "archive_bytes": len(encoded)}
+        return {"compacted": True, "reclaimed_bytes": reclaimed, "archive_bytes": len(encoded),
+                "owner_tickets": _owner_ticket_hints(metadata)}
     finally:
         lock.release()
 
@@ -505,7 +527,8 @@ def _batch_names(tickets, after, limit):
         return heapq.nsmallest(limit, eligible(entries))
 
 
-def compact_batch(root, limit=512, dry_run=False, *, _ticket_guard=None):
+def compact_batch(root, limit=512, dry_run=False, *, _ticket_guard=None,
+                  time_budget_seconds=None, _on_compacted=None):
     """Resume bounded maintenance fairly; repeat work safely after interruption.
 
     The cursor only selects candidates. Each ticket still has to pass compact's
@@ -514,6 +537,9 @@ def compact_batch(root, limit=512, dry_run=False, *, _ticket_guard=None):
     """
     if not 1 <= limit <= 4096:
         raise ValueError("Batch size must be between 1 and 4096")
+    if time_budget_seconds is not None and not 0 < time_budget_seconds <= 60:
+        raise ValueError('Positive maintenance time budget up to sixty seconds required')
+    deadline = None if time_budget_seconds is None else time.monotonic() + time_budget_seconds
     root = Path(root).resolve()
     tickets = root / "tickets"
     if not _plain_directory(tickets):
@@ -549,7 +575,13 @@ def compact_batch(root, limit=512, dry_run=False, *, _ticket_guard=None):
         if wrapped:
             names = _batch_names(tickets, None, limit)
         summary.update(resumed_after=after, wrapped=wrapped)
+        last_considered = after
         for name in names:
+            # A slow directory enumeration must not prevent all progress.
+            # Finish one atomic candidate; the caller charges its complete I/O cost.
+            if summary['visited'] and deadline is not None and time.monotonic() >= deadline:
+                summary['time_budget_exhausted'] = True
+                break
             folder = tickets / name
             summary["visited"] += 1
             try:
@@ -563,6 +595,8 @@ def compact_batch(root, limit=512, dry_run=False, *, _ticket_guard=None):
                         summary["reclaimed_bytes"] += outcome.get("reclaimed_bytes", 0)
                         summary["reclaimable_bytes"] += outcome.get("reclaimable_bytes", 0)
                         if outcome["compacted"]:
+                            if _on_compacted is not None:
+                                _on_compacted(folder, outcome)
                             for owner in folder.glob("native-owner-*"):
                                 if owner.is_dir():
                                     retired = retire_completed_owner_output(owner, dry_run=dry_run)
@@ -579,7 +613,8 @@ def compact_batch(root, limit=512, dry_run=False, *, _ticket_guard=None):
             if not dry_run:
                 atomic_bytes(cursor, canonical({"schema": BATCH_CURSOR_SCHEMA,
                                                 "tickets": str(tickets), "after": name}) + b"\n")
-        summary["next_after"] = names[-1] if names else after
+            last_considered = name
+        summary["next_after"] = last_considered
         return summary
     finally:
         if lock is not None:

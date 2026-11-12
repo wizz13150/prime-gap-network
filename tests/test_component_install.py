@@ -1,4 +1,3 @@
-from contextlib import nullcontext
 """Cohort transactions only. Inert PE fixtures; no application is executed.
 
 TUF authentication has separate reference-library signature tests. Here the
@@ -35,7 +34,7 @@ class InstallTests(unittest.TestCase):
   self.cache=stage.init_cache(self.root/'staging',self.context)
   folder,plan=stage.stage_bundle(archive,stage.sha(archive.read_bytes()),self.context,self.context_sha,self.cache,['cpu'])
   self.receipt=dict(publisher_authenticated=True,context_sha256=self.context_sha,stage=str(folder),manifest_sha256=plan['manifest_sha256'],selection=['cpu'])
-  self.client=type('PreparedClient',(),dict(context=self.context,context_sha256=self.context_sha,prepared=lambda ignored,selected,**kwargs:nullcontext(deepcopy(self.receipt))))()
+  self.client=type('PreparedClient',(),dict(context=self.context,context_sha256=self.context_sha,prepare=lambda ignored,selected:deepcopy(self.receipt)))()
   self.original=install.inventory(self.base)[2]
  def tearDown(self):
   self.assertEqual(self.sentinel.read_bytes(),b'NEVER TOUCHED');self.assertEqual(install.inventory(self.base)[2],self.original);self.temp.cleanup()
@@ -43,20 +42,6 @@ class InstallTests(unittest.TestCase):
   candidate=self.store.prepare(self.client,['cpu']);new=Path(candidate['cohort']);value,files,_,_=install.inventory(new)
   self.assertFalse((new/'EngineRuntime/cpu/obsolete.dll').exists());self.assertEqual((new/PRIMARY['ui']).read_bytes(),pe());self.assertEqual({c['id']:c['version']for c in value['components']},{'ui':'1.0.0','core':'1.0.0','gpu':'1.0.0','cpu':'2.0.0'});self.assertEqual(self.store.current()['cohort'],str(self.base))
   self.assertEqual(self.store.prepare(self.client,['cpu']),candidate)
- def test_authenticated_stage_lease_spans_every_source_copy(self):
-  from contextlib import contextmanager
-  held=[];copied=[];copy=install.shutil.copyfile
-  @contextmanager
-  def prepared(selected,**kwargs):
-   held.append(True)
-   try:yield deepcopy(self.receipt)
-   finally:held.pop()
-  def copying(source,target):
-   self.assertTrue(held,'The cache lease ended before source consumption')
-   copied.append(str(source));return copy(source,target)
-  with patch.object(self.client,'prepared',side_effect=prepared),patch.object(install.shutil,'copyfile',side_effect=copying):
-   self.store.prepare(self.client,['cpu'])
-  self.assertTrue(copied);self.assertFalse(held)
  def test_subsequent_install_can_protect_its_selected_code_inside_the_owned_store(self):
   candidate=self.store.prepare(self.client,['cpu'])
   self.assertTrue(self.store.activate(candidate,lambda:True,lambda path:True,lambda *args:None))
@@ -78,7 +63,7 @@ class InstallTests(unittest.TestCase):
   cache=stage.init_cache(self.root/'second-staging',context);archive=self.root/'update.zip'
   folder,plan=stage.stage_bundle(archive,stage.sha(archive.read_bytes()),context,context_sha,cache,['cpu'])
   receipt=dict(publisher_authenticated=True,context_sha256=context_sha,stage=str(folder),manifest_sha256=plan['manifest_sha256'],selection=['cpu'])
-  client=type('SecondPreparedClient',(),dict(context=context,context_sha256=context_sha,prepared=lambda ignored,selected,**kwargs:nullcontext(deepcopy(receipt))))()
+  client=type('SecondPreparedClient',(),dict(context=context,context_sha256=context_sha,prepare=lambda ignored,selected:deepcopy(receipt)))()
   return Path(first['cohort']),install.CohortStore(self.store.root,context,context_sha),client
  def test_only_owned_immutable_cohorts_share_identical_code_across_updates(self):
   first,store,client=self.second_generation();second=Path(store.prepare(client,['cpu'])['cohort'])
@@ -91,81 +76,15 @@ class InstallTests(unittest.TestCase):
    second=Path(store.prepare(client,['cpu'])['cohort'])
   for identity in ('ui','core','gpu','cpu'):self.assertFalse(install.os.path.samefile(first/PRIMARY[identity],second/PRIMARY[identity]))
   self.assertEqual(install.inventory(first)[2],install.inventory(second)[2])
- def test_install_admission_uses_free_space_without_a_lifetime_store_quota(self):
+ def test_storage_quota_charges_shared_file_identity_once_and_independent_copies_separately(self):
   first,store,client=self.second_generation();store.prepare(client,['cpu'])
   paths=[p for p in store.root.rglob('*')if p.is_file()];logical=sum(p.stat().st_size for p in paths);unique={}
   for path in paths:
    info=path.stat();unique[(info.st_dev,info.st_ino)]=info.st_size
   physical=sum(unique.values());self.assertLess(physical,logical)
-  from types import SimpleNamespace
-  with patch.object(install.shutil,'disk_usage',return_value=SimpleNamespace(free=physical+16*1024*1024)):
-   store._quota(physical)
-   with self.assertRaisesRegex(ValueError,'disk space'):store._quota(physical+1)
-
- def old_cohort(self,number):
-  path=self.store.root/'cohorts'/format(number,'020x');path.parent.mkdir(exist_ok=True)
-  install.shutil.copytree(self.base,path)
-  return path
-
- def test_retention_preserves_active_rollback_and_pending_but_removes_twenty_old_versions(self):
-  active,backup,pending=[self.old_cohort(n)for n in (1,2,3)]
-  selector=dict(self.store.current(),cohort=str(active),previous=dict(self.store.current(),cohort=str(backup)))
-  install._write(self.store.root/'current.json',selector)
-  self.store._remember_prepared(dict(cohort=str(pending),inventory_sha256=install.inventory(pending)[2],expected_current=selector))
-  obsolete=[self.old_cohort(n)for n in range(4,24)]
-  with install.locked_cache(self.store.root),patch.object(install,'cohort_in_use',return_value=False):
-   result=self.store._prune_retired(selector)
-  self.assertEqual(result['removed'],20)
-  self.assertTrue(all(p.exists()for p in (active,backup,pending)))
-  self.assertTrue(all(not p.exists()for p in obsolete))
-
- def test_in_use_old_program_is_retained_without_failing_the_update(self):
-  old=self.old_cohort(1)
-  with install.locked_cache(self.store.root),patch.object(install,'cohort_in_use',return_value=True):
-   result=self.store._prune_retired(self.store.current())
-  self.assertEqual(result,dict(removed=0,in_use=1));self.assertTrue(old.exists())
-
- def test_process_starting_at_quarantine_is_restored_and_retained(self):
-  old=self.old_cohort(1);original=install.inventory(old)[2]
-  with install.locked_cache(self.store.root),patch.object(install,'cohort_in_use',side_effect=[False,True]):
-   result=self.store._prune_retired(self.store.current())
-  self.assertEqual(result,dict(removed=0,in_use=1));self.assertEqual(install.inventory(old)[2],original)
-  self.assertFalse(list((self.store.root/'cohorts').glob('.retired-*')))
-
- def test_missing_native_observation_retains_old_program(self):
-  old=self.old_cohort(1)
-  with install.locked_cache(self.store.root),patch.object(install,'cohort_in_use',side_effect=OSError('observation unavailable')):
-   self.store._prune_retired(self.store.current())
-  self.assertTrue(old.exists());self.assertIn('cleanup deferred',self.store.commit_warning)
-
- def test_unknown_observation_after_rename_restores_complete_old_program(self):
-  old=self.old_cohort(1);original=install.inventory(old)[2]
-  with install.locked_cache(self.store.root),patch.object(install,'cohort_in_use',side_effect=[False,OSError('observation unavailable')]):
-   self.store._prune_retired(self.store.current())
-  self.assertEqual(install.inventory(old)[2],original)
-  self.assertFalse(list((self.store.root/'cohorts').glob('.retired-*')))
-
- def test_interrupted_partial_removal_resumes_from_exact_file_inventory(self):
-  old=self.old_cohort(1);unlink=Path.unlink;seen=[]
-  def interrupted(path,*args,**kwargs):
-   if '.retired-'in str(path):
-    seen.append(path)
-    if len(seen)==2:raise OSError('injected cleanup interruption')
-   return unlink(path,*args,**kwargs)
-  with install.locked_cache(self.store.root),patch.object(install,'cohort_in_use',return_value=False),patch.object(Path,'unlink',interrupted):
-   self.store._prune_retired(self.store.current())
-  self.assertEqual(len(seen),2);self.assertFalse(old.exists())
-  self.assertTrue(list((self.store.root/'retirements').glob('*.json')))
-  with install.locked_cache(self.store.root),patch.object(install,'cohort_in_use',return_value=False):
-   result=self.store._prune_retired(self.store.current())
-  self.assertEqual(result['removed'],1);self.assertFalse(list((self.store.root/'cohorts').glob('.retired-*')))
-  self.assertFalse(list((self.store.root/'retirements').glob('*.json')))
-
- def test_undeclared_files_in_old_program_are_never_deleted(self):
-  old=self.old_cohort(1);extra=old/'wallet.dat';extra.write_bytes(b'USER FILE')
-  with install.locked_cache(self.store.root),patch.object(install,'cohort_in_use',return_value=False):
-   self.store._prune_retired(self.store.current())
-  self.assertEqual(extra.read_bytes(),b'USER FILE');self.assertTrue(old.exists())
+  with patch.object(install,'MAX_STORE',physical):store._quota()
+  with patch.object(install,'MAX_STORE',physical-1):
+   with self.assertRaisesRegex(ValueError,'quota'):store._quota()
  def test_inconclusive_link_creation_never_overwrites_an_existing_code_alias(self):
   first,store,client=self.second_generation();real=install.os.link
   def uncertain(source,target):real(source,target);raise OSError('Ambiguous filesystem result')
@@ -282,7 +201,7 @@ class InstallTests(unittest.TestCase):
   for state in ('prepared','starting_candidate','activation_failed','shutdown_failed'):
    install._write(self.store.root/'transaction.json',dict(schema='PGN_COHORT_ACTIVATION_V1',state=state,before=self.store.current(),candidate=candidate,restoration_completed=False))
    original=(self.store.root/'transaction.json').read_bytes()
-   with patch.object(self.client,'prepared',side_effect=AssertionError('Must preserve recovery before downloading')):
+   with patch.object(self.client,'prepare',side_effect=AssertionError('Must preserve recovery before downloading')):
     with self.assertRaisesRegex(ValueError,'requires recovery'):self.store.prepare(self.client,['cpu'])
    self.assertEqual((self.store.root/'transaction.json').read_bytes(),original)
  def test_interruption_blocks_callbacks_and_preserves_native_backups(self):

@@ -3,6 +3,8 @@
 // Copyright (c) 2026 The PGN developers. MIT.
 // Blind audit events: commitment precedes every answer disclosure.
 #pragma once
+#include <pgn/audit_operator_policy.h>
+#include <tuple>
 #include <pgn/native_report_commitment.h>
 #include <pgn/audit_lease_clock.h>
 #include <pgn/testnet_service_activation.h>
@@ -117,6 +119,8 @@ struct NativeAuditLedger:std::map<uint256,NativeReportAudit> {
     CScript authority;uint256 authority_request;int32_t authority_height{};
     std::map<Bytes,NativeAuditMembership> participants;
     bool public_admission{};
+    uint256 audit_chain;
+    std::optional<NativeAuditOperatorRules> audit_operator_rules;
 };
 inline uint256 NativeAuditOperator(const NativeAuditLedger& ledger,const CScript& script){
     const auto found=ledger.participants.find(Bytes{script.begin(),script.end()});
@@ -136,21 +140,65 @@ inline bool NativeAuditOperatorsIndependent(const NativeAuditLedger& ledger,cons
     const auto first=NativeAuditOperator(ledger,report.jobs[0]->actor),second=NativeAuditOperator(ledger,report.jobs[1]->actor);
     return first!=owner&&second!=owner&&first!=second;
 }
+inline bool NativeAuditRecheckAt(const NativeAuditLedger& ledger,int32_t parent_height){
+ return ledger.audit_operator_rules&&ledger.audit_operator_rules->chain==ledger.audit_chain&&
+     !ledger.audit_chain.IsNull()&&parent_height>=0&&ledger.audit_operator_rules->activation_height>=0&&
+     int64_t(parent_height)+1>=ledger.audit_operator_rules->activation_height;
+}
+inline bool NativeAuditActorAllowed(const NativeAuditLedger& ledger,const NativeReportAudit& report,
+    const CScript& actor,uint8_t slot,int32_t height){
+ if(slot>1)return false;
+ const auto own=NativeAuditOperator(ledger,report.owner),who=NativeAuditOperator(ledger,actor);
+ const auto& other=report.jobs[1-slot];
+ if(own!=who&&(!other||NativeAuditOperator(ledger,other->actor)!=who))return true;
+ const auto& job=report.jobs[slot];
+ if(!job||job->actor!=actor)return false;
+ if(own==who)return NativeAuditRecheckAt(ledger,height)&&job->issued>=ledger.audit_operator_rules->activation_height;
+ // A valid older non-owner assignment is not retroactively invalidated by
+ // a repeated operator assigned under the new rule. An old self assignment
+ // remains forbidden above; two old repeated assignments remain forbidden.
+ const int32_t latest=std::max(job->issued,other->issued);
+ const int32_t policy_parent=int32_t(std::max(int64_t(height),int64_t(latest)-1));
+ return NativeAuditRecheckAt(ledger,policy_parent)&&latest>=ledger.audit_operator_rules->activation_height;
+}
+inline bool NativeAuditOperatorsAllowed(const NativeAuditLedger& ledger,const NativeReportAudit& report){
+ if(!report.jobs[0]||!report.jobs[1])return false;
+ return NativeAuditActorAllowed(ledger,report,report.jobs[0]->actor,0,report.jobs[0]->issued)&&
+     NativeAuditActorAllowed(ledger,report,report.jobs[1]->actor,1,report.jobs[1]->issued);
+}
+inline bool NativeAuditReportQualified(const NativeAuditLedger& ledger,const NativeReportAudit& report){
+ return report.Audited()&&NativeAuditOperatorsAllowed(ledger,report);
+}
+inline const char* NativeAuditOperatorAssurance(const NativeAuditLedger& ledger,const NativeReportAudit& report){
+ if(!report.AllCommitted())return "pending";
+ if(NativeAuditOperatorsIndependent(ledger,report))return "distinct_operators";
+ return NativeAuditOperatorsAllowed(ledger,report)?"self_or_repeated_operator":"ineligible";
+}
 inline std::optional<std::pair<uint256,uint8_t>> SelectNativeAudit(const NativeAuditLedger& ledger,const CScript& actor,int32_t parent_height,int64_t parent_median_time){
-    if(!NativeAuditEligible(ledger,actor))return {};
-    std::optional<std::pair<uint256,uint8_t>> chosen;int32_t oldest=std::numeric_limits<int32_t>::max();
-    for(const auto& [id,report]:ledger){
-        if(NativeAuditOperator(ledger,report.owner)==NativeAuditOperator(ledger,actor)||report.report.height>=parent_height||report.Audited())continue;
-        for(uint8_t slot=0;slot<2;++slot){const auto& job=report.jobs[slot];
-            if(job&&(job->stage!=NativeAuditJob::Assigned||!NativeAuditAssignmentExpired(*job,parent_height,parent_median_time)))continue;
-            const auto& other=report.jobs[1-slot];
-            if(other&&NativeAuditOperator(ledger,other->actor)==NativeAuditOperator(ledger,actor))continue;
-            if(!chosen||report.report.height<oldest){chosen=std::pair{id,slot};oldest=report.report.height;}break;
-        }
-    }return chosen;
+ if(!NativeAuditEligible(ledger,actor))return {};
+ const bool recheck=NativeAuditRecheckAt(ledger,parent_height);
+ std::optional<std::pair<uint256,uint8_t>> chosen;std::optional<std::tuple<int,int,int32_t,uint256,uint8_t>> rank;
+ for(const auto& [id,report]:ledger){
+  const bool own=NativeAuditOperator(ledger,report.owner)==NativeAuditOperator(ledger,actor);
+  if((own&&!recheck)||report.report.height>=parent_height||report.Audited())continue;
+  for(uint8_t slot=0;slot<2;++slot){const auto& job=report.jobs[slot];
+   if(job&&(job->stage!=NativeAuditJob::Assigned||!NativeAuditAssignmentExpired(*job,parent_height,parent_median_time)))continue;
+   const auto& other=report.jobs[1-slot];const bool repeated=other&&NativeAuditOperator(ledger,other->actor)==NativeAuditOperator(ledger,actor);
+   if(repeated&&!recheck)continue;
+   // Close a partially committed report before opening more work, otherwise
+   // other-owner preference can strand all credits behind fresh first slots.
+   // Preserve the exact historic order before this network rule activates.
+   const bool closing=other&&(other->stage==NativeAuditJob::Committed||other->stage==NativeAuditJob::Passed);
+   const auto candidate=std::tuple{recheck?int(!closing):0,2*int(repeated)+int(own),report.report.height,id,slot};
+   if(!rank||candidate<*rank){rank=candidate;chosen=std::pair{id,slot};}
+  }
+ }
+ return chosen;
 }
 inline void ApplyNativeAuditEvent(NativeAuditLedger& ledger,const NativeAuditEvent& event,const CBlockIndex& parent,
     const uint256& chain,ScriptWorkBudget budget){
+    RequireAudit(ledger.audit_chain.IsNull()||ledger.audit_chain==chain,"Audit ledger chain mismatch");
+    RequireAudit(!ledger.audit_operator_rules||ledger.audit_operator_rules->chain==chain,"Audit operator rule chain mismatch");
     if(event.action==NativeAuditAction::Enroll){
         RequireAudit(!ledger.authority.empty()&&event.actor==ledger.authority&&event.request==ledger.authority_request&&event.parent==parent.GetBlockHash()&&
             parent.nHeight>=ledger.authority_height&&event.slot==0&&event.attempt==0,"Participant admission requires the testnet authority");
@@ -186,7 +234,7 @@ inline void ApplyNativeAuditEvent(NativeAuditLedger& ledger,const NativeAuditEve
     }
     if(event.action==NativeAuditAction::ReportReveal){
         RequireAudit(event.actor==report.owner&&event.slot==0&&event.attempt==0&&report.AllCommitted(),"Report answers cannot be revealed before both audit commitments");
-        RequireAudit(NativeAuditOperatorsIndependent(ledger,report),"Report disclosure requires two independent audit operators");
+        RequireAudit(NativeAuditOperatorsAllowed(ledger,report),"Report disclosure requires the activated operator policy");
         RequireAudit(HexStr(AuditSha(event.body))==report.report.commitment.root.GetHex(),"Report reveal hash mismatch");
         const std::string text{event.body.begin(),event.body.end()};UniValue body;RequireAudit(body.read(text)&&body.isObject(),"Invalid report JSON");AuditKeys(body);
         RequireAudit(body["schema"].get_str()=="PGN_NETWORK_RANGE_REPORT_V1"&&body["genesis"].get_str()==chain.GetHex()&&body["request_id"].get_str()==event.request.GetHex()&&
@@ -208,9 +256,7 @@ inline void ApplyNativeAuditEvent(NativeAuditLedger& ledger,const NativeAuditEve
         report.expected=values;report.details_root=commitment.root;report.owner_reveal=text;return;
     }
     auto& job=report.jobs[event.slot];RequireAudit(job&&job->attempt==event.attempt&&job->actor==event.actor&&NativeAuditEligible(ledger,event.actor),"Audit is not assigned to an admitted actor");
-    RequireAudit(NativeAuditOperator(ledger,report.owner)!=NativeAuditOperator(ledger,event.actor),"Owner operator cannot audit its own report");
-    const auto& other=report.jobs[1-event.slot];
-    RequireAudit(!other||NativeAuditOperator(ledger,other->actor)!=NativeAuditOperator(ledger,event.actor),"The two audit slots require distinct operators");
+    RequireAudit(NativeAuditActorAllowed(ledger,report,event.actor,event.slot,parent.nHeight),"Audit actor violates activated operator policy");
     if(event.action==NativeAuditAction::Commit){
         RequireAudit(event.body.size()==32,"Audit commitment must be 32 bytes");const auto commitment=HexStr(event.body);
         if(job->stage==NativeAuditJob::Committed){RequireAudit(job->commitment==commitment,"Audit commitment already fixed");return;}
@@ -237,6 +283,8 @@ inline std::optional<NativeAuditInitialState> InitializeNativeAuditLedger(
         auto reports=ReadConfirmedNativeReports(view,parent,history,schedule_budget);if(!reports)return {};
         NativeAuditLedger ledger;const auto fact_head=view.GetPgnFactHead();
         ledger.public_admission=fact_head&&PgnTestnetServiceActivation(fact_head->chain).has_value();
+        if(fact_head){ledger.audit_chain=fact_head->chain;ledger.audit_operator_rules=ConfiguredNativeAuditOperatorRules(ledger.audit_chain);
+            if(ledger.audit_operator_rules&&ledger.audit_operator_rules->chain!=ledger.audit_chain)return {};}
         for(int32_t height=0;height<=parent.nHeight&&ledger.authority.empty();++height){
             const auto loaded=history.Load(view,parent,height,schedule_budget.archive);if(!loaded.block)return {};
             const auto scan=ScanConfirmedTicketRequests(view,parent,*loaded.block,schedule_budget.scan);if(!scan.batch)return {};

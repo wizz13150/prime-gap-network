@@ -5,7 +5,7 @@ namespace pgn::core {
 inline bool NativeAuditReplaySame(const NativeAuditLedger& a,const NativeAuditLedger& b)
 {
     if(a.size()!=b.size()||a.authority!=b.authority||a.authority_request!=b.authority_request||
-       a.authority_height!=b.authority_height||a.public_admission!=b.public_admission||
+       a.authority_height!=b.authority_height||a.public_admission!=b.public_admission||a.audit_chain!=b.audit_chain||a.audit_operator_rules!=b.audit_operator_rules||
        a.participants.size()!=b.participants.size())return false;
     for(const auto& [id,member]:a.participants){
         const auto j=b.participants.find(id);

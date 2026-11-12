@@ -69,6 +69,18 @@ class Tests(unittest.TestCase):
     def test_own_report_cannot_be_recovered_as_independent(self):
         self.rpc.pages[0]['reports'][0]['miner_script']=ACTOR
         with self.assertRaises(ValueError):self.recovery.claim(self.folders[0])
+    def test_core_authorized_self_assignment_recovers_exact_ranges(self):
+        self.rpc.pages[0]['reports'][0]['miner_script']=ACTOR
+        self.rpc.pages[0]['audits'][0]['jobs'][0]['actor_policy_accepted']=True
+        audit,_=self.recovery.claim(self.folders[0])
+        self.assertEqual(audit['request_id'],report(1)['request_id'])
+        self.assertEqual(audit['ranges'],job(1)['ranges']);self.assertEqual(audit['counts'],[])
+        self.assertNotIn('independent',audit)
+    def test_policy_denial_and_non_boolean_permission_retain_journals(self):
+        for accepted in (False,'true',1):
+            self.rpc.pages[0]['audits'][0]['jobs'][0]['actor_policy_accepted']=accepted
+            with self.assertRaises(ValueError):self.recovery.claim(self.folders[0])
+            self.assertFalse((self.folders[0]/'current.json').exists())
     def legacy(self):
         r=report(1);v=dict(schema='PGN_HORIZON_ASSIGNED_AUDIT_V1',request_id=r['request_id'],
             ticket=r['ticket'],report_root=r['report_root'],slot=0,attempt=0,ranges=job(1)['ranges'],

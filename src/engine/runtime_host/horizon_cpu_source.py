@@ -4,7 +4,7 @@ Computation and scientific admission are separate, as for the deferred GPU
 source. This adapter never promotes a PRP computation by setting an enable flag.
 """
 from pathlib import Path
-import copy,hashlib,json,threading,time
+import copy,hashlib,json,math,threading,time
 import datetime as dt
 from pgn_gap_projection import project,presentation,checked_pairs
 from pgn_native_contract import fields
@@ -13,6 +13,15 @@ from horizon_engine_host import ticket_configuration
 
 class CpuScientificSourcePending(RuntimeError):
     pass
+
+def completion_poll_delay(status):
+    """Observe the final half-second closely, without high-rate polling all day."""
+    if status.get('result_resident_policy')is not True or status.get('compute_started')is not True:return .2
+    try:
+        left=int(status['total_positions'])-int(status['completed_positions']);rate=status['positions_per_second']
+        if type(rate)not in(int,float)or not math.isfinite(rate)or rate<=0:return .2
+        return .02 if 0<left<=rate*.5 else .2
+    except (KeyError,ValueError,TypeError):return .2
 
 class CpuOnlyNormalSource:
     scientific_raw_report_provisional=True
@@ -112,10 +121,16 @@ class CpuOnlyNormalSource:
         view=presentation(sorted(set(pairs)),cfg)
         positions=int(state['cursor'])-int(ticket['start'])+int(status.get('completed_positions','0'))
         selected=dict(self.options.get(device,{})).get('enabled',False)
-        active=selected and status.get('compute_started',False)
+        resource=status.get('resource_rates',{})
+        continuous=(resource.get('schema')=='PGN_CPU_RESOURCE_RATES_V1'and resource.get('source')=='verified_closed_native_pieces'
+            and resource.get('session')==status.get('session')and status.get('enabled')is True
+            and status.get('resident_workers',0)>0 and status.get('resource_dispatch_threads',0)>0
+            and status.get('result_resident_policy')is True and not status.get('budget_refused')and not status.get('error')
+            and type(resource.get('positions_per_second'))in(int,float)and resource['positions_per_second']>0)
+        active=selected and status.get('compute_started')is True
         rates=status.get('mining_rates',{})
         total_tests=int(state['candidate_tests'])+int(rates.get('candidate_tests','0'))
-        self.current_frame=dict(schema='PGN_HORIZON_MINING_VIEW_V1',ticket_id=ticket['ticket_id'],
+        self.current_frame=dict(schema='PGN_HORIZON_MINING_VIEW_V1',source_device=device,ticket_id=ticket['ticket_id'],
             request_id=(self.grant or{}).get('work_cycle',''),title='Network CPU work',work_role='search',
             start=ticket['start'],end=ticket['end'],positions=str(positions),positions_total=str(int(ticket['end'])-int(ticket['start'])),
             current=str(int(ticket['start'])+positions),phase='Searching'if active else('Starting'if selected else'Paused'),bits=int(ticket['start']).bit_length(),
@@ -124,9 +139,9 @@ class CpuOnlyNormalSource:
             record_pairs=view['best'],scopes=dict(ticket=view),source_stale=False,source_age_ns='0',
             observed_utc=dt.datetime.now(dt.timezone.utc).isoformat(),stream_id=self._digest(str(self.root)),
             compute_epoch=status.get('session'),
-            tests=str(total_tests),speed_rate=status.get('positions_per_second')if active else None,
-            compute_tests_rate=rates.get('tests_per_second')if active else None,
-            average_rate=None,eta_rate=status.get('positions_per_second')if active else None)
+            tests=str(total_tests),speed_rate=(resource['positions_per_second']if continuous else status.get('positions_per_second'))if active else None,
+            compute_tests_rate=(resource.get('tests_per_second')if continuous else rates.get('tests_per_second'))if active else None,
+            average_rate=None,eta_rate=(resource['positions_per_second']if continuous else status.get('positions_per_second'))if active else None)
         self.emit(dict(schema='PGN_HORIZON_CPU_NORMAL_EVENT_V1',device_id=device,type='telemetry',status=status,resource_enabled=selected))
         self.observer(dict(phase='SEARCHING'if active else('STARTING'if selected else'PAUSED_ACK'),positions=str(positions),tests=str(total_tests)))
 
@@ -144,7 +159,9 @@ class CpuOnlyNormalSource:
             if active is None:
                 with self.lock:device=next((k for k,v in self.options.items()if v['enabled']),None)
                 if device is None:self.stopping.wait(.2);return dict(state='PAUSED')
-                start=int(state['cursor']);end=min(b,start+min(self.quantum,maximum_piece//100*100))
+                client=self.clients[device]
+                capability=client.call('status')['status'].get('complete_record_delivery')=='PGN_CPU_COMPLETE_RECORDS_V1'
+                start=int(state['cursor']);end=b if capability else min(b,start+min(self.quantum,maximum_piece//100*100))
                 if(end-start)%100:raise ValueError('CPU subwork requires an exact100-partition boundary')
                 request=dict(grant,start=str(start),end=str(end))
                 active=dict(device=device,request=request);state['active']=active;self._save(file,state)
@@ -168,7 +185,7 @@ class CpuOnlyNormalSource:
                 self._present(ticket,state,device,status)
                 with self.lock:enabled=self.options[device]['enabled']
                 if status['result_ready']or status.get('budget_refused')or not enabled or self.running is not None and not self.running.is_set():break
-                self.stopping.wait(.2)
+                self.stopping.wait(completion_poll_delay(status))
             keep=status.get('result_resident_policy')is True and status.get('result_ready')is True
             if not keep:client.pause()
             evidence=client.call('evidence')['evidence']
@@ -179,12 +196,31 @@ class CpuOnlyNormalSource:
                 if status.get('budget_refused'):self.stopping.wait(.5)
                 return dict(state='PAUSED')
             count=sum(map(int,evidence['counts100']))
-            if count>100:
+            if status.get('complete_record_delivery')=='PGN_CPU_COMPLETE_RECORDS_V1':
+                records=[];after='';previous=-1
+                while True:
+                    page=client.call('records',request_sha256=expected,after=after,limit=64)['records']
+                    if(page.get('schema')!='PGN_CPU_COMPLETE_RECORDS_V1'or page.get('request_sha256')!=expected
+                        or page.get('total_records')!=str(count)or type(page.get('records'))is not list or len(page['records'])>64):raise ValueError('CPU complete record page identity/count mismatch')
+                    for row in page['records']:
+                        lo,hi=int(row['lower_prime']),int(row['upper_prime'])
+                        if not previous<lo or not int(request['start'])<=lo<int(request['end'])or hi-lo!=row['gap']:raise ValueError('CPU complete records are not ordered owned gaps')
+                        previous=lo;records.append(row)
+                    if len(records)>count:raise ValueError('CPU complete record delivery exceeded its count')
+                    cursor=page.get('next_after')
+                    if cursor is None:break
+                    if not page['records']or cursor!=page['records'][-1]['lower_prime']:raise ValueError('CPU complete record cursor failed to advance')
+                    after=cursor
+            elif count>100:
                 # No missing records are invented from a truncated top100.
                 # Keep this result until the caller explicitly repartitions.
                 raise BufferError('CPU quantum needs smaller subdivisions; complete result retained')
-            if len(evidence['best'])!=count:raise ValueError('CPU quantum lacks its complete primary records')
-            additions=[(int(x['lower_prime']),int(x['upper_prime']))for x in evidence['best']]
+            else:records=evidence['best']
+            if len(records)!=count:raise ValueError('CPU quantum lacks its complete primary records')
+            additions=[(int(x['lower_prime']),int(x['upper_prime']))for x in records]
+            bins=[0]*100;length=int(request['end'])-int(request['start'])
+            for lo,hi in additions:bins[(lo-int(request['start']))*100//length]+=1
+            if bins!=list(map(int,evidence['counts100'])):raise ValueError('CPU complete records do not conserve their exact partition counts')
             pairs=[(int(x),int(y))for x,y in state['pairs']]+additions
             checked_pairs(pairs,state['configuration'])
             state['pairs']=[[str(x),str(y)]for x,y in sorted(pairs)];state['cursor']=request['end']

@@ -498,3 +498,26 @@ target_link_libraries(pgn-native-project-identity-test PRIVATE core_interface ri
 if(BUILD_TESTS)
   add_test(NAME native-project-identity COMMAND pgn-native-project-identity-test)
 endif()
+
+# Isolated qualification fixtures only; production policy remains inactive.
+add_executable(pgn-native-audit-availability-test EXCLUDE_FROM_ALL pgn/native_audit_availability_test.cpp)
+target_link_libraries(pgn-native-audit-availability-test PRIVATE core_interface riecoin_node univalue)
+add_executable(pgn-native-audit-self-history-test EXCLUDE_FROM_ALL pgn/native_audit_self_history_test.cpp)
+target_link_libraries(pgn-native-audit-self-history-test PRIVATE core_interface riecoin_node univalue)
+
+add_executable(pgn-native-audit-retained-history-test EXCLUDE_FROM_ALL pgn/native_audit_retained_history_test.cpp)
+target_link_libraries(pgn-native-audit-retained-history-test PRIVATE core_interface riecoin_node univalue)
+
+add_executable(pgn-native-audit-config-test EXCLUDE_FROM_ALL pgn/native_audit_config_test.cpp)
+target_link_libraries(pgn-native-audit-config-test PRIVATE core_interface riecoin_node univalue)
+
+# Portable Core must resolve its bundled non-system libraries after relocation.
+# RPATH (rather than RUNPATH) also covers the bundled libraries' children.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  foreach(portable_core IN ITEMS riecoind riecoin-cli)
+    if(TARGET ${portable_core})
+      set_target_properties(${portable_core} PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE INSTALL_RPATH "$ORIGIN")
+      target_link_options(${portable_core} PRIVATE "LINKER:--disable-new-dtags")
+    endif()
+  endforeach()
+endif()

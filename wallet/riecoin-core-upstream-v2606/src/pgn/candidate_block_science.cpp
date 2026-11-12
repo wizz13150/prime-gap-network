@@ -116,7 +116,7 @@ NativeBlockScienceCheck VerifyNativeCandidateBlockScience(const CCoinsView& view
     const auto audits=ReadNativeAuditLedger(view,parent,history,budget.policy,budget.schedule,budget.signature);
     if(!audits)return {NativeBlockScienceVerdict::NativeHistoryHeld,{},{}};
     const auto audited=audits->find(proof->request);
-    if(audited==audits->end()||!audited->second.Audited()||!NativeAuditOperatorsIndependent(*audits,audited->second)||audited->second.details_root!=std::optional{proof->report_root})
+    if(audited==audits->end()||!NativeAuditReportQualified(*audits,audited->second)||audited->second.details_root!=std::optional{proof->report_root})
         return {NativeBlockScienceVerdict::ScienceRejected,{},{}};
     auto checked=VerifyNativeProfiledScience(view,parent,*ranges.policy,*policy.policy,*reserved.reservation,
         proof->report_root,proof->signature,proof->evidence,budget.signature);

@@ -129,8 +129,16 @@ class AssignedAuditRecovery:
                     slot, attempt = job.get('slot'), job.get('attempt')
                     if (type(slot) is not int or slot not in (0, 1) or type(attempt) is not int
                             or not 0 <= attempt < 2**32 or not digest(report.get('ticket'))
-                            or not digest(report.get('report_root')) or report.get('miner_script') == actor):
-                        raise ValueError('Invalid own independent audit assignment')
+                            or not digest(report.get('report_root'))):
+                        raise ValueError('Invalid authenticated audit assignment')
+                    # Core derives this permission from the accepted assignment
+                    # and its network/activation height. Never infer permission
+                    # from local miner count, a GUI label or an alias address.
+                    accepted = job.get('actor_policy_accepted')
+                    if (accepted is not None and type(accepted) is not bool
+                            or accepted is False
+                            or report.get('miner_script') == actor and accepted is not True):
+                        raise ValueError('Assigned actor lacks authenticated audit policy permission')
                     if (request, slot, attempt) in reserved:
                         continue
                     ranges = job.get('ranges')

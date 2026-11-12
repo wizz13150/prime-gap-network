@@ -46,7 +46,7 @@ inline UniValue NativeNetworkMetrics(const NativeAuditLedger& ledger,const CBloc
     }
     std::vector<Integer> reported_delta(timestamps.size()+1),audited_delta(timestamps.size()+1);
     Integer reported_total{},audited_total{},audit_compute_positions{};
-    uint64_t waiting{},assigned{},committed{},passed{},failed{},fully_audited{},not_seeded{};
+    uint64_t waiting{},assigned{},committed{},passed{},failed{},fully_audited{},not_seeded{},distinct_operator_reports{},self_rechecked_reports{};
     int64_t oldest_pending=now;
     std::set<uint256> recent_operators,enabled_operators;
     CoverageSpans reported_ranges,audited_ranges;
@@ -55,7 +55,8 @@ inline UniValue NativeNetworkMetrics(const NativeAuditLedger& ledger,const CBloc
         const auto* confirmation=tip.GetAncestor(report.report.height);
         if(!confirmation||confirmation->GetBlockHash()!=report.report.block||report.range.length<=0)
             throw std::runtime_error("Metrics report provenance invalid");
-        const bool audited=report.Audited()&&NativeAuditOperatorsIndependent(ledger,report);
+        const bool audited=NativeAuditReportQualified(ledger,report);
+        if(audited){if(NativeAuditOperatorsIndependent(ledger,report))++distinct_operator_reports;else ++self_rechecked_reports;}
         if(range_domain){
             const Integer end=report.range.start+report.range.length;
             reported_ranges.emplace_back(report.range.start,end);
@@ -94,10 +95,19 @@ inline UniValue NativeNetworkMetrics(const NativeAuditLedger& ledger,const CBloc
     result.pushKV("schema","PGN_NETWORK_METRICS_V1");
     result.pushKV("genesis",genesis->GetBlockHash().GetHex());result.pushKV("bestblockhash",tip.GetBlockHash().GetHex());
     result.pushKV("height",tip.nHeight);result.pushKV("median_time_past",now);
+    UniValue operator_policy{UniValue::VOBJ};operator_policy.pushKV("schema","PGN_AUDIT_OPERATOR_POLICY_V1");
+    operator_policy.pushKV("genesis",genesis->GetBlockHash().GetHex());
+    const bool self_rechecks=NativeAuditRecheckAt(ledger,tip.nHeight);
+    operator_policy.pushKV("self_rechecks_permitted",self_rechecks);
+    operator_policy.pushKV("required_distinct_other_operators",self_rechecks?0:2);
+    if(ledger.audit_operator_rules)operator_policy.pushKV("activation_height",ledger.audit_operator_rules->activation_height);
+    else operator_policy.pushKV("activation_height",UniValue{});
+    result.pushKV("audit_operator_policy",operator_policy);
     result.pushKV("rate_scope","reported_search_positions_per_chain_second_excludes_audits");
     result.pushKV("audit_validation_scope","historical_reports_qualified_at_snapshot_tip");
     result.pushKV("window_seconds",window_seconds);result.pushKV("span_seconds",span_seconds);
     result.pushKV("report_count",uint64_t(ledger.size()));result.pushKV("audited_report_count",fully_audited);
+    result.pushKV("distinct_operator_audited_reports",distinct_operator_reports);result.pushKV("self_rechecked_reports",self_rechecked_reports);
     result.pushKV("reported_positions",reported_total.convert_to<std::string>());
     result.pushKV("audited_positions",audited_total.convert_to<std::string>());
     result.pushKV("reporting_operators_in_window",uint64_t(recent_operators.size()));

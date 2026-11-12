@@ -80,7 +80,7 @@ class ContractTests(unittest.TestCase):
         obj=object.__new__(service.Service)
         with self.assertRaisesRegex(ValueError,'Exact command'):obj.command(dict(id=1,action='open',request={}))
     def test_out_of_order_native_pieces_do_not_credit_unowned_frontier(self):
-        obj=object.__new__(service.Service);obj.simd=False;obj.completed={};obj.committed=0;obj.counts=[0]*100;obj.best=[];obj.tests=0
+        obj=object.__new__(service.Service);obj.simd=False;obj.completed={};obj.committed=0;obj.counts=[0]*100;obj.best=[];obj.tests=0;obj.resource_tests=0;obj.resource_gaps=0
         obj.compute_seconds=0.;obj.completed_piece_count=0;obj.total=10000;obj.max_buffered=0;obj.persist=lambda:None;obj.remember_pages=lambda w,p:None
         first=SimpleNamespace(cpu=2,task=(0,LO,LO+100,0,1,900),positions=0,native_seconds=0.)
         second=SimpleNamespace(cpu=3,task=(100,LO+100,LO+200,1,2,900),positions=0,native_seconds=0.)
