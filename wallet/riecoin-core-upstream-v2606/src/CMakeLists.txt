@@ -218,6 +218,7 @@ add_library(riecoin_node STATIC EXCLUDE_FROM_ALL
   mapport.cpp
   net.cpp
   net_processing.cpp
+  pgn/social.cpp
   netgroup.cpp
   node/abort.cpp
   node/blockmanager_args.cpp
@@ -267,6 +268,7 @@ add_library(riecoin_node STATIC EXCLUDE_FROM_ALL
   rpc/mempool.cpp
   rpc/mining.cpp
   rpc/pgn_native.cpp
+  rpc/social.cpp
   rpc/net.cpp
   rpc/node.cpp
   rpc/output_script.cpp
@@ -521,3 +523,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
   endforeach()
 endif()
+
+add_executable(pgn-native-leaderboard-test EXCLUDE_FROM_ALL pgn/native_leaderboard_test.cpp)
+target_link_libraries(pgn-native-leaderboard-test PRIVATE core_interface riecoin_node univalue)

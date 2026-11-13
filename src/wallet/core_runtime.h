@@ -16,6 +16,7 @@
 #include <QLockFile>
 #include <memory>
 #include <functional>
+namespace pgn::social {class RpcQueue;}
 namespace pgn::wallet {
 // No mining headers, candidate subscriptions, per-gap hash or wallet calls.
 // Only this owned child may be stopped; the GPU process is never an input.
@@ -40,6 +41,12 @@ public:
  QString walletBinding()const{return QString::number(pid_)+":"+processBirth_+":"+QString::number(identityGeneration_)+":"+walletManager_->displayWallet()+":"+QString::number(walletManager_->displayGeneration());}
  void auditRequest(const QString&,const QJsonArray&,std::function<void(QJsonValue,QString)>);
  void signAuditChallenge(const QString& address,const QString& challenge,std::function<void(QJsonValue,QString)>);
+ // Social has its own closed schemas and lifecycle/identity checks. Never
+ // widen the audit signer or general wallet RPC allowlists for this purpose.
+ void signSocialEnvelope(const QString& address,const QString& genesis,const QString& signingScript,const QByteArray& canonicalMessage,std::function<void(QJsonValue,QString)>);
+ void readSocialIdentity(std::function<void(QJsonObject,QString)>);
+ void verifySocialEnvelope(const QString& genesis,const QString& signingScript,const QByteArray& canonicalMessage,const QString& signature,std::function<void(bool,QString)>);
+ void socialRequest(const QString&,const QJsonArray&,std::function<void(QJsonValue,QString)>);
  void readLocalConnection(std::function<void(QJsonObject,QString)>);
  void readNetworkSnapshot(std::function<void(QJsonObject,QString)>);
  void readPeerSnapshot(std::function<void(QJsonArray,QString)>);
@@ -131,6 +138,7 @@ private:
  bool managedUpgradePending_{},restartAfterManagedUpgrade_{};
  bool walletChecking_{},walletReady_{};
  // UI/application network context is immutable; profiles cannot select it.
+ social::RpcQueue* socialRpcQueue_{};
  const QString expectedChain_;
 };
 }

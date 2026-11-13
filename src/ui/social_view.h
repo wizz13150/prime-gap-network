@@ -19,7 +19,7 @@ public:
     void refresh();void selectSection(social::Section section);bool saveDrafts();
 private:
     struct Page{
-        QLabel *counter{},*saved{},*reason{},*empty{},*count{},*composeContext{};
+        QLabel *counter{},*saved{},*reason{},*empty{},*count{},*composeContext{},*windowInfo{};
         QLineEdit *title{},*reference{},*search{};
         QComboBox *filter{},*category{};
         QWidget *titleRow{},*categoryRow{};
@@ -31,6 +31,7 @@ private:
         QVector<social::Entry> entries;QVector<social::Miner> miners;
         QDateTime observedUtc;QString selectedId,nextCursor,state{"offline"},statusText;
         bool loaded{},busy{},replyMode{};quint64 generation{};
+        std::optional<social::LeaderboardPeriod> leaderboardPeriod;
         bool threadBusy{};quint64 threadGeneration{};
         bool canSend{},sending{};QString sendWhy,sendNotice;
     };
@@ -38,7 +39,7 @@ private:
     quint64 sendEpoch_{};
     QMap<QString,social::Drafts> pending_;
     std::array<Page,4> pages_;QTabWidget* tabs_{};QLabel *account_{},*network_{},*status_{};QTimer autosave_;
-    bool dirty_{},loadFailed_{},loadingDraft_{};QString loadError_,replyId_,replyPostId_;
+    bool dirty_{},loadFailed_{},loadingDraft_{},chatPreedit_{};QString loadError_,replyId_,replyPostId_;
     int sortColumn_{1};bool sortDescending_{true};
     QListWidget *channels_{},*members_{},*forumCategories_{};QWidget* membersPane_{};QLabel *channelTitle_{},*channelDescription_{},*memberCount_{};
     QTextBrowser* chatPreview_{};QStackedWidget* chatEditor_{};QPushButton* previewChat_{};

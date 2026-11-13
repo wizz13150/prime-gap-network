@@ -79,7 +79,7 @@ void CpuControllerClient::close(){closing_=true;reconnect_.stop();if(process_.st
 
 namespace pgn::mining {
 qint64 CpuControllerClient::ownedCommand(QString action,QJsonObject fields){
-    const QSet<QString> allowed{"status","execute","evidence","configure","pause","ack_result","discard"};
+    const QSet<QString> allowed{"status","execute","evidence","records","configure","pause","ack_result","discard"};
     if(!allowed.contains(action)){fail("Only normal-cycle owned executor commands may cross the miner bridge");return -1;}
     if(action=="configure"||action=="pause")fields.insert("generation",++generation_);
     return send(std::move(action),std::move(fields));

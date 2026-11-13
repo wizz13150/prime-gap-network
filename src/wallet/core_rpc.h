@@ -7,12 +7,13 @@
 #include <QString>
 #include <QRegularExpression>
 #include <cmath>
+#include <optional>
 namespace pgn::wallet {
 struct CoreEpoch {
  qint64 pid{};QString birth;quint64 generation{};
  bool matches(const CoreEpoch& other)const{return pid>0&&!birth.isEmpty()&&pid==other.pid&&birth==other.birth&&generation==other.generation;}
 };
-struct CoreRpcResult {QJsonValue value;QString error;bool applicationError{};};
+struct CoreRpcResult {QJsonValue value;QString error;bool applicationError{};std::optional<int> applicationCode;};
 inline qsizetype coreRpcResponseLimit(const QString& method){
  // These native payloads have a512KiB server budget. The JSON-RPC envelope
  // adds its own result/id/error fields outside that payload.
@@ -36,7 +37,7 @@ inline CoreRpcResult decodeCoreRpcResponse(const QByteArray& bytes,const QString
   if(!code.isDouble()||!std::isfinite(code.toDouble())||code.toDouble()!=code.toInt()||!failure.value("message").isString()||
      object.contains("result")&&!object.value("result").isNull())return {{},"Core RPC error envelope invalid"};
   auto message=failure.value("message").toString().left(1000);message.replace(QRegularExpression("prv[0-9a-fA-F]{64}"),"[private key]");
-  return {{},QString("Core RPC error (%1): %2").arg(code.toInt()).arg(message),true};
+  return {{},QString("Core RPC error (%1): %2").arg(code.toInt()).arg(message),true,code.toInt()};
  }
  if(!object.contains("result")||(!v2&&!object.contains("error")))return {{},"Core RPC response identity/result/error mismatch"};
  const auto exact=annotateExactRpcMoney(bytes,expectedId,method,object.value("result"));return {exact.value,exact.error};

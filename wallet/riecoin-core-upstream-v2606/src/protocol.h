@@ -68,6 +68,10 @@ inline constexpr const char* VERSION{"version"};
  * informing the connecting node that it can begin to send other messages.
  */
 inline constexpr const char* VERACK{"verack"};
+/** Optional off-chain application name. Keep the fixed Core13 message inventory
+ * ABI unchanged: this extension uses the existing unknown-command transport.
+ * Its own diagnostics are available through getsocialpeers. */
+inline constexpr const char* PGNSOCIAL{"pgnsocial"};
 /**
  * The addr (IP address) message relays connection information for peers on the
  * network.

@@ -6,6 +6,9 @@
 #include "wallet/explorer_projection.h"
 #include <algorithm>
 #include "wallet/core_runtime.h"
+#include "social/social_signing_contract.h"
+#include "social/social_rpc_queue.h"
+#include "social/social_leaderboard.h"
 #include "wallet/core_rpc_stream.h"
 #include "wallet/setup_deployment.h"
 #include "wallet/participant_snapshot.h"
@@ -597,6 +600,128 @@ void CoreRuntime::signAuditChallenge(const QString& address,const QString& chall
   if(!owner.matches(epoch())||!connected_||!processAlive()){consume({},"Wallet audit epoch changed; signature discarded");return;}
   consume(value,error);
  },true);
+}
+void CoreRuntime::readSocialIdentity(std::function<void(QJsonObject,QString)> consume){
+ const auto owner=epoch();const auto lifecycle=recovery_.generation();const auto binding=walletBinding();const auto genesis=profile_.genesisHash;
+ const auto current=[this,owner,lifecycle,binding,genesis]{return owner.matches(epoch())&&lifecycle==recovery_.generation()&&binding==walletBinding()&&genesis==profile_.genesisHash&&connected_&&walletReady_&&!profile_.walletName.isEmpty()&&!stopping_&&!managedUpgradePending_&&recovery_.state()!=CoreRecoveryPolicy::State::Suppressed&&processAlive();};
+ if(!current()){consume({},"Verified initialized wallet required for Social identity");return;}
+ if(!socialRpcQueue_)socialRpcQueue_=new social::RpcQueue(this);
+ const auto queued=socialRpcQueue_->enqueue("identity",[this,current,binding,genesis,consume](social::RpcQueue::Done done){
+  const auto finished=std::make_shared<bool>(false);
+  const auto finish=[consume,done,finished](QJsonObject value,QString error){if(*finished)return;*finished=true;consume(value,error);done();};
+  if(!current()){finish({},"Social wallet context changed");return;}
+  const auto inspect=[this,current,binding,genesis,finish](const QString& address){
+   if(!current()||address.isEmpty()||address.size()>100){finish({},"Social identity address unavailable");return;}
+   rpc("getaddressinfo",{address},[current,binding,genesis,address,finish](QJsonValue value,QString error){
+    if(!current()){finish({},"Social wallet context changed");return;}
+    const auto info=value.toObject();const auto script=info.value("scriptPubKey").toString();
+    if(!error.isEmpty()||!info.value("ismine").toBool()||!QRegularExpression("^0014[0-9a-f]{40}$").match(script).hasMatch()){finish({},"Social identity is not owned by this verified wallet");return;}
+    finish({{"genesis",genesis},{"address",address},{"script",script},{"binding",binding}},{});
+   },true);
+  };
+  // A dedicated service-wallet label makes Social independent of the miner,
+  // remote workers and their private keys. Lost creation replies are recovered
+  // from the wallet label before another address can be created.
+  rpcWire("getaddressesbylabel",QJsonDocument(QJsonArray{"Horizon Social"}).toJson(QJsonDocument::Compact),[this,current,inspect,finish](CoreRpcResult result,QByteArray){
+   if(!current()){finish({},"Social wallet context changed");return;}
+   if(!result.error.isEmpty()){
+    if(!result.applicationError||result.applicationCode!=-11){finish({},result.error);return;}
+    rpc("getnewaddress",{"Horizon Social","bech32"},[current,inspect,finish](QJsonValue value,QString error){if(!current()){finish({},"Social wallet changed during identity creation; retry reads the retained address");return;}if(!error.isEmpty()||!value.isString()){finish({},"Social identity creation could not be confirmed; retry preserves the wallet");return;}inspect(value.toString());},true);
+    return;
+   }
+   if(!result.value.isObject()||result.value.toObject().isEmpty()){finish({},"Social wallet label has no usable address");return;}
+   const auto addresses=result.value.toObject();inspect(addresses.constBegin().key());
+  },true,3000,{});
+ });
+ if(!queued)consume({},"Social identity queue is busy");
+}
+void CoreRuntime::signSocialEnvelope(const QString& address,const QString& genesis,const QString& signingScript,const QByteArray& canonicalMessage,std::function<void(QJsonValue,QString)> consume){
+ const social::SigningContext context{genesis,signingScript,address};
+ const auto invalid=social::signingRequestError(context,canonicalMessage);
+ const auto usable=[this]{return connected_&&walletReady_&&!stopping_&&!managedUpgradePending_&&recovery_.state()!=CoreRecoveryPolicy::State::Suppressed&&processAlive();};
+ if(!invalid.isEmpty()||genesis!=profile_.genesisHash||!usable()){consume({},invalid.isEmpty()?QString("Verified native Social wallet context required"):invalid);return;}
+ const auto owner=epoch();const auto lifecycle=recovery_.generation();const auto binding=walletBinding();
+ const auto current=[this,owner,lifecycle,binding,genesis]{return owner.matches(epoch())&&lifecycle==recovery_.generation()&&binding==walletBinding()&&genesis==profile_.genesisHash&&connected_&&walletReady_&&!stopping_&&!managedUpgradePending_&&recovery_.state()!=CoreRecoveryPolicy::State::Suppressed&&processAlive();};
+ if(!socialRpcQueue_)socialRpcQueue_=new social::RpcQueue(this);
+ const auto queued=socialRpcQueue_->enqueue(signingScript,[this,address,signingScript,canonicalMessage,context,current,consume](social::RpcQueue::Done done){
+  const auto completed=std::make_shared<bool>(false);
+  const auto finish=[consume,done,completed](QJsonValue value,QString reason){if(*completed)return;*completed=true;consume(value,reason);done();};
+  if(!current()||!social::signingRequestError(context,canonicalMessage).isEmpty()){finish({},"Social context changed while queued");return;}
+  rpc("getaddressinfo",{address},[this,address,signingScript,canonicalMessage,context,current,finish](QJsonValue value,QString error){
+   if(!current()){finish({},"Social wallet epoch or lifecycle changed; signature refused");return;}
+   const auto identity=value.toObject();
+   if(!error.isEmpty()||!identity.value("ismine").toBool()||identity.value("scriptPubKey").toString()!=signingScript){finish({},"Social signing address is not owned by the verified service wallet");return;}
+   rpc("signmessage",{address,QString::fromUtf8(canonicalMessage)},[context,canonicalMessage,current,finish](QJsonValue signature,QString failure){
+    if(!current()){finish({},"Social wallet epoch or lifecycle changed; signature discarded");return;}
+    if(!social::signingRequestError(context,canonicalMessage).isEmpty()){finish({},"Social signing context expired before completion");return;}
+    if(!failure.isEmpty()||!signature.isString()||signature.toString().isEmpty()||signature.toString().size()>512){finish({},"Native Social BIP322 signature unavailable");return;}
+    finish(signature,{});
+   },true);
+  },true);
+ });
+ if(!queued)consume({},"Social RPC queue full; mining/wallet RPCs are not throttled");
+}
+void CoreRuntime::verifySocialEnvelope(const QString& genesis,const QString& signingScript,const QByteArray& canonicalMessage,const QString& signature,std::function<void(bool,QString)> consume){
+ // Bound before JSON parsing, descriptor derivation or native signature work.
+ if(canonicalMessage.size()>24576||canonicalMessage.size()<64||signature.size()>512||signature.isEmpty()){consume(false,"Bounded Social proof required");return;}
+ const int separator=canonicalMessage.indexOf('\n');
+ const auto object=QJsonDocument::fromJson(canonicalMessage.mid(separator+1)).object();
+ const auto claimedAddress=object.value("signing_address").toString();
+ const social::SigningContext context{genesis,signingScript,claimedAddress};
+ const auto invalid=social::signingRequestError(context,canonicalMessage,QDateTime::currentMSecsSinceEpoch(),social::EnvelopeUse::StoredVerification);
+ const auto raw=QByteArray::fromBase64(signature.toLatin1(),QByteArray::AbortOnBase64DecodingErrors);
+ if(!invalid.isEmpty()||raw.toBase64()!=signature.toLatin1()||raw.size()<100||raw.size()>140||raw.at(0)!=2){consume(false,invalid.isEmpty()?QString("Native simple P2WPKH proof required"):invalid);return;}
+ const auto usable=[this]{return connected_&&!stopping_&&!managedUpgradePending_&&recovery_.state()!=CoreRecoveryPolicy::State::Suppressed&&processAlive();};
+ if(genesis!=profile_.genesisHash||!usable()){consume(false,"Verified native Social network context required");return;}
+ const auto owner=epoch();const auto lifecycle=recovery_.generation();const auto binding=walletBinding();
+ const auto current=[this,owner,lifecycle,binding,genesis]{return owner.matches(epoch())&&lifecycle==recovery_.generation()&&binding==walletBinding()&&genesis==profile_.genesisHash&&connected_&&!stopping_&&!managedUpgradePending_&&recovery_.state()!=CoreRecoveryPolicy::State::Suppressed&&processAlive();};
+ if(!socialRpcQueue_)socialRpcQueue_=new social::RpcQueue(this);
+ const auto queued=socialRpcQueue_->enqueue(signingScript,[this,context,canonicalMessage,signature,current,consume](social::RpcQueue::Done done){
+  const auto completed=std::make_shared<bool>(false);
+  const auto finish=[consume,done,completed](bool valid,QString reason){if(*completed)return;*completed=true;consume(valid,reason);done();};
+  const auto canonicalStillValid=[context,canonicalMessage]{return social::signingRequestError(context,canonicalMessage,QDateTime::currentMSecsSinceEpoch(),social::EnvelopeUse::StoredVerification).isEmpty();};
+  if(!current()||!canonicalStillValid()){finish(false,"Social verification context changed while queued");return;}
+  // Derive the chain's native address from the public script, never a username
+  // or a caller-selected network prefix. These are public read-only RPCs.
+  rpc("getdescriptorinfo",{"raw("+context.script+")"},[this,context,canonicalMessage,signature,current,canonicalStillValid,finish](QJsonValue value,QString error){
+   if(!current()){finish(false,"Social verification epoch changed");return;}
+   const auto descriptor=value.toObject().value("descriptor").toString();
+   if(!error.isEmpty()||descriptor.isEmpty()||descriptor.size()>512){finish(false,"Native public script descriptor unavailable");return;}
+   rpc("deriveaddresses",{descriptor},[this,context,canonicalMessage,signature,current,canonicalStillValid,finish](QJsonValue result,QString reason){
+    if(!current()){finish(false,"Social verification epoch changed");return;}
+    const auto addresses=result.toArray();
+    if(!reason.isEmpty()||addresses.size()!=1||!addresses[0].isString()||addresses[0].toString()!=context.address){finish(false,"Social address prefix or signing script mismatch");return;}
+    rpc("verifymessage",{context.address,signature,QString::fromUtf8(canonicalMessage)},[current,canonicalStillValid,finish](QJsonValue verified,QString failure){
+     if(!current()||!canonicalStillValid()){finish(false,"Social proof context changed before completion");return;}
+     if(!failure.isEmpty()||!verified.isBool()||!verified.toBool()){finish(false,"Native Social BIP322 proof refused");return;}
+     finish(true,{});
+    });
+   });
+  });
+ });
+ if(!queued)consume(false,"Social RPC queue full; mining/wallet RPCs are not throttled");
+}
+
+void CoreRuntime::socialRequest(const QString& method,const QJsonArray& params,std::function<void(QJsonValue,QString)> consume){
+ bool valid=false;
+ if(method=="submitsocialevent")valid=params.size()==2&&params[0].isString()&&params[1].isString()&&params[0].toString().toUtf8().size()<=24576&&params[0].toString().size()>=64&&params[1].toString().size()<=512&&!params[1].toString().isEmpty();
+ else if(method=="getsocialevents"&&params.size()==3){const auto generation=params[0].toString();const auto cursor=params[1].toInteger(-1),limit=params[2].toInteger(-1);valid=params[0].isString()&&(generation.isEmpty()||social::hexField(generation,64))&&params[1].isDouble()&&cursor>=0&&params[1].toDouble()==double(cursor)&&params[2].isDouble()&&limit>=1&&limit<=50&&params[2].toDouble()==double(limit);}
+ else if(method=="getsocialpeers")valid=params.isEmpty();
+ else if(method=="getpgnleaderboard")valid=social::validLeaderboardRpcArguments(params);
+ if(!valid||!connected_||stopping_||managedUpgradePending_||recovery_.state()==CoreRecoveryPolicy::State::Suppressed||!processAlive()){consume({},"Verified Social connection and bounded request required");return;}
+ const auto owner=epoch();const auto lifecycle=recovery_.generation();const auto binding=walletBinding();const auto genesis=profile_.genesisHash;
+ const auto current=[this,owner,lifecycle,binding,genesis]{return owner.matches(epoch())&&lifecycle==recovery_.generation()&&binding==walletBinding()&&genesis==profile_.genesisHash&&connected_&&!stopping_&&!managedUpgradePending_&&recovery_.state()!=CoreRecoveryPolicy::State::Suppressed&&processAlive();};
+ if(!socialRpcQueue_)socialRpcQueue_=new social::RpcQueue(this);
+ const auto queued=socialRpcQueue_->enqueue("rpc/"+method,[this,method,params,current,genesis,consume](social::RpcQueue::Done done){
+  if(!current()){consume({},"Social connection changed while queued");done();return;}
+  rpc(method,params,[current,genesis,consume,done](QJsonValue value,QString error){
+   if(!current())consume({},"Social connection changed; response discarded");
+   else if(!error.isEmpty())consume({},error);
+   else if(!value.isObject()||value.toObject().value("genesis").toString()!=genesis)consume({},"Social response belongs to another network");
+   else consume(value,{});done();
+  });
+ });
+ if(!queued)consume({},"Social is busy; mining and wallet operations remain available");
 }
 void CoreRuntime::readLocalConnection(std::function<void(QJsonObject,QString)> consume){
  if(!connected_||!walletReady_||!processAlive()){consume({},"Verified initialized wallet required before preparing a local worker");return;}

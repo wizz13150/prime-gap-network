@@ -115,6 +115,7 @@ class MiningFlow:
         self.cycles = WorkCycleJournal(worker.root / "work-cycles", worker.args.genesis)
         from horizon_cycle_execution import CycleExecution
         self.physical_audits = CycleExecution(worker.root / "work-cycles", worker.args.genesis)
+        self.reconcile_physical_extra_bindings()
         self.changed = threading.Event()
         self.prior_active = read(worker.root / "gpu-active.json") if (worker.root / "gpu-active.json").exists() else {}
         current = read(worker.root / "controller.json") if (worker.root / "controller.json").exists() else {}
@@ -214,7 +215,8 @@ class MiningFlow:
             if physical is not None and index in (0, 1):
                 audit = self.audit_lanes[index].current_audit
                 if audit is not None and (audit.get('request_id'), audit.get('slot'), audit.get('attempt')) == (job.context.get('audit_request_id'), job.context.get('audit_slot'), job.context.get('audit_attempt')):
-                    target = audit.get('physical_cycle') or physical.pending(index, self.cycles.value['cycles'])
+                    target = (audit.get('physical_cycle') or physical.bound_audit(audit, index)
+                              or physical.pending(index, self.cycles.value['cycles']))
                     counted_extra = self.cycles.extra_audit_cycle(job.context.get('presentation', {}).get('audit_id'))
                     if target and not counted_extra:
                         physical.bind(target, index, audit)
@@ -239,6 +241,24 @@ class MiningFlow:
     def physical_ready(self, cycle):
         journal = getattr(self, 'physical_audits', None)
         return journal is None or journal.ready(cycle)
+
+    def reconcile_physical_extra_bindings(self):
+        # Earlier recovery could forget the saved physical binding, then
+        # reserve that same whole audit as an extra. Preserve its extra work
+        # and release only the contradictory unfinished local placeholder.
+        # The next distinct assignment must fill that regular physical slot.
+        for state in self.cycles.value['cycles']:
+            if state['stage'] != 'prepared':
+                continue
+            cycle = state['work']['request_id']
+            for position, task in enumerate(self.physical_audits.snapshot(cycle) or []):
+                if not task or task['stage'] != 'assigned':
+                    continue
+                audit = dict(request_id=task['request'], slot=task['slot'], attempt=task['attempt'])
+                ident = hashlib.sha256(canonical_bytes(dict(domain='PGN_HORIZON_AUDIT_VIEW_V1',
+                    request=audit['request_id'], slot=audit['slot'], attempt=audit['attempt']))).hexdigest()
+                if self.cycles.extra_audit_cycle(ident):
+                    self.physical_audits.retire(cycle, position, audit)
 
     def pending_audit(self, position):
         journal = getattr(self, 'physical_audits', None)
@@ -269,7 +289,9 @@ class MiningFlow:
 
     def bind_audit_cycle(self, position, audit):
         physical = getattr(self, 'physical_audits', None)
-        cycle = audit.get('physical_cycle') or audit.get('work_cycle')
+        cycle = (audit.get('physical_cycle')
+                 or (physical.bound_audit(audit, position) if physical is not None else None)
+                 or audit.get('work_cycle'))
         if physical is not None:
             if not cycle:
                 ident = hashlib.sha256(canonical_bytes(dict(domain='PGN_HORIZON_AUDIT_VIEW_V1', request=audit['request_id'], slot=audit['slot'], attempt=audit['attempt']))).hexdigest()
@@ -329,6 +351,10 @@ class MiningFlow:
 
     def audit_committed(self, position, audit, block):
         physical = getattr(self, 'physical_audits', None)
+        if physical is not None and not audit.get('physical_cycle'):
+            recovered = physical.bound_audit(audit, position)
+            if recovered:
+                audit['physical_cycle'] = recovered
         if physical is not None and not audit.get('physical_cycle'):
             ident = hashlib.sha256(canonical_bytes(dict(domain='PGN_HORIZON_AUDIT_VIEW_V1',request=audit['request_id'],slot=audit['slot'],attempt=audit['attempt']))).hexdigest()
             owner = self.cycles.extra_audit_cycle(ident)

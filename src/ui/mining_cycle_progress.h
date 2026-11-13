@@ -11,13 +11,18 @@ struct CycleProgress {
  bool known{};double fraction{};QString title,phase;QVector<CycleSlice> slices;
  std::optional<double> taskEta,cycleEta;
 };
+inline bool coherentMiningCycleFrame(const QJsonObject& frame){
+ const auto cycle=frame.value("audit_service").toObject().value("cycle").toObject();
+ const auto active=cycle.value("active_audit_id").toString();
+ return frame.value("work_role")!="audit"||active.isEmpty()||active==frame.value("ticket_id").toString();
+}
 // These are observed physical audits, independent of server service credits.
 class MiningCycleHistory {
  QString request_;QJsonArray audits_;QJsonObject search_;
 public:
  void observe(const QJsonObject& frame){
   const auto cycle=frame.value("audit_service").toObject().value("cycle").toObject();const auto request=cycle.value("request_id").toString();
-  if(request.isEmpty())return;
+  if(request.isEmpty()||!coherentMiningCycleFrame(frame))return;
   if(request!=request_){request_=request;audits_={};search_={};}
   const double total=frame.value("positions_total").toString().toDouble(),done=frame.value("positions").toString().toDouble();
   if(frame.value("work_role")=="search"){
@@ -28,7 +33,9 @@ public:
   if(frame.value("work_role")!="audit")return;
   const auto identity=frame.value("ticket_id").toString();
   if(identity.isEmpty()||total<=0||done<0||done>total)return;
-  QJsonObject item{{"identity",identity},{"fraction",done/total},{"remaining",total-done}};
+  const auto stages=cycle.value("audits").toArray();
+  const bool regularCommitted=stages.size()==2&&stages[0].toObject().value("state")=="committed"&&stages[1].toObject().value("state")=="committed";
+  QJsonObject item{{"identity",identity},{"fraction",done/total},{"remaining",total-done},{"catch_up",cycle.value("catch_up").toBool()&&regularCommitted}};
   for(int i=0;i<audits_.size();++i)if(audits_[i].toObject().value("identity")==identity){audits_[i]=item;return;}
   audits_.append(item);
  }
@@ -42,6 +49,22 @@ inline CycleProgress miningCycleProgress(const QJsonObject& frame,QJsonArray obs
  if(cycle.value("schema")!="PGN_MINING_CYCLE_VIEW_V1"||audits.size()!=2||index<0||index>2||total<=0||done<0||done>total)return out;
  const bool auditing=frame.value("work_role")=="audit";const double local=std::clamp(done/total,0.,1.);
  int active=-1;const auto identity=frame.value("ticket_id").toString();
+ const bool regularCommitted=audits[0].toObject().value("state")=="committed"&&audits[1].toObject().value("state")=="committed";
+ QJsonArray catchups;
+ if(cycle.value("extra_audit_ids").isArray()){
+  // The execution journal owns admission. Frame arrival order cannot create
+  // an extra audit or reclassify a regular audit during a queue handoff.
+  for(const auto& id:cycle.value("extra_audit_ids").toArray()){
+   QJsonObject match{{"identity",id.toString()},{"fraction",0.}};
+   for(const auto& item:observed)if(item.toObject().value("identity")==id){match=item.toObject();break;}
+   if(cycle.value("completed_extra_audit_ids").toArray().contains(id)){match.insert("fraction",1.);match.insert("remaining",0.);}
+   match.insert("catch_up",true);catchups.append(match);
+  }
+ }else for(const auto& item:observed)if(item.toObject().value("catch_up").toBool())catchups.append(item);
+ if(regularCommitted&&(!catchups.isEmpty()||(auditing&&cycle.value("catch_up").toBool()))){
+  observed=QJsonArray{QJsonObject{{"fraction",1.},{"remaining",0.}},QJsonObject{{"fraction",1.},{"remaining",0.}}};
+  for(const auto& item:catchups)observed.append(item);
+ }
  if(observed.isEmpty()){
   // On attachment mid-cycle, only confirmed completed work is reconstructible.
   for(int i=0;i<2;++i){const auto a=audits[i].toObject();if(a.value("state")=="committed")observed.append(QJsonObject{{"fraction",1.},{"remaining",0.}});else break;}
