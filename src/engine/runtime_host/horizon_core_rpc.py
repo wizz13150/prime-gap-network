@@ -14,6 +14,12 @@ class CoreRpcError(RuntimeError):
         self.code = code
         super().__init__(str(message)[:500])
 
+class CoreRpcUnavailable(RuntimeError):
+    """An HTTP overload reply; the caller decides whether its operation can retry."""
+    def __init__(self, status):
+        self.status = status
+        super().__init__("Local Core temporarily unavailable (HTTP " + str(status) + ")")
+
 class CoreRpc:
     maximum_idle_connections = 8
     maximum_idle_seconds = 10
@@ -86,6 +92,8 @@ class CoreRpc:
                 raise ValueError("Core reply exceeds worker budget")
             if status in (401, 403):
                 raise RuntimeError("Local Core authentication refused")
+            if status in (429, 503):
+                raise CoreRpcUnavailable(status)
             reply = json.loads(raw)
             if reply.get("id") != "horizon-worker":
                 raise ValueError("Core reply identity mismatch")
