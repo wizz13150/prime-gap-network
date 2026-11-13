@@ -92,5 +92,34 @@ class RunningBaseTests(unittest.TestCase):
  def test_wrong_network_is_rejected(self):
   v=json.loads((self.fresh/'components.json').read_bytes());v['network']='main';install._write(self.fresh/'components.json',v)
   with self.assertRaisesRegex(ValueError,'network or platform'):self.prepare(lambda p:self.fail('must not adopt wrong network'))
+ def missing_previous(self):
+  old=self.store.current();old=dict(old,cohort=str(self.root/'removed-former-code'))
+  install._write(self.store.root/'current.json',old)
+  self.store=install.CohortStore(self.store.root,self.context,self.context_sha,running_base=self.fresh)
+  return old
+ def test_missing_former_code_cannot_be_used_by_the_legacy_or_recovery_path(self):
+  self.missing_previous()
+  with self.assertRaisesRegex(ValueError,'Missing'):install.CohortStore(self.store.root,self.context,self.context_sha)
+ def test_missing_former_code_download_uses_complete_fresh_base_but_cannot_activate(self):
+  before=self.missing_previous();candidate=self.prepare();self.assert_new_core(candidate)
+  self.assertEqual(self.store.current(),before)
+  with self.assertRaisesRegex(ValueError,'requires owned installation'):self.store.activate(candidate,lambda:self.fail('must not drain'),lambda p:True,lambda *a:None)
+ def test_missing_former_code_explicit_owned_install_restores_the_actual_base_on_failure(self):
+  self.missing_previous();seen=[];candidate=self.prepare(lambda p:seen.append(p));self.assertEqual(seen,[self.fresh]);self.assert_new_core(candidate)
+  restores=[];self.assertFalse(self.store.activate(candidate,lambda:True,lambda p:False,lambda *a:restores.append(a)))
+  self.assertEqual(restores,[(self.fresh,Path(candidate['cohort']))]);self.assertEqual(self.store.current()['cohort'],str(self.fresh))
+ def test_missing_former_code_never_ignores_unresolved_activation(self):
+  before=self.missing_previous();journal=self.store.root/'transaction.json';value=dict(schema='PGN_COHORT_ACTIVATION_V1',state='draining',before=before);install._write(journal,value)
+  with self.assertRaises(install.RecoveryRequired):self.prepare(lambda p:self.fail('must not adopt unresolved operation'))
+  self.assertEqual(json.loads(journal.read_bytes()),value)
+ def test_missing_former_code_never_accepts_an_incorrect_installed_context(self):
+  self.missing_previous();context=deepcopy(self.context);next(c for c in context['installed']if c['id']=='core')['version']='9.9.9'
+  with self.assertRaisesRegex(ValueError,'installed component context'):install.CohortStore(self.store.root,context,'not-used',running_base=self.fresh)
+ def test_existing_corrupt_former_code_is_not_treated_as_missing(self):
+  before=(self.base/PRIMARY['core']).read_bytes()
+  try:
+   (self.base/PRIMARY['core']).write_bytes(b'CORRUPT')
+   with self.assertRaisesRegex(ValueError,'size/path differs|fingerprint'):install.CohortStore(self.store.root,self.context,self.context_sha,running_base=self.fresh)
+  finally:(self.base/PRIMARY['core']).write_bytes(before)
 
 if __name__=='__main__':unittest.main()
