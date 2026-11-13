@@ -1,5 +1,6 @@
 #include "ui/mining_results_view.h"
 #include <QApplication>
+#include <QPushButton>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QSettings>
@@ -86,7 +87,7 @@ int main(int argc,char** argv){
     if(qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))qputenv("QT_QPA_PLATFORM","offscreen");
     QApplication app(argc,argv);QCoreApplication::setOrganizationName("PGN-QA");QCoreApplication::setApplicationName("statistics-colors");QStandardPaths::setTestModeEnabled(true);
     QTemporaryDir temp;if(!temp.isValid())return 2;QSettings::setDefaultFormat(QSettings::IniFormat);QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,temp.path());
-    try{std::unique_ptr<QWidget> view(pgn::ui::createMiningResultsView(temp.path()));view->show();
+    try{std::unique_ptr<QWidget> view(pgn::ui::createMiningResultsView(temp.path()));view->show();auto* ticketScope=view->findChild<QPushButton*>("pgn-summary-ticket");require(ticketScope,"Ticket statistics selector absent");ticketScope->click();
         for(const auto size:{QSize(800,280),QSize(1060,300),QSize(1060,600),QSize(1280,800),QSize(1920,900)}){
             view->resize(size);QApplication::processEvents();
             for(const auto target:{29.0,28.8,32.125}){

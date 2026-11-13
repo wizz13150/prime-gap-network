@@ -178,13 +178,15 @@ inline const char* NativeAuditOperatorAssurance(const NativeAuditLedger& ledger,
 inline std::optional<std::pair<uint256,uint8_t>> SelectNativeAudit(const NativeAuditLedger& ledger,const CScript& actor,int32_t parent_height,int64_t parent_median_time){
  if(!NativeAuditEligible(ledger,actor))return {};
  const bool recheck=NativeAuditRecheckAt(ledger,parent_height);
+ const auto actor_operator=NativeAuditOperator(ledger,actor);
  std::optional<std::pair<uint256,uint8_t>> chosen;std::optional<std::tuple<int,int,int32_t,uint256,uint8_t>> rank;
  for(const auto& [id,report]:ledger){
-  const bool own=NativeAuditOperator(ledger,report.owner)==NativeAuditOperator(ledger,actor);
-  if((own&&!recheck)||report.report.height>=parent_height||report.Audited())continue;
+  if(report.report.height>=parent_height||report.Audited())continue;
+  const bool own=NativeAuditOperator(ledger,report.owner)==actor_operator;
+  if(own&&!recheck)continue;
   for(uint8_t slot=0;slot<2;++slot){const auto& job=report.jobs[slot];
    if(job&&(job->stage!=NativeAuditJob::Assigned||!NativeAuditAssignmentExpired(*job,parent_height,parent_median_time)))continue;
-   const auto& other=report.jobs[1-slot];const bool repeated=other&&NativeAuditOperator(ledger,other->actor)==NativeAuditOperator(ledger,actor);
+   const auto& other=report.jobs[1-slot];const bool repeated=other&&NativeAuditOperator(ledger,other->actor)==actor_operator;
    if(repeated&&!recheck)continue;
    // Close a partially committed report before opening more work, otherwise
    // other-owner preference can strand all credits behind fresh first slots.
@@ -196,6 +198,7 @@ inline std::optional<std::pair<uint256,uint8_t>> SelectNativeAudit(const NativeA
  }
  return chosen;
 }
+
 inline void ApplyNativeAuditEvent(NativeAuditLedger& ledger,const NativeAuditEvent& event,const CBlockIndex& parent,
     const uint256& chain,ScriptWorkBudget budget){
     RequireAudit(ledger.audit_chain.IsNull()||ledger.audit_chain==chain,"Audit ledger chain mismatch");

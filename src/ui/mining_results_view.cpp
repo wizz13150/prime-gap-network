@@ -124,38 +124,52 @@ class MiningResultsView final:public QWidget {
         table->setColumnWidth(0,minimum[0]+extra*16/100);table->setColumnWidth(1,minimum[1]+extra*24/100);table->setColumnWidth(2,minimum[2]+extra-extra*16/100-extra*24/100);
         const int available=table->viewport()->height();for(int i=0;i<fittedRows_;++i){const int rowHeight=available/fittedRows_+(i<available%fittedRows_?1:0);if(table->rowHeight(i)!=rowHeight)table->setRowHeight(i,rowHeight);for(int c=0;c<table->columnCount();++c)if(auto* item=table->item(i,c)){QFont font("Consolas");font.setPixelSize(std::max(11,std::min(13,rowHeight-3)));if(c==2){const int limit=std::max(1,table->columnWidth(c)-12);while(font.pixelSize()>11&&QFontMetrics(font).horizontalAdvance(item->text())>limit)font.setPixelSize(font.pixelSize()-1);}if(item->font()!=font)item->setFont(font);}}
     }
-    void present(const ResultsTurn& turn){
-        latest_=turn.data;
-        if(bestHeader_&&recentHeader_){const int required=std::max(16,legend_->heightForWidth(std::max(1,legend_->width())));if(bestHeader_->height()!=required){bestHeader_->setFixedHeight(required);recentHeader_->setFixedHeight(required);}}
-        if(!latest_.error.isEmpty()){state_->show();state_->setText("Results unavailable · "+latest_.error);state_->setStyleSheet("color:#ffad4a");setProperty("pgn_results_error",latest_.error);return;}
-        state_->hide();fill(best_,latest_.best);fill(recent_,latest_.recent);
+    void presentStatistics(const science::MiningResults& data,const QMap<quint32,qint64>& cumulative,bool mixed,std::optional<double> target,bool direct){
         QHash<QTableWidget*,int> nextRows;
         const auto stat=[&nextRows](QTableWidget* table,const QString& title,qint64 n){
             const int row=nextRows[table]++;if(table->rowCount()<=row)table->setRowCount(row+1);
             const QStringList text{title,QString::number(n)};
             for(int column=0;column<2;++column){auto* item=table->item(row,column);if(!item){item=new QTableWidgetItem;table->setItem(row,column,item);}if(item->text()!=text[column])item->setText(text[column]);item->setForeground(n?QBrush{}:QBrush(QColor("#70918f")));item->setToolTip({});if(column==1)item->setTextAlignment(Qt::AlignRight|Qt::AlignVCenter);}
         };
-        stat(gapStatistics_,"Larger gaps",latest_.points);
-        if(direct_){
-            for(auto it=cumulative_.cbegin();it!=cumulative_.cend();++it){stat(gapStatistics_,QString("≥ %1").arg(it.key()),it.value());bool ok=false;const double end=end_.toDouble(&ok);if(target_&&ok&&end>1){const auto shade=color(double(it.key())/std::log(end));const int row=nextRows.value(gapStatistics_)-1;for(int c=0;c<2;++c)gapStatistics_->item(row,c)->setForeground(shade);gapStatistics_->item(row,0)->setToolTip("Cumulative count: all these gaps meet at least the colored tier across this ticket interval. Higher award tiers are included.");}}
-        }else if(!latest_.gapSizes.isEmpty()){
-            const auto base=minimum_?minimum_:latest_.gapSizes.firstKey();
-            QVector<quint32> thresholds{base};for(quint64 n=(quint64(base)/100+1)*100;n<=std::max(quint32(1500),latest_.gapSizes.lastKey())&&thresholds.size()<16;n+=100)thresholds.append(quint32(n));
-            for(const auto threshold:thresholds){qint64 n=0;for(auto it=latest_.gapSizes.lowerBound(threshold);it!=latest_.gapSizes.cend();++it)n+=it.value();stat(gapStatistics_,QString("≥ %1").arg(threshold),n);}
+        stat(gapStatistics_,"Larger gaps",data.points);
+        if(direct){
+            for(auto it=cumulative.cbegin();it!=cumulative.cend();++it){stat(gapStatistics_,QString("≥ %1").arg(it.key()),it.value());bool ok=false;const double end=end_.toDouble(&ok);if(target&&ok&&end>1){const auto shade=meritColor(double(it.key())/std::log(end),target);const int row=nextRows.value(gapStatistics_)-1;for(int c=0;c<2;++c)gapStatistics_->item(row,c)->setForeground(shade);gapStatistics_->item(row,0)->setToolTip("Cumulative count: all these gaps meet at least the colored tier across the selected scope. Higher award tiers are included.");}}
+        }else if(!data.gapSizes.isEmpty()){
+            const auto base=minimum_?minimum_:data.gapSizes.firstKey();
+            QVector<quint32> thresholds{base};for(quint64 n=(quint64(base)/100+1)*100;n<=std::max(quint32(1500),data.gapSizes.lastKey())&&thresholds.size()<16;n+=100)thresholds.append(quint32(n));
+            for(const auto threshold:thresholds){qint64 n=0;for(auto it=data.gapSizes.lowerBound(threshold);it!=data.gapSizes.cend();++it)n+=it.value();stat(gapStatistics_,QString("≥ %1").arg(threshold),n);}
         }
-        if(!latest_.meritBands.isEmpty()){
-            const int first=latest_.meritBands.firstKey();const int last=target_?int(std::ceil(*target_))-1:latest_.meritBands.lastKey();
+        if(!data.meritBands.isEmpty()){
+            const int first=data.meritBands.firstKey();const int last=target?int(std::ceil(*target))-1:data.meritBands.lastKey();
             for(int band=first;band<=last&&band-first<64;++band){
-                const bool final=target_&&double(band+1)>*target_;
+                const bool final=target&&double(band+1)>*target;
                 const auto label=QString("%1–%2").arg(band==first?QStringLiteral("min"):QString::number(band),final?QStringLiteral("target"):QString::number(band+1));
-                stat(meritStatistics_,mixedTargets_?QString("Below target · %1").arg(label):label,latest_.meritBands.value(band));
-                if(target_){const double tier=band>=*target_-1?*target_-1:band>=*target_-2?*target_-2:band>=*target_-3?*target_-3:-1;
-                    if(tier>=0){const auto row=nextRows.value(meritStatistics_)-1;for(int c=0;c<2;++c)meritStatistics_->item(row,c)->setForeground(color(band));meritStatistics_->item(row,0)->setToolTip("Color indicates the minimum award tier guaranteed by the band lower bound; higher tiers may also occur inside the band.");}}
+                stat(meritStatistics_,mixed?QString("Below target · %1").arg(label):label,data.meritBands.value(band));
+                if(target){const double tier=band>=*target-1?*target-1:band>=*target-2?*target-2:band>=*target-3?*target-3:-1;
+                    if(tier>=0){const auto row=nextRows.value(meritStatistics_)-1;for(int c=0;c<2;++c)meritStatistics_->item(row,c)->setForeground(meritColor(band,target));meritStatistics_->item(row,0)->setToolTip("Color indicates the minimum award tier guaranteed by the band lower bound; higher tiers may also occur inside the band.");}}
             }
         }
-        if(target_||mixedTargets_){stat(meritStatistics_,mixedTargets_?"Reached issued target":"≥ target",latest_.atOrAboveTarget);for(int c=0;c<2;++c)meritStatistics_->item(nextRows.value(meritStatistics_)-1,c)->setForeground(QColor("#ffd700"));meritStatistics_->item(nextRows.value(meritStatistics_)-1,0)->setToolTip(target_?QString("Exact target: merit ≥ %1").arg(*target_,0,'g',17):QString("Each result is compared with its original ticket target"));}
+        if(target||mixed){stat(meritStatistics_,mixed?"Reached issued target":"≥ target",data.atOrAboveTarget);for(int c=0;c<2;++c)meritStatistics_->item(nextRows.value(meritStatistics_)-1,c)->setForeground(QColor("#ffd700"));meritStatistics_->item(nextRows.value(meritStatistics_)-1,0)->setToolTip(target?QString("Exact target: merit ≥ %1").arg(*target,0,'g',17):QString("Each result is compared with its original ticket target"));}
         for(auto* table:{gapStatistics_,meritStatistics_})if(table->rowCount()!=nextRows.value(table))table->setRowCount(nextRows.value(table));
         fitStatistics();
+    }
+    void presentStatisticsScope(){
+        const auto selected=sessionSummary_->selectedScope();setProperty("pgn_statistics_scope",selected);
+        if(!direct_){presentStatistics(latest_,cumulative_,mixedTargets_,target_,false);return;}
+        const auto stats=directPacket_.value("scopes").toObject().value(selected).toObject().value("statistics").toObject();
+        setProperty("pgn_statistics_available",!stats.isEmpty());
+        if(stats.isEmpty()){gapStatistics_->setRowCount(0);meritStatistics_->setRowCount(0);return;}
+        science::MiningResults data;data.points=stats.value("count_total").toVariant().toLongLong();data.atOrAboveTarget=stats.value("at_or_above_target").toVariant().toLongLong();
+        QMap<quint32,qint64> cumulative;const auto thresholds=stats.value("threshold_counts").toObject();for(auto it=thresholds.begin();it!=thresholds.end();++it)cumulative.insert(it.key().toUInt(),it.value().toVariant().toLongLong());
+        const auto bands=stats.value("merit_band_counts").toObject();for(auto it=bands.begin();it!=bands.end();++it)data.meritBands.insert(it.key().toInt(),it.value().toVariant().toLongLong());
+        const auto target=stats.value("statistics_target");presentStatistics(data,cumulative,stats.value("mixed_targets").toBool(),target.isDouble()?std::optional<double>(target.toDouble()):std::nullopt,true);
+    }
+    void present(const ResultsTurn& turn){
+        latest_=turn.data;
+        if(bestHeader_&&recentHeader_){const int required=std::max(16,legend_->heightForWidth(std::max(1,legend_->width())));if(bestHeader_->height()!=required){bestHeader_->setFixedHeight(required);recentHeader_->setFixedHeight(required);}}
+        if(!latest_.error.isEmpty()){state_->show();state_->setText("Results unavailable · "+latest_.error);state_->setStyleSheet("color:#ffad4a");setProperty("pgn_results_error",latest_.error);return;}
+        state_->hide();fill(best_,latest_.best);fill(recent_,latest_.recent);
+        presentStatisticsScope();
         const auto sourceScope=scopeKey()=="history"?QStringLiteral("local archive"):QString("%1 source run(s)").arg(turn.runs.size());
         state_->setStyleSheet("color:#9ec7c1");state_->setText(QString("%1 · %2 retained gaps · %3 · verification separate").arg(scopeLabel()).arg(latest_.points).arg(sourceScope));
         setProperty("pgn_results_error",QString{});setProperty("pgn_results_points",latest_.points);setProperty("pgn_results_runs",turn.runs.size());setProperty("pgn_results_best_rows",latest_.best.size());setProperty("pgn_results_recent_rows",latest_.recent.size());setProperty("pgn_results_scope",scopeKey());
@@ -203,7 +217,7 @@ public:
         panel("BEST · largest gaps",best_);panel("RECENT · latest gaps",recent_);
         auto* statistics=new QGroupBox("STATISTICS · selected scope");statistics->setObjectName("pgn-results-statistics");auto* statLayout=new QHBoxLayout(statistics);statLayout->setContentsMargins(6,12,6,6);statLayout->setSpacing(8);auto* distributions=new QWidget;distributions->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Ignored);distributions->setMinimumHeight(0);auto* column=new QVBoxLayout(distributions);column->setContentsMargins(0,0,0,0);column->setSpacing(4);
         const auto section=[&](const QString& title,QTableWidget* table){auto* header=new QHBoxLayout;auto* name=new QLabel(title);name->setStyleSheet("color:#69d9d0;font-size:10px;font-weight:600;");header->addWidget(name);header->addStretch();auto* count=new QLabel("COUNT");count->setStyleSheet("color:#93bab6;font-size:9px;");header->addWidget(count);column->addLayout(header);table->horizontalHeader()->hide();column->addWidget(table,table==gapStatistics_?8:10);};
-        section("GAP SIZE · cumulative",gapStatistics_);auto* horizontal=new QFrame;horizontal->setFrameShape(QFrame::HLine);horizontal->setStyleSheet("color:#2b5961;");column->addWidget(horizontal);section("MERIT · separate bands",meritStatistics_);statLayout->addWidget(distributions,1);auto* divider=new QFrame;divider->setFrameShape(QFrame::VLine);divider->setStyleSheet("color:#27515b");statLayout->addWidget(divider);sessionSummary_=new MiningSessionSummary;statLayout->addWidget(sessionSummary_,1);statistics->setTitle("STATISTICS · ticket + session");statistics->setMinimumWidth(330);statistics->setMinimumHeight(0);statistics->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Ignored);panels->addWidget(statistics);panels->setSizes({420,420,380});box->addWidget(panels,1);
+        section("GAP SIZE · cumulative",gapStatistics_);auto* horizontal=new QFrame;horizontal->setFrameShape(QFrame::HLine);horizontal->setStyleSheet("color:#2b5961;");column->addWidget(horizontal);section("MERIT · separate bands",meritStatistics_);statLayout->addWidget(distributions,1);auto* divider=new QFrame;divider->setFrameShape(QFrame::VLine);divider->setStyleSheet("color:#27515b");statLayout->addWidget(divider);sessionSummary_=new MiningSessionSummary;statLayout->addWidget(sessionSummary_,1);statistics->setTitle("STATISTICS · "+sessionSummary_->selectedScope());sessionSummary_->onScopeChanged=[this,statistics](const QString& selected){statistics->setTitle("STATISTICS · "+selected);presentStatisticsScope();};statistics->setMinimumWidth(330);statistics->setMinimumHeight(0);statistics->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Ignored);panels->addWidget(statistics);panels->setSizes({420,420,380});box->addWidget(panels,1);
         state_=new QLabel("Awaiting ticket results");state_->setWordWrap(true);box->addWidget(state_);state_->hide();
         connect(&work_,&QFutureWatcher<ResultsTurn>::finished,this,[this]{const auto result=work_.result();setProperty("pgn_results_loading",false);if(!direct_&&result.key==wantedKey_&&!result.data.cancelled)present(result);if(result.key!=wantedKey_||result.data.cancelled){activeKey_.clear();refresh();}});
     }
@@ -216,8 +230,8 @@ public:
     }
     void presentDirect(){
         const auto scope=scopeKey();const auto data=directPacket_.value("scopes").toObject().value(scope).toObject();
-        sessionSummary_->present(directPacket_.value("scopes").toObject().value("session").toObject(),directPacket_.value("scopes").toObject().value("history").toObject(),directPacket_);
-        if(data.isEmpty()){presentedDirect_={};latest_={};fill(best_,{});fill(recent_,{});setProperty("pgn_results_best_rows",0);setProperty("pgn_results_recent_rows",0);gapStatistics_->setRowCount(0);meritStatistics_->setRowCount(0);setProperty("pgn_results_points",QVariant{});state_->setText("Awaiting "+scopeLabel().toLower()+" data");return;}
+        sessionSummary_->present(directPacket_.value("scopes").toObject().value("session").toObject(),directPacket_.value("scopes").toObject().value("history").toObject(),directPacket_);sessionSummary_->presentTicket(data);presentStatisticsScope();
+        if(data.isEmpty()){presentedDirect_={};latest_={};fill(best_,{});fill(recent_,{});setProperty("pgn_results_best_rows",0);setProperty("pgn_results_recent_rows",0);presentStatisticsScope();setProperty("pgn_results_points",QVariant{});state_->setText("Awaiting "+scopeLabel().toLower()+" data");return;}
         // Progress/rates still reach the summary on every input. The result
         // tables only need work when their data, identity or layout changes.
         const QJsonObject presentation{{"ticket",directPacket_.value("ticket_id")},{"scope",scopeKey()},
