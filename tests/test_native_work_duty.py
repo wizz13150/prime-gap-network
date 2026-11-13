@@ -74,6 +74,47 @@ class NativeDutyTests(unittest.TestCase):
         x=copy.deepcopy(base);x['request_id']='b'*64;values.append(x)
         for value in values:
             with self.subTest(value=value),self.assertRaises(ValueError):duty.context(value,work())
+    def test_two_confirmed_slots_of_one_report_survive_cold_cycle_resume(self):
+        w=work();rpc=Rpc(w)
+        rpc.w['native_audit_service']['credits'][1]['request_id']=rpc.w['native_audit_service']['credits'][0]['request_id']
+        value=duty.observe(rpc,w,w['genesis'])
+        self.assertEqual([c['slot']for c in value['credits']],[0,1])
+        with tempfile.TemporaryDirectory()as path:
+            with WorkCycleJournal(path,w['genesis'])as journal:
+                journal.prepare(w,native_service=value)
+                self.assertTrue(journal.may_search(w['request_id']))
+                self.assertEqual(len(journal.snapshot(w['request_id'])['native_service']['credits']),2)
+            with WorkCycleJournal(path,w['genesis'])as reopened:
+                self.assertTrue(reopened.may_search(w['request_id']))
+                self.assertEqual(duty.observe(rpc,w,w['genesis'],value),value)
+    def test_same_slot_attempt_cannot_be_counted_twice_by_changing_commitment(self):
+        w=work();value=receipt(w);value['credits'][1]=dict(value['credits'][0],commitment='8'*64)
+        with self.assertRaises(ValueError):duty.context(value,w)
+    def test_confirmed_native_service_admits_search_with_preserved_old_physical_placeholders(self):
+        from horizon_mining_flow import MiningFlow
+        from horizon_cycle_execution import CycleExecution
+        w=work();rpc=Rpc(w)
+        rpc.w['native_audit_service']['credits'][1]['request_id']=rpc.w['native_audit_service']['credits'][0]['request_id']
+        with tempfile.TemporaryDirectory()as path:
+            for cold in range(2):
+                with WorkCycleJournal(path,w['genesis'])as journal:
+                    physical=CycleExecution(path,w['genesis'])
+                    if not cold:physical.prepare(w['request_id'],{w['request_id']})
+                    before=physical.snapshot(w['request_id'])
+                    flow=MiningFlow.__new__(MiningFlow);flow.cycles=journal;flow.physical_audits=physical
+                    flow.worker=SimpleNamespace(rpc=rpc,args=SimpleNamespace(genesis=w['genesis']),network_lock=threading.RLock())
+                    flow.cycle_audit_positions={};flow.finalizer=None;flow.outbox=SimpleNamespace(capacity_available=lambda:True)
+                    w['native_audit_service']=rpc.w['native_audit_service']
+                    if not cold:
+                        journal.prepare(w,native_service=duty.observe(rpc,w,w['genesis']))
+                        journal.hold(w['request_id'],'Recovering existing assigned audits from the verified chain')
+                    flow.prepare_cycle(w)
+                    job=SimpleNamespace(context=dict(role='search',work_cycle=w['request_id'],prepared=True))
+                    self.assertTrue(flow.may_start_work(job),'Confirmed native service must not create a second local service debt')
+                    self.assertEqual(physical.snapshot(w['request_id']),before,'Never fabricate or erase physical audit history')
+                    rpc.canonical=False
+                    with self.assertRaises(RuntimeError):flow.prepare_cycle(w)
+                    rpc.canonical=True
     def test_only_explicit_missing_rpc_allows_legacy_gate(self):
         class Missing:
             def __init__(self,code):self.code=code

@@ -216,7 +216,7 @@ class MiningFlow:
                 audit = self.audit_lanes[index].current_audit
                 if audit is not None and (audit.get('request_id'), audit.get('slot'), audit.get('attempt')) == (job.context.get('audit_request_id'), job.context.get('audit_slot'), job.context.get('audit_attempt')):
                     target = (audit.get('physical_cycle') or physical.bound_audit(audit, index)
-                              or physical.pending(index, self.cycles.value['cycles']))
+                              or physical.pending(index, self.local_audit_cycles()))
                     counted_extra = self.cycles.extra_audit_cycle(job.context.get('presentation', {}).get('audit_id'))
                     if target and not counted_extra:
                         physical.bind(target, index, audit)
@@ -239,8 +239,18 @@ class MiningFlow:
                                       state["stage"] == "completed" and not job.context.get("prepared"))
 
     def physical_ready(self, cycle):
+        state = self.cycles.snapshot(cycle)
+        if 'native_service' in state:
+            # Core already consumed the exact required service at issuance.
+            # Local presentation/history must not impose a second audit debt.
+            return self.cycles.ready(state)
         journal = getattr(self, 'physical_audits', None)
         return journal is None or journal.ready(cycle)
+
+    def local_audit_cycles(self):
+        # Confirmed native receipts already account for their service. Keep
+        # old physical records, but do not allocate another pair against them.
+        return [state for state in self.cycles.value['cycles'] if 'native_service' not in state]
 
     def reconcile_physical_extra_bindings(self):
         # Earlier recovery could forget the saved physical binding, then
@@ -262,7 +272,7 @@ class MiningFlow:
 
     def pending_audit(self, position):
         journal = getattr(self, 'physical_audits', None)
-        physical = journal.pending(position, self.cycles.value['cycles']) if journal is not None else None
+        physical = journal.pending(position, self.local_audit_cycles()) if journal is not None else None
         return physical or self.cycles.pending(position, retry_permissions=True)
 
     def extra_audit_owner(self, job):
@@ -297,7 +307,7 @@ class MiningFlow:
                 ident = hashlib.sha256(canonical_bytes(dict(domain='PGN_HORIZON_AUDIT_VIEW_V1', request=audit['request_id'], slot=audit['slot'], attempt=audit['attempt']))).hexdigest()
                 if self.cycles.extra_audit_cycle(ident):
                     return  # This whole audit already belongs to a prior extra section.
-                cycle = physical.pending(position, self.cycles.value['cycles'])
+                cycle = physical.pending(position, self.local_audit_cycles())
             if cycle and physical.snapshot(cycle) is not None:
                 physical.bind(cycle, position, audit)
                 audit.update(physical_cycle=cycle)
@@ -492,12 +502,6 @@ class MiningFlow:
             from horizon_cycle_retirement import reconcile_cpu_capacity
             reconcile_cpu_capacity(self, work)
         changed = self.cycles.prepare(work, native_service=native)
-        physical = getattr(self, 'physical_audits', None)
-        state = self.cycles.snapshot(work['request_id'])
-        if physical is not None and native is not None and not getattr(self.worker, 'cpu_only', False) and state['stage'] == 'prepared':
-            hot = {c['work']['request_id'] for c in self.cycles.value['cycles']}
-            physical.prepare(work['request_id'], hot)
-            self.cycle_audit_positions = {key: value for key, value in self.cycle_audit_positions.items() if key[0] in hot}
         return changed
 
     def promote(self, work, sequence):
@@ -771,7 +775,7 @@ class MiningFlow:
         if cycle:
             physical = getattr(self, 'physical_audits', None)
             execution = physical.snapshot(cycle) if physical is not None else None
-            if execution is not None:
+            if execution is not None and 'native_service' not in state:
                 state['audits'] = execution
             totals = getattr(self, 'cycle_audit_positions', {})
             value['cycle'] = dict(schema='PGN_MINING_CYCLE_VIEW_V1', request_id=cycle,

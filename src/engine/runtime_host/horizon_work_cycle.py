@@ -123,7 +123,10 @@ class WorkCycleJournal:
                         raise ValueError('Audit publication needs an observed block')
                 elif task.get('stage') != 'assigned':
                     raise ValueError('Invalid audit service stage')
-                if set(task) != fields or not identity(task['request']) or task['request'] == work['request_id'] or task['request'] in reports:
+                # Confirmed native service is keyed by report/slot/attempt.
+                # Its two slots may belong to one report after recheck activation.
+                # Legacy local assignment still requires distinct reports.
+                if set(task) != fields or not identity(task['request']) or task['request'] == work['request_id'] or (native is None and task['request'] in reports):
                     raise ValueError('A cycle needs audits of distinct foreign reports')
                 if type(task['slot']) is not int or task['slot'] not in (0, 1) or type(task['attempt']) is not int or not 0 <= task['attempt'] < 2**32:
                     raise ValueError('Invalid audit attempt')
@@ -198,6 +201,12 @@ class WorkCycleJournal:
                         cycle['native_service']=copy.deepcopy(native_service)
                         cycle['audits']=copy.deepcopy(native_tasks)
                         if cycle['hold']==self.reorg_hold:cycle['hold']=''
+                        return True
+                    if native_service is not None and cycle['hold']=='Recovering existing assigned audits from the verified chain':
+                        # The caller re-observed the owning Core's immutable
+                        # receipt. This old local physical-service wait cannot
+                        # add another debt to an already authorized request.
+                        cycle['hold']=''
                         return True
                     return False
             while len(cycles) >= self.maximum_cycles:

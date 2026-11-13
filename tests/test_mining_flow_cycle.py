@@ -92,7 +92,7 @@ class MiningFlowCycleTests(unittest.TestCase):
         self.exercise('no_eligible_independent_work', should_search=True, have_audits=True,
                       full_run=True, native=False, lab=True)
 
-    def test_native_consumed_receipts_do_not_replace_two_new_physical_audits(self):
+    def test_native_consumed_receipts_do_not_create_two_more_physical_audits(self):
         self.exercise('no_eligible_independent_work', should_search=True, have_audits=True,
                       full_run=True, native=True, fresh=True)
 
@@ -264,7 +264,7 @@ class MiningFlowCycleTests(unittest.TestCase):
                         service=flow.audit_service_snapshot();self.assertEqual(service['controlled_lab_identities'],not native)
                         if not native:self.assertFalse(service['independent_economic_auditors'])
                     if permission_recovers: self.assertGreater(worker.rpc.denials, 2)
-                    self.assertIn(len(worker.source.calls), tuple(range(11,17)) if fresh else (11 if have_audits else 1,),
+                    self.assertIn(len(worker.source.calls), (1,) if fresh else (11 if have_audits else 1,),
                                      (getattr(worker,'network_notice',None),flow.prefetch.error,worker.messages[-3:]))
                     self.assertEqual(cycle['stage'], 'completed')
                     self.assertEqual([task['stage'] for task in cycle['audits']], ['committed', 'committed'] if have_audits else ['unavailable', 'unavailable'])
@@ -276,13 +276,13 @@ class MiningFlowCycleTests(unittest.TestCase):
                     if have_audits:
                         if native:
                             self.assertEqual(worker.source.roles[-1],('search',None))
-                            self.assertEqual(worker.source.roles[:10].count(('audit',0)),5)
-                            self.assertEqual(worker.source.roles[:10].count(('audit',1)),5)
                             self.assertIn('native_service',cycle)
                             if fresh:
-                                physical=flow.physical_audits.snapshot(work['request_id'])
-                                self.assertEqual([t['stage']for t in physical],['committed','committed'])
-                                self.assertTrue({t['request']for t in physical}.isdisjoint({r['request_id']for r in cycle['native_service']['credits']}))
+                                self.assertEqual(worker.source.roles,[('search',None)])
+                                self.assertIsNone(flow.physical_audits.snapshot(work['request_id']))
+                            else:
+                                self.assertEqual(worker.source.roles[:10].count(('audit',0)),5)
+                                self.assertEqual(worker.source.roles[:10].count(('audit',1)),5)
 
                         else:self.assertEqual(worker.source.roles, [('audit', 0)] * 5 + [('audit', 1)] * 5 + [('search', None)])
                 else:
