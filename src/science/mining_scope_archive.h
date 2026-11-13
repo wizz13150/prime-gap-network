@@ -114,6 +114,8 @@ public:
         }catch(const std::exception& e){error_=QString::fromUtf8(e.what());return false;}
     }
     QJsonObject currentScope()const{return current_;}
+    bool retiredSource(const QString& source)const{return source!=stream_&&retiredStreams_.contains(source);}
+    bool currentSource(const QJsonObject& frame)const{return !current_.isEmpty()&&ticket_==frame.value("ticket_id").toString()&&stream_==frame.value("stream_id").toString();}
     QJsonObject scope()const{try{return merge(base_,current_);}catch(...){return {};}}
     void flush(){
         if(file_.isEmpty()||!dirty_||!error_.isEmpty())return;
