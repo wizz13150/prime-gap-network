@@ -47,12 +47,13 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);QTemporaryDir tem
  {
   ReadRequest ranking{Section::Miners,context.identity};QJsonArray args;assert(leaderboardArguments(ranking,args));
   QJsonObject row{{"operator_id",QString(64,'1')},{"tickets_reported","12"},{"tickets_validated","11"},{"audits_finalized_valid","23"},{"validated_search_positions","9007199254740993"},{"last_activity_height",100}};
-  QJsonObject page{{"schema","PGN_LEADERBOARD_V1"},{"genesis",node.genesis},{"bestblockhash",QString(64,'b')},{"height",101},{"offset",0},{"next_offset",1},{"total",1},{"more",false},{"rows",QJsonArray{row}}};Snapshot decoded;
+  QJsonObject page{{"schema","PGN_LEADERBOARD_V1"},{"sort","validated_search_positions_desc_then_operator_id_asc"},{"genesis",node.genesis},{"bestblockhash",QString(64,'b')},{"height",101},{"offset",0},{"next_offset",1},{"total",1},{"more",false},{"rows",QJsonArray{row}}};Snapshot decoded;
   assert(decodeLeaderboard(ranking,page,decoded).isEmpty()&&validate(decoded,ranking).isEmpty()&&decoded.miners[0].validatedSearchPositions.value=="9007199254740993");
   // Main decodes each RPC response into a fresh Snapshot.
   decoded={};row.insert("display_name","Wizz");page.insert("rows",QJsonArray{row});assert(decodeLeaderboard(ranking,page,decoded).isEmpty()&&decoded.miners[0].name.startsWith("Wizz · ")&&decoded.miners[0].id==QString(64,'1'));
   decoded={};row.insert("display_name",QString("Wizz")+QChar(0x202e)+"spoof");page.insert("rows",QJsonArray{row});assert(decodeLeaderboard(ranking,page,decoded).isEmpty()&&decoded.miners[0].name.startsWith("Miner "));
   row.remove("display_name");page.insert("rows",QJsonArray{row});
+  auto malformedSort=page;malformedSort.insert("sort","unverified_order");assert(!decodeLeaderboard(ranking,malformedSort,decoded).isEmpty());
   auto wrong=page;wrong.insert("genesis",QString(64,'f'));assert(!decodeLeaderboard(ranking,wrong,decoded).isEmpty());
   ranking.cursor=QString(64,'c')+":0";assert(!decodeLeaderboard(ranking,page,decoded).isEmpty());ranking.cursor.clear();
   row.insert("validated_search_positions",9007199254740993.);page.insert("rows",QJsonArray{row});assert(!decodeLeaderboard(ranking,page,decoded).isEmpty());
