@@ -19,11 +19,11 @@ function redraw(){
  for(const state of lanes())make('path',{d:`M0 ${y(state)}H${width}`,stroke:'#23424a','stroke-width':1},svg);
  // Bins describe coverage, not unique ticket identities. Their state color
  // stays opaque across the whole rail; the detailed-page cutoff must never
- // look like a disappearance or loss of validation. Bin clicks zoom in.
+ // look like a disappearance or loss of validation. Bin clicks inspect their exact ticket candidates; only the wheel changes zoom.
  if(atlas.details_truncated)for(let i=0;i<atlas.bins.length;i++){
   const bin=atlas.bins[i],x=unit((BigInt(bin.start)+BigInt(bin.end))/2n)*width;
   for(let s=0;s<states.length;s++)if(BigInt(bin.stages?.[states[s]]?.positions??0)>0n){
-   const node=make('circle',{cx:x,cy:y(states[s]),r:2.5,fill:colors[s],'data-bin':i},svg);node.style.cursor='zoom-in';
+   const node=make('circle',{cx:x,cy:y(states[s]),r:2.5,fill:colors[s],'data-bin':i,'data-stage':states[s]},svg);node.style.cursor='pointer';
   }
  }
  for(const item of atlas.details??[]){const x=unit((BigInt(item.start)+BigInt(item.end))/2n)*width;if(x<0||x>width)continue;
@@ -75,12 +75,12 @@ window.pgnAuditPreview=value=>{
 };
 const suspend=window.pgnAuditSuspend;window.pgnAuditSuspend=()=>{previewGeneration++;suspend()};
 new ResizeObserver(()=>{redraw();if(atlas)project(endpoints({}))}).observe(rail);
-let pressed=null;rail.onpointerdown=e=>{pressed={x:e.clientX,request:e.target.dataset?.request,bin:e.target.dataset?.bin};rail.setPointerCapture(e.pointerId)};
+let pressed=null;rail.onpointerdown=e=>{pressed={x:e.clientX,request:e.target.dataset?.request,bin:e.target.dataset?.bin,stage:e.target.dataset?.stage};rail.setPointerCapture(e.pointerId)};
 rail.onpointerup=e=>{
  if(!pressed)return;
  if(Math.abs(e.clientX-pressed.x)>6)send({action:'shift',delta_ppm:Math.round((pressed.x-e.clientX)/rail.clientWidth*1000000)});
  else if(pressed.request)send({action:'inspect',request:pressed.request});
- else if(pressed.bin!==undefined)send({action:'bin',index:Number(pressed.bin)});
+ else if(pressed.bin!==undefined)send({action:'bin',index:Number(pressed.bin),stage:pressed.stage});
  pressed=null;
 };
 rail.onpointercancel=()=>{pressed=null};rail.onwheel=e=>{e.preventDefault();const r=rail.getBoundingClientRect();send({action:'zoom',steps:e.deltaY<0?1:-1,x_ppm:Math.round((e.clientX-r.left)/r.width*1000000)})};

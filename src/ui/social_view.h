@@ -29,7 +29,7 @@ private:
         ForumThread* thread{};QLabel *threadTitle{},*threadState{};QPushButton* moreReplies{};
         QStackedWidget *journey{},*dataSlot{};
         QVector<social::Entry> entries;QVector<social::Miner> miners;
-        QDateTime observedUtc;QString selectedId,nextCursor,state{"offline"},statusText;
+        QDateTime observedUtc;QString selectedId,nextCursor,state{"offline"},statusText,chatHistoryGeneration;
         bool loaded{},busy{},replyMode{};quint64 generation{};
         std::optional<social::LeaderboardPeriod> leaderboardPeriod;
         bool threadBusy{};quint64 threadGeneration{};
