@@ -202,6 +202,12 @@ class WorkCycleJournal:
                         cycle['audits']=copy.deepcopy(native_tasks)
                         if cycle['hold']==self.reorg_hold:cycle['hold']=''
                         return True
+                    if native_service is not None and cycle['hold']=='Recovering existing assigned audits from the verified chain':
+                        # The caller re-observed the owning Core's immutable
+                        # receipt. This old local physical-service wait cannot
+                        # add another debt to an already authorized request.
+                        cycle['hold']=''
+                        return True
                     return False
             while len(cycles) >= self.maximum_cycles:
                 old = next((item for item in cycles if item['stage'] == 'completed' and not item['hold']), None)
