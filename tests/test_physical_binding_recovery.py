@@ -4,6 +4,7 @@ import hashlib
 import json
 import sys
 import tempfile
+import threading
 import unittest
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'src/protocol'),str(ROOT/'src/engine/runtime_host')]
@@ -18,6 +19,9 @@ class PhysicalBindingRecoveryTests(unittest.TestCase):
         journal.bind(cycle,0,audit)
         def native(*args,**kwargs):raise AssertionError('Durable physical binding fell through to Native authorization receipts')
         flow=object.__new__(MiningFlow);flow.physical_audits=journal
+        flow.unbound_service_lock=threading.RLock()
+        flow.unbound_service_audits=set();flow.unbound_service_completed=set()
+        flow.prefetch=SimpleNamespace(native_service_status=None)
         flow.cycles=SimpleNamespace(value={'cycles':[dict(stage='prepared',hold='',work={'request_id':cycle})]},
             extra_audit_cycle=lambda ident:None,bound_audit=native,pending=native)
         flow.audit_lanes=[SimpleNamespace(folder=Path(folder)),SimpleNamespace(folder=Path(folder))]

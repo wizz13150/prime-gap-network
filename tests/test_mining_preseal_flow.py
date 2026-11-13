@@ -16,6 +16,10 @@ class MiningPresealFlowTests(unittest.TestCase):
         self.fixture=f.PresealTests();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
         self.root=self.fixture.root;self.raw=self.fixture.raw;self.work=self.fixture.work
         self.flow=MiningFlow.__new__(MiningFlow)
+        self.flow.unbound_service_lock=threading.RLock()
+        self.flow.unbound_service_audits=set();self.flow.unbound_service_completed=set();self.flow.unbound_service_seeded=False
+        self.flow.prefetch=SimpleNamespace(native_service_status=dict(enforced=True,may_request=False,credits=[]))
+        self.flow.audit_lanes=[]
         self.flow.worker=SimpleNamespace(root=self.root,quitting=threading.Event(),network_notice='')
         self.flow.preseal=PresealQueue(self.root);self.flow.outbox=ReportOutbox(self.root)
         self.flow.changed=threading.Event();self.flow.gpu=SimpleNamespace(timings=[],wake=lambda:None)
@@ -70,7 +74,7 @@ class MiningPresealFlowTests(unittest.TestCase):
         self.flow.completed(self.job(self.work),self.raw)
         self.assertFalse(self.flow.may_start_work(self.job(self.work)))
         self.flow.cycles=SimpleNamespace()
-        audit=SimpleNamespace(context=dict(role='audit',work_cycle=None))
+        audit=SimpleNamespace(context=dict(role='audit',work_cycle=None,audit_request_id='a'*64,audit_slot=0,audit_attempt=0))
         self.assertTrue(self.flow.may_start_work(audit))
         work,raw=self.second()
         with self.assertRaises(BufferError):self.flow.completed(self.job(work),raw)
