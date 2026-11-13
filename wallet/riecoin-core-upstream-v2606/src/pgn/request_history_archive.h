@@ -7,9 +7,16 @@ namespace pgn::core {
 struct RequestHistoryArchiveBudget {size_t coinbase_bytes,proof_bytes;};
 enum class RequestArchiveVerdict {Stored,AlreadyStored,Authenticated,Missing,InvalidParent,InvalidProof,BudgetExceeded,Conflict};
 struct RequestArchiveRead {RequestArchiveVerdict verdict;std::optional<VerifiedNativeRequestBlock> block;};
+struct NativeReplayCheckpointPin {uint256 key;size_t bytes{};std::array<unsigned char,32> digest;};
 class NativeRequestHistoryArchive {
-    CDBWrapper m_db;
+    mutable CDBWrapper m_db;
 public:
+    // Auxiliary, process-authenticated replay checkpoints. Exactly one latest
+    // value per codec; these are never accepted as chain evidence on restart.
+    size_t StoreReplayCheckpoint(uint8_t codec,std::span<const unsigned char>,
+        std::span<const NativeReplayCheckpointPin> next,std::span<const NativeReplayCheckpointPin> prior)const;
+    std::optional<std::vector<unsigned char>> LoadReplayCheckpoint(uint8_t codec,
+        std::span<const NativeReplayCheckpointPin>)const;
     // Explicit separate path/cache budget. No wipe flag or background service.
     NativeRequestHistoryArchive(fs::path path,size_t cache_bytes);
     RequestArchiveVerdict Store(const CCoinsView&,const CBlockIndex&,const VerifiedNativeRequestBlock&,

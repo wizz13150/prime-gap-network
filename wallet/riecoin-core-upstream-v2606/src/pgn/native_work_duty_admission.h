@@ -29,6 +29,21 @@ inline bool NativeWorkDutyActivationOnBranch(const CCoinsView& view,const CBlock
         genesis&&genesis->phashBlock&&genesis->GetBlockHash()==activation.genesis&&
         anchor&&anchor->phashBlock&&anchor->GetBlockHash()==activation.anchor;
 }
+namespace native_audit_replay_detail {
+template<>struct ExtraCodec<NativeDutySpent>{
+    static constexpr uint8_t id=1;
+    static void Write(DataStream& s,const NativeDutySpent& spent,std::vector<std::pair<uint256,size_t>>* offsets){
+        s<<uint64_t(spent.size());for(const auto& [ref,request]:spent){
+            if(offsets){HashWriter key{TaggedHash("PGN/replay-checkpoint/spent/1")};key<<ref.report<<ref.slot<<ref.attempt<<ref.commitment;offsets->emplace_back(key.GetHash(),s.size());}
+            s<<ref.report<<ref.slot<<ref.attempt<<ref.commitment<<request;
+        }
+    }
+    static NativeDutySpent Read(DataStream& s){
+        NativeDutySpent out;uint64_t count{};s>>count;RequireAudit(count<=s.size(),"Invalid spent checkpoint size");
+        while(count--){NativeDutyReference ref;uint256 request;s>>ref.report>>ref.slot>>ref.attempt>>ref.commitment>>request;RequireAudit(out.emplace(std::move(ref),request).second,"Duplicate spent checkpoint entry");}return out;
+    }
+};
+}
 struct NativeWorkDutyState {NativeAuditLedger audits;NativeDutySpent spent;};
 inline bool ApplyNativeWorkDutyBlock(const CCoinsView& view,const CBlockIndex& parent,
     const RangeScheduleBudget& schedule_budget,const NativeWorkDutyActivation& activation,
