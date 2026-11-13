@@ -494,6 +494,10 @@ endif()
 add_executable(pgn-native-audit-replay-test EXCLUDE_FROM_ALL pgn/native_audit_replay_test.cpp)
 target_link_libraries(pgn-native-audit-replay-test PRIVATE core_interface riecoin_node univalue)
 
+# Exact policy equivalence against the previously published selector.
+add_executable(pgn-native-audit-selector-test EXCLUDE_FROM_ALL pgn/native_audit_selector_test.cpp)
+target_link_libraries(pgn-native-audit-selector-test PRIVATE core_interface riecoin_node univalue)
+
 # Native project identity, linked to the same client-version implementation as the daemon.
 add_executable(pgn-native-project-identity-test EXCLUDE_FROM_ALL pgn/project_identity_test.cpp)
 target_link_libraries(pgn-native-project-identity-test PRIVATE core_interface riecoin_clientversion riecoin_util)

@@ -46,11 +46,12 @@ jobs:
       - name: Configure the actual native daemon and wallet
         run: cmake -S wallet/riecoin-core-upstream-v2606 -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_GUI=OFF -DBUILD_BENCH=OFF -DBUILD_BITCOIN_BIN=OFF -DENABLE_IPC=OFF -DWITH_ZMQ=OFF -DWITH_USDT=OFF
       - name: Rebuild every native translation unit
-        run: cmake --build build-native --parallel 2 --target riecoind riecoin-cli pgn-native-audit-replay-test pgn-native-script-work-cache-test pgn-native-bootstrap-dispatch-test pgn-native-project-identity-test pgn-native-leaderboard-test
+        run: cmake --build build-native --parallel 2 --target riecoind riecoin-cli pgn-native-audit-replay-test pgn-native-script-work-cache-test pgn-native-bootstrap-dispatch-test pgn-native-project-identity-test pgn-native-leaderboard-test pgn-native-audit-selector-test
       - name: Check signed credit replay, forks, budgets and context-bound verification
         run: |
           build-native/bin/pgn-native-audit-replay-test.exe "$PWD/build-native/native-fixture"
           build-native/bin/pgn-native-script-work-cache-test.exe
+          build-native/bin/pgn-native-audit-selector-test.exe
           build-native/bin/pgn-native-bootstrap-dispatch-test.exe
           build-native/bin/pgn-native-leaderboard-test.exe "$PWD/build-native/leaderboard-fixture"
           build-native/bin/riecoind.exe --version
@@ -100,11 +101,12 @@ jobs:
       - name: Configure the actual native daemon and wallet
         run: cmake -S wallet/riecoin-core-upstream-v2606 -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_GUI=OFF -DBUILD_BENCH=OFF -DBUILD_BITCOIN_BIN=OFF -DENABLE_IPC=OFF -DWITH_ZMQ=OFF -DWITH_USDT=OFF '-DCMAKE_BUILD_RPATH=$ORIGIN'
       - name: Rebuild every native translation unit
-        run: cmake --build build-native --parallel 2 --target riecoind riecoin-cli pgn-native-audit-replay-test pgn-native-script-work-cache-test pgn-native-bootstrap-dispatch-test pgn-native-project-identity-test pgn-native-leaderboard-test
+        run: cmake --build build-native --parallel 2 --target riecoind riecoin-cli pgn-native-audit-replay-test pgn-native-script-work-cache-test pgn-native-bootstrap-dispatch-test pgn-native-project-identity-test pgn-native-leaderboard-test pgn-native-audit-selector-test
       - name: Check signed credit replay, forks, budgets and context-bound verification
         run: |
           build-native/bin/pgn-native-audit-replay-test "$PWD/build-native/native-fixture"
           build-native/bin/pgn-native-script-work-cache-test
+          build-native/bin/pgn-native-audit-selector-test
           build-native/bin/pgn-native-bootstrap-dispatch-test
           build-native/bin/pgn-native-leaderboard-test "$PWD/build-native/leaderboard-fixture"
           build-native/bin/riecoind --version
