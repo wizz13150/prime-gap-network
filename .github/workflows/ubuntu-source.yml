@@ -26,7 +26,11 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y build-essential cmake ninja-build qt6-base-dev libqt6sql6-sqlite libgmp-dev libsqlite3-dev zlib1g-dev libboost-dev
+          sudo apt-get install --no-install-recommends -y build-essential cmake ninja-build qt6-base-dev libqt6sql6-sqlite libgmp-dev libsqlite3-dev zlib1g-dev libboost-dev python3-venv
+      - name: Install pinned updater test dependencies
+        run: |
+          python3 -m venv .ci-python
+          .ci-python/bin/python -m pip install --disable-pip-version-check -r tools/requirements-updater.txt
       - name: Record the actual toolchain
         run: |
           g++ --version
@@ -34,7 +38,7 @@ jobs:
           ninja --version
           dpkg-query -W qt6-base-dev libgmp-dev libsqlite3-dev
       - name: Configure from a fresh checkout
-        run: cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$PWD/.ci-python/bin/python"
       - name: Build every default target
         run: cmake --build build-ci --parallel 2
       - name: Run registered isolated tests
