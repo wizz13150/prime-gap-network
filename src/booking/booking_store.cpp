@@ -608,7 +608,14 @@ public:
 BookingStore::BookingStore(const QString& file):impl_(std::make_unique<Impl>()){
     try{
         if(!QDir().mkpath(QFileInfo(file).absolutePath()))throw std::runtime_error("Booking directory unavailable");
-        const auto bytes=file.toUtf8();
+        QString databasePath=file;
+#ifdef Q_OS_WIN
+        if(file!=QStringLiteral(":memory:")){
+            databasePath=QDir::toNativeSeparators(QFileInfo(file).absoluteFilePath());
+            if(!databasePath.startsWith("\\\\?\\"))databasePath=databasePath.startsWith("\\\\")?"\\\\?\\UNC\\"+databasePath.mid(2):"\\\\?\\"+databasePath;
+        }
+#endif
+        const auto bytes=databasePath.toUtf8();
         if(sqlite3_open_v2(bytes.constData(),&impl_->db,SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE|SQLITE_OPEN_FULLMUTEX,nullptr)!=SQLITE_OK)
             throw std::runtime_error("Local booking database unavailable");
         sqlite3_busy_timeout(impl_->db,200);

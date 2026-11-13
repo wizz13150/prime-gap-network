@@ -34,9 +34,10 @@ public:
  {
   if(!QDir().mkpath(QFileInfo(file).absolutePath())){error_="Cannot open the application ownership directory";return;}
 #ifdef Q_OS_WIN
-  const auto native=QDir::toNativeSeparators(file);
+  auto native=QDir::toNativeSeparators(QFileInfo(file).absoluteFilePath());
+  if(!native.startsWith("\\\\?\\"))native=native.startsWith("\\\\")?"\\\\?\\UNC\\"+native.mid(2):"\\\\?\\"+native;
   handle_=CreateFileW(reinterpret_cast<LPCWSTR>(native.utf16()),GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
-  if(handle_==INVALID_HANDLE_VALUE){error_="Cannot inspect application ownership";return;}
+  if(handle_==INVALID_HANDLE_VALUE){error_=QString("Cannot open the application ownership file (Windows error %1)").arg(GetLastError());return;}
   owned_=LockFileEx(handle_,LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,0,1,0,&range_);
   if(!owned_&&GetLastError()!=ERROR_LOCK_VIOLATION)error_="Application ownership lock could not be acquired";
 #elif defined(Q_OS_LINUX)
