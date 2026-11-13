@@ -182,6 +182,8 @@ class MiningFlow:
             proxy.audit = audit
             self.audit_lanes.append(audit)
         self.unbound_service_audits = set()
+        self.unbound_service_completed = set()
+        self.unbound_service_lock = threading.RLock()
         self.unbound_service_seeded = False
         self.cycle_audit_positions = {}
         self.controlled_lab_audit_actors = lab_actors is not None and not native_actors
@@ -243,13 +245,25 @@ class MiningFlow:
         return (audit['request_id'],audit['slot'],audit['attempt'])
 
     def may_unbound_audit(self, job):
+        with self.unbound_service_lock:
+            return self._may_unbound_audit(job)
+
+    def _may_unbound_audit(self, job):
         # No backlog-draining lane. Without a ticket, only the two deliveries
         # required by the owning Core may run. Core commits and retained lane
         # journals reconstruct the bound after restart; no new credit ledger.
-        status=getattr(self.prefetch,'native_service_status',None)
+        observe=getattr(self.prefetch,'service_observation',None)
+        status=observe() if callable(observe) else getattr(self.prefetch,'native_service_status',None)
         if not isinstance(status,dict) or not status.get('enforced'):return False
         identity=(job.context.get('audit_request_id'),job.context.get('audit_slot'),job.context.get('audit_attempt'))
         known={self.service_identity(ref)for ref in status.get('credits',[])}
+        # Only a fresh post-confirmation Core observation can retire a completed
+        # reservation. RAM current_audit briefly disappears during journal reload;
+        # it is not evidence that a queued or interrupted computation is obsolete.
+        self.unbound_service_completed.update(known)
+        retired=self.unbound_service_completed-known
+        self.unbound_service_audits.difference_update(retired)
+        self.unbound_service_completed.difference_update(retired)
         if not self.unbound_service_seeded:
             candidates=[lane.current_audit for lane in self.audit_lanes if lane.current_audit]
             candidates.sort(key=lambda a:(-len(a.get('counts',[])),self.service_identity(a)))
@@ -388,6 +402,13 @@ class MiningFlow:
         return False
 
     def audit_committed(self, position, audit, block):
+        with self.unbound_service_lock:
+            identity=self.service_identity(audit)
+            if identity in self.unbound_service_audits:
+                self.unbound_service_completed.add(identity)
+            invalidate=getattr(self.prefetch,'invalidate_native_service_status',None)
+            if callable(invalidate):invalidate()
+            else:self.prefetch.native_service_status=None
         physical = getattr(self, 'physical_audits', None)
         if physical is not None and not audit.get('physical_cycle'):
             recovered = physical.bound_audit(audit, position)
@@ -435,7 +456,9 @@ class MiningFlow:
             self.gpu.wake()
 
     def retire_audit_cycle(self, position, audit, anchor):
-        self.unbound_service_audits.discard(self.service_identity(audit))
+        with self.unbound_service_lock:
+            self.unbound_service_audits.discard(self.service_identity(audit))
+            self.unbound_service_completed.discard(self.service_identity(audit))
         if audit.get('physical_cycle'):
             self.physical_audits.retire(audit['physical_cycle'], position, audit)
             audit.pop('physical_cycle', None)
@@ -532,7 +555,10 @@ class MiningFlow:
             reconcile_cpu_capacity(self, work)
         changed = self.cycles.prepare(work, native_service=native)
         if native is not None:
-            self.unbound_service_audits.difference_update(self.service_identity(ref)for ref in native['credits'])
+            with self.unbound_service_lock:
+                consumed={self.service_identity(ref)for ref in native['credits']}
+                self.unbound_service_audits.difference_update(consumed)
+                self.unbound_service_completed.difference_update(consumed)
         return changed
 
     def promote(self, work, sequence):

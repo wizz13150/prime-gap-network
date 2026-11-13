@@ -437,6 +437,11 @@ class NetworkAudits:
                     raise ValueError("Assigned audit has no immutable report")
                 report = reports[0]
                 audit = dict(schema="PGN_HORIZON_ASSIGNED_AUDIT_V1", request_id=proposal["request_id"], ticket=report["ticket"], report_root=report["report_root"], slot=proposal["slot"], attempt=proposal["attempt"], ranges=proposal["ranges"], counts=[])
+            # The Core attribution is already confirmed. Retain its identity
+            # before the catalogue can return BUSY/ENOSPC: a retry must resume
+            # this assignment, not ask for another and waive its service slot.
+            # Seal recovery still precedes any computation or nonce creation.
+            save(journal, audit)
             audit = self.restore_reassigned_answer(audit)
             save(journal, audit)
         elif audit.get('publication_intent') and self.reassignment_needed is not None and self.reassignment_needed(audit):

@@ -16,9 +16,56 @@ def make(credits=(),lanes=()):
     f.prefetch=SimpleNamespace(native_service_status=dict(enforced=True,may_request=False,credits=list(credits)))
     f.audit_lanes=[SimpleNamespace(current_audit=x)for x in lanes]
     f.unbound_service_audits=set();f.unbound_service_seeded=False
+    f.unbound_service_completed=set();f.unbound_service_lock=threading.RLock()
     return f
 
 class FixedAuditCycleTests(unittest.TestCase):
+    def test_confirmed_then_failed_service_is_replaced_without_restart(self):
+        f=make(lanes=[audit(100),audit(101)])
+        f.cycles=SimpleNamespace(bound_audit=lambda*a:None)
+        self.assertTrue(f.may_unbound_audit(job(100)))
+        self.assertTrue(f.may_unbound_audit(job(101)))
+        f.audit_committed(0,audit(100),'a'*64)
+        f.audit_committed(1,audit(101),'b'*64)
+        self.assertIsNone(f.prefetch.native_service_status)
+        self.assertFalse(f.may_unbound_audit(job(102)))
+        f.audit_lanes=[SimpleNamespace(current_audit=audit(102,4)),SimpleNamespace(current_audit=audit(103))]
+        f.prefetch.native_service_status=dict(enforced=True,may_request=False,credits=[audit(101)])
+        self.assertTrue(f.may_unbound_audit(job(102)))
+        self.assertFalse(f.may_unbound_audit(job(103)))
+        self.assertNotIn(f.service_identity(audit(100)),f.unbound_service_audits)
+
+    def test_transient_empty_ram_lane_does_not_release_running_reservation(self):
+        f=make(lanes=[audit(100),audit(101)])
+        f.may_unbound_audit(job(100));f.may_unbound_audit(job(101))
+        f.audit_lanes=[SimpleNamespace(current_audit=None),SimpleNamespace(current_audit=None)]
+        self.assertTrue(f.may_unbound_audit(job(100)))
+        self.assertFalse(f.may_unbound_audit(job(102)))
+
+    def test_old_core_observation_cannot_reappear_after_confirmation(self):
+        from horizon_ticket_prefetch import TicketPrefetch
+        old_observation_waiting=threading.Event();publish_old=threading.Event()
+        class DelayedNetworkExit:
+            def __enter__(self):return self
+            def __exit__(self,*a):
+                old_observation_waiting.set()
+                if not publish_old.wait(3):raise RuntimeError('Controlled interleaving timed out')
+        class Denied(Exception):
+            native_service_status=dict(enforced=True,may_request=False,credits=[])
+        def assign():raise Denied('audit required')
+        enabled=threading.Event();enabled.set();stop=threading.Event()
+        p=TicketPrefetch(SimpleNamespace(assign=assign),enabled,stop,DelayedNetworkExit())
+        p.start()
+        try:
+            self.assertTrue(old_observation_waiting.wait(3))
+            p.invalidate_native_service_status()
+            stop.set();publish_old.set()
+            self.assertTrue(p.close(3))
+            self.assertIsNone(p.service_observation())
+            self.assertTrue(p.publish_service_observation(p.native_service_generation,Denied.native_service_status))
+            self.assertIsNotNone(p.service_observation())
+        finally:stop.set();publish_old.set();p.close(3)
+
     def test_two_startup_deliveries_cannot_become_unlimited_drain(self):
         f=make(lanes=[audit(100),audit(101)])
         self.assertTrue(f.may_unbound_audit(job(100)));self.assertTrue(f.may_unbound_audit(job(101)))
