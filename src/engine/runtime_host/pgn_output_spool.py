@@ -169,7 +169,24 @@ def bound_job_context(root, token):
     folder = root.parent.parent / ticket
     if folder.resolve().parent != root.parent.parent or folder.is_symlink():
         raise SpoolError('Current-job ticket escaped its owner namespace')
-    metadata = read_session_metadata(folder)
+    try:
+        metadata = read_session_metadata(folder)
+    except ValueError:
+        # Completed work may have been compacted while the reusable resident
+        # still retains its last dispatch receipt. It has no active checkpoint.
+        # Only the checked archive of this exact configuration can establish
+        # that fact; corrupt/unknown metadata is never a generic close fallback.
+        from horizon_ticket_archive import load as load_completed_archive
+        archived = load_completed_archive(folder)
+        if archived is None:
+            raise
+        ready = _json(root / 'ready.json')
+        if (ready.get('token') != token
+                or str(ready.get('image_sha256', '')).upper() != str(identity.get('image_sha256', '')).upper()
+                or ready.get('pid') != identity.get('pid') or str(ready.get('birth')) != str(identity.get('birth'))
+                or archived['configuration_sha256'].upper() != str(identity.get('configuration_sha256', '')).upper()):
+            raise SpoolError('Completed current-job archive/owner binding differs')
+        return None
     chunk = metadata.get('current_chunk') or {}
     if not chunk:
         return None  # already durably closed work is not a new recovery job

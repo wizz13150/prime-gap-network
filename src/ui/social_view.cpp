@@ -114,8 +114,9 @@ SocialView::SocialView(QString path,social::Services services,QWidget* parent)
             tools->addWidget(text("Window"));
             p.filter=new SocialComboBox;p.filter->setObjectName("pgn-social-miner-window");
             p.filter->setAccessibleName("Miner observation window");
-            p.filter->addItem("All recorded activity");p.filter->setToolTip("Confirmed activity on the current chain. Hardware count and mining time are not reported by this source.");
+             p.filter->addItem("All recorded activity");p.filter->addItem(social::windowLabel(social::Window::Day));p.filter->setToolTip("Confirmed activity on the current chain. Today uses canonical block-header timestamps in a fixed UTC day, not physical execution time. Hardware count and mining time are not reported by this source.");
             tools->addWidget(p.filter);
+             p.windowInfo=text({});p.windowInfo->setObjectName("pgn-social-miner-interval");p.windowInfo->setProperty("caption",true);tools->addWidget(p.windowInfo);
         }
         p.search=new QLineEdit;p.search->setMaxLength(160);p.search->setPlaceholderText(i==0?"Find in loaded messages":"Filter loaded "+QString(nouns[i]));
         p.search->setAccessibleName(QString("Filter loaded %1").arg(nouns[i]));p.search->setObjectName(QString("pgn-social-search-%1").arg(i));tools->addWidget(p.search,i==0?0:1);
@@ -135,7 +136,7 @@ SocialView::SocialView(QString path,social::Services services,QWidget* parent)
             p.ranking->verticalHeader()->hide();p.ranking->setEditTriggers(QAbstractItemView::NoEditTriggers);p.ranking->setSelectionBehavior(QAbstractItemView::SelectRows);
             p.ranking->setSelectionMode(QAbstractItemView::SingleSelection);p.ranking->setWordWrap(false);p.ranking->verticalHeader()->setDefaultSectionSize(32);
             p.dataSlot->addWidget(p.ranking);
-            connect(p.filter,&QComboBox::currentIndexChanged,this,[this]{auto& q=pages_[3];++q.generation;q.busy=q.loaded=false;q.nextCursor.clear();q.miners.clear();renderMiners();updateAccess();read(3);});
+             connect(p.filter,&QComboBox::currentIndexChanged,this,[this]{auto& q=pages_[3];++q.generation;q.busy=q.loaded=false;q.nextCursor.clear();q.miners.clear();q.leaderboardPeriod.reset();q.windowInfo->setText(q.filter->currentIndex()==1?"UTC interval loading…":QString{});renderMiners();updateAccess();read(3);});
         }else{
         p.list=new QListWidget;p.list->setWordWrap(true);p.list->setMouseTracking(true);p.list->viewport()->setAttribute(Qt::WA_Hover,true);p.list->setObjectName(QString("pgn-social-list-%1").arg(i));p.list->setAccessibleName(i==0?"Global message chronology":i==1?"Publication feed":"Forum topics");
             p.list->setItemDelegate(new SocialEntryDelegate(i,p.list));p.list->setMouseTracking(true);
@@ -302,7 +303,7 @@ void SocialView::setIdentity(social::Identity identity){
     if(identity==identity_)return;if(dirty_)saveDrafts();autosave_.stop();++sendEpoch_;identity_=std::move(identity);drafts_={};dirty_=false;loadError_.clear();loadFailed_=false;replyId_.clear();pages_[0].canSend=pages_[0].sending=false;pages_[0].sendNotice.clear();pages_[0].sendWhy.clear();
     channel_.clear();channelData_.clear();channels_->clear();members_->clear();replyPostId_.clear();memberCount_->setText("Participants unavailable");channelTitle_->setText("Conversation");channelDescription_->clear();access_.reset();if(accessDialog_)delete accessDialog_;
     if(identity_.valid()){loadError_=store_.load(identity_,drafts_);loadFailed_=!loadError_.isEmpty();const auto key=store_.path(identity_);if(pending_.contains(key)){drafts_=pending_.value(key);dirty_=true;}else if(pending_.size()>=64){loadFailed_=true;loadError_="Recover pending drafts before editing another identity.";}}
-    for(auto& p:pages_){++p.generation;++p.threadGeneration;p.threadBusy=false;if(p.thread)p.thread->clear();p.loaded=p.busy=p.replyMode=false;p.entries.clear();p.miners.clear();p.selectedId.clear();p.nextCursor.clear();p.observedUtc={};
+    for(auto& p:pages_){++p.generation;++p.threadGeneration;p.threadBusy=false;if(p.thread)p.thread->clear();p.loaded=p.busy=p.replyMode=false;p.entries.clear();p.miners.clear();p.selectedId.clear();p.nextCursor.clear();p.observedUtc={};p.leaderboardPeriod.reset();if(p.windowInfo){p.windowInfo->clear();p.windowInfo->setToolTip({});}
         if(p.list){QSignalBlocker block(p.list);p.list->clear();}if(p.detail)p.detail->clear();if(p.ranking)p.ranking->setRowCount(0);if(p.journey)p.journey->setCurrentIndex(0);}
     updateAccess();for(int i=0;i<3;++i)loadEditor(i);read(tabs_->currentIndex());
 }
@@ -415,7 +416,7 @@ void SocialView::read(int i,bool more){
     services_.read(request,[weak,i,generation,request,more](social::Snapshot data,QString error){
         if(!weak)return;auto& p=weak->pages_[i];if(p.generation!=generation||!p.busy||weak->identity_!=request.identity)return;
         p.busy=false;p.refresh->setEnabled(true);if(error.isEmpty())error=social::validate(data,request);
-        if(error.isEmpty()&&more){QSet<QString> ids;if(i==3){for(const auto& item:p.miners)ids.insert(item.id);for(const auto& item:data.miners)if(ids.contains(item.id))error="Page overlaps loaded miner identities.";}
+         if(error.isEmpty()&&more){QSet<QString> ids;if(i==3){if(p.leaderboardPeriod!=data.leaderboardPeriod)error="Leaderboard anchor or UTC interval changed; refresh the ranking.";for(const auto& item:p.miners)ids.insert(item.id);for(const auto& item:data.miners)if(ids.contains(item.id))error="Page overlaps loaded miner identities.";}
             else{for(const auto& item:p.entries)ids.insert(item.id);for(const auto& item:data.entries)if(ids.contains(item.id))error="Page overlaps loaded records.";}
             if((i==3?p.miners.size()+data.miners.size():p.entries.size()+data.entries.size())>LoadedLimit)error="Loaded data limit reached. Refine the filter or refresh.";}
         if(!error.isEmpty()){if(i==0){p.canSend=false;p.sendWhy=error;weak->access_.reset();weak->updateChatSend();}weak->pageState(i,"error","Unable to load "+QString(nouns[i])+" · "+error.left(130)+(p.loaded?" · previous snapshot retained":" · retry available"),error);
@@ -429,7 +430,10 @@ void SocialView::present(int i,const social::Snapshot& data,bool append){
         if(error.isEmpty())access_=data.access;else access_.reset();}
     if(i==0){pages_[0].canSend=data.chatSend&&data.chatSend->allowed;pages_[0].sendWhy=data.chatSend?data.chatSend->reason:QString{};if(!append)chatDirectory(data);updateChatSend();}
     auto& p=pages_[i];const bool initial=!p.loaded;p.loaded=true;p.observedUtc=data.observedUtc;p.nextCursor=data.nextCursor;
-    if(i==3){if(append)p.miners+=data.miners;else p.miners=data.miners;renderMiners();}
+     if(i==3){p.leaderboardPeriod=data.leaderboardPeriod;
+         if(data.leaderboardPeriod&&data.leaderboardPeriod->utcStart){const auto start=QDateTime::fromSecsSinceEpoch(*data.leaderboardPeriod->utcStart,Qt::UTC),end=start.addDays(1);p.windowInfo->setText(start.toString("yyyy-MM-dd")+" → "+end.toString("yyyy-MM-dd")+" · UTC");p.windowInfo->setToolTip("Fixed interval ["+stamp(start)+", "+stamp(end)+"). Canonical block-header time, not physical execution time. Reports: inclusion; audits: first PASSED; validated volume: current qualification episode. Anchor: "+data.leaderboardPeriod->anchor);}
+         else{p.windowInfo->clear();p.windowInfo->setToolTip({});}
+         if(append)p.miners+=data.miners;else p.miners=data.miners;renderMiners();}
     else{if(append)p.entries+=data.entries;else p.entries=data.entries;
         std::stable_sort(p.entries.begin(),p.entries.end(),[i](const auto& a,const auto& b){const auto x=i==2&&a.lastActivity.isValid()?a.lastActivity:a.createdUtc,y=i==2&&b.lastActivity.isValid()?b.lastActivity:b.createdUtc;return x==y?a.id<b.id:i==0?x<y:x>y;});
         renderList(i);if((p.detail||p.thread)&&!p.selectedId.isEmpty()){if(i==2&&!append){++p.threadGeneration;p.threadBusy=false;}showDetail(i,true);}if(i==0&&initial){p.list->setProperty("pgn_initial_scroll",true);settleInitialChat(p.list);}}

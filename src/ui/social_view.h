@@ -19,7 +19,7 @@ public:
     void refresh();void selectSection(social::Section section);bool saveDrafts();
 private:
     struct Page{
-        QLabel *counter{},*saved{},*reason{},*empty{},*count{},*composeContext{};
+        QLabel *counter{},*saved{},*reason{},*empty{},*count{},*composeContext{},*windowInfo{};
         QLineEdit *title{},*reference{},*search{};
         QComboBox *filter{},*category{};
         QWidget *titleRow{},*categoryRow{};
@@ -31,6 +31,7 @@ private:
         QVector<social::Entry> entries;QVector<social::Miner> miners;
         QDateTime observedUtc;QString selectedId,nextCursor,state{"offline"},statusText;
         bool loaded{},busy{},replyMode{};quint64 generation{};
+        std::optional<social::LeaderboardPeriod> leaderboardPeriod;
         bool threadBusy{};quint64 threadGeneration{};
         bool canSend{},sending{};QString sendWhy,sendNotice;
     };

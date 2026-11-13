@@ -8,6 +8,7 @@
 #include "wallet/core_runtime.h"
 #include "social/social_signing_contract.h"
 #include "social/social_rpc_queue.h"
+#include "social/social_leaderboard.h"
 #include "wallet/core_rpc_stream.h"
 #include "wallet/setup_deployment.h"
 #include "wallet/participant_snapshot.h"
@@ -706,7 +707,7 @@ void CoreRuntime::socialRequest(const QString& method,const QJsonArray& params,s
  if(method=="submitsocialevent")valid=params.size()==2&&params[0].isString()&&params[1].isString()&&params[0].toString().toUtf8().size()<=24576&&params[0].toString().size()>=64&&params[1].toString().size()<=512&&!params[1].toString().isEmpty();
  else if(method=="getsocialevents"&&params.size()==3){const auto generation=params[0].toString();const auto cursor=params[1].toInteger(-1),limit=params[2].toInteger(-1);valid=params[0].isString()&&(generation.isEmpty()||social::hexField(generation,64))&&params[1].isDouble()&&cursor>=0&&params[1].toDouble()==double(cursor)&&params[2].isDouble()&&limit>=1&&limit<=50&&params[2].toDouble()==double(limit);}
  else if(method=="getsocialpeers")valid=params.isEmpty();
- else if(method=="getpgnleaderboard"&&(params.size()==2||params.size()==3)){const auto offset=params[0].toInteger(-1),limit=params[1].toInteger(-1);valid=params[0].isDouble()&&offset>=0&&params[0].toDouble()==double(offset)&&params[1].isDouble()&&limit>=1&&limit<=100&&params[1].toDouble()==double(limit)&&(params.size()==2||(params[2].isString()&&social::hexField(params[2].toString(),64)));}
+ else if(method=="getpgnleaderboard")valid=social::validLeaderboardRpcArguments(params);
  if(!valid||!connected_||stopping_||managedUpgradePending_||recovery_.state()==CoreRecoveryPolicy::State::Suppressed||!processAlive()){consume({},"Verified Social connection and bounded request required");return;}
  const auto owner=epoch();const auto lifecycle=recovery_.generation();const auto binding=walletBinding();const auto genesis=profile_.genesisHash;
  const auto current=[this,owner,lifecycle,binding,genesis]{return owner.matches(epoch())&&lifecycle==recovery_.generation()&&binding==walletBinding()&&genesis==profile_.genesisHash&&connected_&&!stopping_&&!managedUpgradePending_&&recovery_.state()!=CoreRecoveryPolicy::State::Suppressed&&processAlive();};

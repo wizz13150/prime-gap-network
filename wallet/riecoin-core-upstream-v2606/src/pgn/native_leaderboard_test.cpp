@@ -23,7 +23,7 @@ static void need(bool value,const char* label){if(!value)throw std::runtime_erro
 static void check(bool value,const char* label){need(value,label);++checks;std::cout<<"PASS "<<label<<std::endl;}
 static CKey known(unsigned scalar){std::array<unsigned char,32> b{};b.back()=scalar;CKey k;k.Set(b.begin(),b.end(),true);return k;}
 static CScript script(unsigned scalar){return GetScriptForDestination(WitnessV0KeyHash(known(scalar).GetPubKey()));}
-static CKey keyFor(const CScript& s){for(unsigned i=1;i<=6;++i)if(script(i)==s)return known(i);throw std::runtime_error("Unknown synthetic signer");}
+static CKey keyFor(const CScript& s){for(unsigned i=1;i<=16;++i)if(script(i)==s)return known(i);throw std::runtime_error("Unknown synthetic signer");}
 static Bytes sign(const std::string& message,const CKey& key){
  auto status=MessageVerificationResult::ERR_INVALID;const auto pair=BIP322Txs::Create(WitnessV0KeyHash(key.GetPubKey()),message,status);need(bool(pair),"BIP322 challenge");
  CMutableTransaction tx{pair->m_to_sign};FillableSigningProvider provider;provider.AddKey(key);SignatureData data;
@@ -40,10 +40,11 @@ struct Fixture {
  std::deque<uint256> hashes;std::vector<std::unique_ptr<CBlockIndex>> indices;
  std::vector<std::unique_ptr<CCoinsViewDB>> stores;std::vector<std::unique_ptr<CCoinsViewCache>> views;
  CBlockIndex* tip{};CCoinsViewCache* view{};
+ std::optional<uint32_t> next_header_time;
  explicit Fixture(fs::path p):path(std::move(p)),archive(path/"history",1<<20){chain=*uint256::FromHex("0ccd1f2349ed75f9cf4d0279871a204e107683e5baa1dd6641c4e6f08a25a17d");}
  CBlockIndex& Append(std::vector<CTxOut> outputs,CBlockIndex* parent=nullptr){
   if(!parent)parent=tip;CMutableTransaction tx;tx.vin.resize(1);tx.vin[0].prevout.SetNull();tx.vin[0].scriptSig=CScript{}<<int64_t(indices.size()+1)<<OP_0;tx.vout=std::move(outputs);
-  CBlock block;block.nTime=100+indices.size()*100;if(parent)block.hashPrevBlock=parent->GetBlockHash();block.vtx={MakeTransactionRef(tx)};block.hashMerkleRoot=BlockMerkleRoot(block);hashes.push_back(block.GetHash());
+  CBlock block;block.nTime=next_header_time.value_or(85500+indices.size()*100);next_header_time.reset();if(parent)block.hashPrevBlock=parent->GetBlockHash();block.vtx={MakeTransactionRef(tx)};block.hashMerkleRoot=BlockMerkleRoot(block);hashes.push_back(block.GetHash());
   auto index=std::make_unique<CBlockIndex>(block);index->phashBlock=&hashes.back();index->pprev=parent;index->nHeight=parent?parent->nHeight+1:0;index->nTx=1;index->nStatus=BLOCK_VALID_SCRIPTS;index->BuildSkip();tip=index.get();indices.push_back(std::move(index));
   stores.push_back(std::make_unique<CCoinsViewDB>(DBParams{.path=path/fs::PathFromString("coins-"+std::to_string(indices.size())),.cache_bytes=1<<20,.memory_only=true,.wipe_data=false},CoinsViewOptions{}));
   views.push_back(std::make_unique<CCoinsViewCache>(stores.back().get()));view=views.back().get();view->SetBestBlock(tip->GetBlockHash());view->StagePgnFactCommit({{},FactHead{chain,tip->GetBlockHash()},{}});
@@ -63,7 +64,7 @@ struct Fixture {
     UniValue body;need(body.read(std::string{event->body.begin(),event->body.end()}),"Binding JSON");LeaderboardBind(result,ParseHex(body["signing_script"].get_str()),*uint256::FromHex(body["operator_id"].get_str()),h);
    }}return result;
  }
- NativeLeaderboardSnapshot Snapshot(const NativeAuditLedger& ledger){return BuildNativeLeaderboard(ledger,*tip,chain,this,Bindings(ledger));}
+ NativeLeaderboardSnapshot Snapshot(const NativeAuditLedger& ledger,LeaderboardUTCWindow window={}){return BuildNativeLeaderboard(ledger,*tip,chain,this,Bindings(ledger),window);}
 };
 static UniValue Attribution(const std::string& name){UniValue out{UniValue::VOBJ};out.pushKV("schema","PGN_PUBLIC_ATTRIBUTION_V1");out.pushKV("name",name);return out;}
 template<class Lease,class Ticket> static std::string Disclosure(Fixture& f,const Lease& lease,const Ticket& ticket,std::optional<UniValue> attribution){
@@ -120,6 +121,15 @@ int main(int argc,char** argv){try{
  reveals.clear();for(const auto& [id,report]:ledger)for(unsigned slot=0;slot<2;++slot){const auto& text=answers.at({id,slot});NativeAuditEvent event{id,{},NativeAuditAction::Reveal,uint8_t(slot),0,report.jobs[slot]->actor,Bytes{text.begin(),text.end()}};reveals.emplace_back(0,f.Event(event,ledger));}
  f.Append(std::move(reveals));ledger=f.Ledger();auto snapshot=f.Snapshot(ledger);
  check(snapshot.rows.size()==4,"productive owners and finalized audit actors included");
+ const auto day0=LeaderboardUTCWindow::FromStart(0),day1=LeaderboardUTCWindow::FromStart(86400),day2=LeaderboardUTCWindow::FromStart(172800);
+ check(LeaderboardUTCWindow::TodayAt(86399)==day0&&LeaderboardUTCWindow::TodayAt(86400)==day1&&!day0.Contains(86400)&&day1.Contains(86400),"UTC midnight is an explicit half-open interval independent of host clock mutation");
+ const auto counts=[](const NativeLeaderboardSnapshot& value){std::array<uint64_t,3> out{};for(const auto& row:value.rows){out[0]+=row.tickets_reported;out[1]+=row.tickets_validated;out[2]+=row.audits_finalized_valid;}return out;};
+ const auto volume=[](const NativeLeaderboardSnapshot& value){Integer out{};for(const auto& row:value.rows)out+=row.validated_search_positions;return out;};
+ auto utc_report_day=f.Snapshot(ledger,day0),utc_validation_day=f.Snapshot(ledger,day1);
+ check(counts(utc_report_day)==std::array<uint64_t,3>{2,0,0}&&volume(utc_report_day)==0,"reported ticket day does not borrow later audit or validated volume");
+ check(counts(utc_validation_day)==std::array<uint64_t,3>{0,2,4}&&volume(utc_validation_day)==volume(snapshot),"audit reveal and effective qualification use their next-day canonical block times");
+ auto utc_page=NativeLeaderboardPage(utc_validation_day,0,2);check(utc_page["utc_start"].getInt<int64_t>()==86400&&utc_page["utc_end"].getInt<int64_t>()==172800&&utc_page["history_complete"].get_bool(),"Today response fixes exhaustive provenance and explicit UTC endpoints");
+ auto bad_dates=ledger;bad_dates.begin()->second.jobs[0]->passed_height=0;bool date_refused=false;try{f.Snapshot(bad_dates,day1);}catch(...){date_refused=true;}check(date_refused,"missing native validation timestamp refuses window instead of inventing zero");
  check(std::count_if(snapshot.rows.begin(),snapshot.rows.end(),[](const auto& row){return row.display_name==std::optional<std::string>{"Shared Miner"};})==2,"homonymous signed labels remain distinct canonical operators");
  check(std::count_if(snapshot.rows.begin(),snapshot.rows.end(),[](const auto& row){return !row.display_name;})==2,"audit-only actors without disclosed labels remain unnamed");
  check(snapshot.rows[0].tickets_validated==1&&snapshot.rows[1].tickets_validated==1&&snapshot.rows[0].validated_search_positions>Integer{9007199254740991LL},"qualified search volume is exact above JSON safe integer");
@@ -135,8 +145,9 @@ int main(int argc,char** argv){try{
  auto projection_ledger=std::make_shared<const NativeAuditLedger>(ledger);const auto* projection_anchor=f.tip;auto projection_bindings=f.Bindings(ledger);
  auto pinned_view=LeaderboardHistoryAnchorView::Capture(*f.view,*projection_anchor);CCoinsViewBacked moving_view{f.view};CChain canonical;canonical.SetTip(*f.tip);
  LeaderboardSnapshotCache cache;auto old_snapshot=std::make_shared<const NativeLeaderboardSnapshot>(snapshot);cache.Publish(old_snapshot,canonical);
- reveals.clear();for(const auto& [id,report]:ledger)for(unsigned slot=0;slot<2;++slot){const auto& text=answers.at({id,slot});NativeAuditEvent event{id,{},NativeAuditAction::Reveal,uint8_t(slot),0,report.jobs[slot]->actor,Bytes{text.begin(),text.end()}};reveals.emplace_back(0,f.Event(event,ledger));}f.Append(std::move(reveals));ledger=f.Ledger();auto repeated=f.Snapshot(ledger);uint64_t repeated_passed=0;Integer repeated_volume{},original_volume{};for(const auto& row:repeated.rows){repeated_passed+=row.audits_finalized_valid;repeated_volume+=row.validated_search_positions;}for(const auto& row:snapshot.rows)original_volume+=row.validated_search_positions;
+ reveals.clear();for(const auto& [id,report]:ledger)for(unsigned slot=0;slot<2;++slot){const auto& text=answers.at({id,slot});NativeAuditEvent event{id,{},NativeAuditAction::Reveal,uint8_t(slot),0,report.jobs[slot]->actor,Bytes{text.begin(),text.end()}};reveals.emplace_back(0,f.Event(event,ledger));}f.next_header_time=172800;f.Append(std::move(reveals));ledger=f.Ledger();auto repeated=f.Snapshot(ledger);uint64_t repeated_passed=0;Integer repeated_volume{},original_volume{};for(const auto& row:repeated.rows){repeated_passed+=row.audits_finalized_valid;repeated_volume+=row.validated_search_positions;}for(const auto& row:snapshot.rows)original_volume+=row.validated_search_positions;
  check(repeated_passed==4&&repeated_volume==original_volume,"repeated signed finalized receipts cannot double count audits or volume");
+ check(f.Snapshot(ledger,day2).rows.empty(),"repeated next-day reveals do not retimestamp first finalization or validated volume");
  canonical.SetTip(*f.tip);moving_view.SetBackend(*f.view);
  const auto moving_read=f.archive.Load(moving_view,*projection_anchor,projection_anchor->nHeight,f.schedule.archive);
  const auto pinned_read=f.archive.Load(*pinned_view,*projection_anchor,projection_anchor->nHeight,f.schedule.archive);
@@ -146,22 +157,30 @@ int main(int argc,char** argv){try{
  cache.BeginBuild(&f,f.chain,canonical);cache.Publish(std::make_shared<const NativeLeaderboardSnapshot>(repeated),canonical);
  auto old_page=cache.Get(&f,snapshot.tip,f.chain,canonical),new_page=cache.Get(&f,repeated.tip,f.chain,canonical);
  check(old_page&&new_page&&NativeLeaderboardPage(*old_page,2,2)["bestblockhash"].get_str()==snapshot.tip.GetHex()&&old_page->height!=new_page->height,"old-anchor pagination remains available beside new snapshot after extension");
+ LeaderboardSnapshotCache utc_cache;utc_cache.Publish(std::make_shared<const NativeLeaderboardSnapshot>(utc_report_day),canonical);utc_cache.Publish(std::make_shared<const NativeLeaderboardSnapshot>(utc_validation_day),canonical);
+ auto pinned_utc=utc_cache.Get(&f,snapshot.tip,f.chain,canonical,day1);check(pinned_utc&&utc_cache.Get(&f,snapshot.tip,f.chain,canonical,day0)&&!utc_cache.Get(&f,snapshot.tip,f.chain,canonical,day2)&&NativeLeaderboardPage(*pinned_utc,2,2)["utc_start"].getInt<int64_t>()==86400,"period-keyed pages preserve old anchor and UTC start across new block and midnight");
  uint256 foreign_chain;foreign_chain.begin()[0]=88;check(!cache.Get(&f,snapshot.tip,foreign_chain,canonical)&&!cache.Get(&ledger,snapshot.tip,f.chain,canonical),"snapshot cache never crosses chain or chainstate identity");
  // A real signed enrollment AFTER the receipts must not remap those historic
  // audit counts. Public native admission allowed this previously unenrolled
  // synthetic actor to audit; its new ID is distinct from both owners.
- AddLabeledReport(f,6,Attribution("Historic Six"),{3,5});ledger=f.Ledger();
- uint256 late_id;late_id.begin()[0]=99;UniValue late_body{UniValue::VOBJ};late_body.pushKV("schema","PGN_TESTNET_PARTICIPANT_V1");late_body.pushKV("operator_id",late_id.GetHex());late_body.pushKV("signing_script",HexStr(script(6)));late_body.pushKV("may_audit",true);const auto late_text=late_body.write();NativeAuditEvent late_event{ledger.authority_request,{},NativeAuditAction::Enroll,0,0,ledger.authority,Bytes{late_text.begin(),late_text.end()}};f.Append({CTxOut{0,f.Event(late_event,ledger)}});ledger=f.Ledger();auto after_late=f.Snapshot(ledger);const auto historic_auditor=NativeAuditOperator(empty,script(6));const auto historic_row=std::find_if(after_late.rows.begin(),after_late.rows.end(),[&](const auto& r){return r.operator_id==historic_auditor;});
+ const auto report_six=AddLabeledReport(f,6,Attribution("Historic Six"),{3,5});ledger=f.Ledger();
+ // Authenticated first enrollment temporarily merges an auditor with the
+ // report owner; subsequent owner enrollment restores qualification later.
+ const auto owner_six_id=NativeAuditOperator(empty,script(6));UniValue merge_body{UniValue::VOBJ};merge_body.pushKV("schema","PGN_TESTNET_PARTICIPANT_V1");merge_body.pushKV("operator_id",owner_six_id.GetHex());merge_body.pushKV("signing_script",HexStr(script(5)));merge_body.pushKV("may_audit",true);const auto merge_text=merge_body.write();NativeAuditEvent merge_event{ledger.authority_request,{},NativeAuditAction::Enroll,0,0,ledger.authority,Bytes{merge_text.begin(),merge_text.end()}};f.next_header_time=172800;f.Append({CTxOut{0,f.Event(merge_event,ledger)}});ledger=f.Ledger();check(!NativeAuditReportQualified(ledger,ledger.at(report_six)),"signed membership can change qualification without another reveal");
+ uint256 late_id;late_id.begin()[0]=99;UniValue late_body{UniValue::VOBJ};late_body.pushKV("schema","PGN_TESTNET_PARTICIPANT_V1");late_body.pushKV("operator_id",late_id.GetHex());late_body.pushKV("signing_script",HexStr(script(6)));late_body.pushKV("may_audit",true);const auto late_text=late_body.write();NativeAuditEvent late_event{ledger.authority_request,{},NativeAuditAction::Enroll,0,0,ledger.authority,Bytes{late_text.begin(),late_text.end()}};f.next_header_time=172900;f.Append({CTxOut{0,f.Event(late_event,ledger)}});ledger=f.Ledger();const auto restored_height=f.tip->nHeight;auto after_late=f.Snapshot(ledger);const auto historic_auditor=NativeAuditOperator(empty,script(6));const auto historic_row=std::find_if(after_late.rows.begin(),after_late.rows.end(),[&](const auto& r){return r.operator_id==historic_auditor;});
  check(NativeAuditOperator(ledger,script(6))==late_id&&historic_row!=after_late.rows.end()&&historic_row->audits_finalized_valid==2&&std::none_of(after_late.rows.begin(),after_late.rows.end(),[&](const auto& r){return r.operator_id==late_id;}),"native signed later enrollment cannot move earlier finalized audit counts");
  check(historic_row->display_name==std::optional<std::string>{"Historic Six"},"later enrollment cannot retroactively move a signed public label");
+ const auto restored_bindings=f.Bindings(ledger);check(LeaderboardQualificationHeight(ledger,ledger.at(report_six),restored_bindings,*f.tip)==restored_height,"qualification date is restored membership inclusion rather than old last reveal");
+ const auto utc_restored=f.Snapshot(ledger,day2);check(counts(utc_restored)[0]==0&&counts(utc_restored)[1]==3&&counts(utc_restored)[2]==0&&volume(utc_restored)==volume(after_late),"later-day restored volume does not borrow previous-day audit counts or reported dates");
  canonical.SetTip(*f.tip);LeaderboardSnapshotCache eviction;eviction.Publish(old_snapshot,canonical);eviction.BeginBuild(&f,f.chain,canonical);eviction.Publish(new_page,canonical);eviction.BeginBuild(&f,f.chain,canonical);eviction.Publish(std::make_shared<const NativeLeaderboardSnapshot>(after_late),canonical);
  check(!eviction.Get(&f,snapshot.tip,f.chain,canonical)&&eviction.Get(&f,repeated.tip,f.chain,canonical)&&eviction.Get(&f,after_late.tip,f.chain,canonical),"two-slot retention evicts only oldest anchor with explicit cache miss");
  AddLabeledReport(f,3,Attribution("Renamed Miner"),{5,6});ledger=f.Ledger();auto renamed=f.Snapshot(ledger);const auto renamed_row=std::find_if(renamed.rows.begin(),renamed.rows.end(),[&](const auto& row){return row.operator_id==first_id;});check(renamed_row!=renamed.rows.end()&&renamed_row->display_name==std::optional<std::string>{"Renamed Miner"}&&renamed_row->tickets_reported==2,"newer signed report from authenticated alias renames only its historical operator");
- AddLabeledReport(f,5,Attribution("<malformed>"),{3,6});ledger=f.Ledger();auto malformed=f.Snapshot(ledger);const auto invalid_name=std::find_if(malformed.rows.begin(),malformed.rows.end(),[&](const auto& row){return row.operator_id==NativeAuditOperator(empty,script(5));});check(invalid_name!=malformed.rows.end()&&!invalid_name->display_name,"authenticated malformed public label stays absent rather than becoming a profile");
+ AddLabeledReport(f,16,Attribution("<malformed>"),{3,6});ledger=f.Ledger();auto malformed=f.Snapshot(ledger);const auto invalid_name=std::find_if(malformed.rows.begin(),malformed.rows.end(),[&](const auto& row){return row.operator_id==NativeAuditOperator(empty,script(16));});check(invalid_name!=malformed.rows.end()&&!invalid_name->display_name,"authenticated malformed public label stays absent rather than becoming a profile");
  f.Append({CTxOut{0,CScript{}<<OP_RETURN}},fork_parent);auto fork_ledger=f.Ledger();auto fork=f.Snapshot(fork_ledger);uint64_t fork_passed=0;Integer fork_volume{};for(const auto& row:fork.rows){fork_passed+=row.audits_finalized_valid;fork_volume+=row.validated_search_positions;}
  check(fork.tip!=snapshot.tip&&fork_passed==0&&fork_volume==0&&fork.rows.size()==2,"reorg removes orphan finalized audits and volume without double counting");
  check(fork.rows[0].display_name==std::optional<std::string>{"Shared Miner"}&&fork.rows[1].display_name==std::optional<std::string>{"Shared Miner"},"reorganization removes orphan rename and restores canonical disclosed label");
  canonical.SetTip(*f.tip);check(!cache.Get(&f,snapshot.tip,f.chain,canonical)&&!cache.Get(&f,repeated.tip,f.chain,canonical),"actual branch reorganization refuses retained orphan anchors");
+ check(!utc_cache.Get(&f,snapshot.tip,f.chain,canonical,day1),"UTC pagination refuses a reorganized anchor without mixing a new branch");
  rejected=false;try{cache.Publish(old_snapshot,canonical);}catch(...){rejected=true;}check(rejected,"orphaned cold projection cannot publish after reorganization");
  check(snapshot.rows.size()==4&&NativeLeaderboardPage(snapshot,0,100)["rows"].size()==4,"prior immutable snapshot stays internally coherent");
  auto late=f.Bindings(fork_ledger);const auto old_id=LeaderboardOperatorAt(late,script(6),0);check(old_id==NativeAuditOperator(empty,script(6)),"pre-enrollment script identity preserved");
@@ -175,5 +194,7 @@ int main(int argc,char** argv){try{
  check(tie_a.display_name==std::optional<std::string>{"Tie B"}&&tie_b.display_name==tie_a.display_name,"equal inclusion height chooses smallest canonical request id independent of iteration");
  ConsiderLeaderboardDisplayName(tie_a,43,id_a,too_long.first,too_long.second);check(tie_a.display_name==std::optional<std::string>{"Tie B"},"over-192-byte disclosure cannot overwrite prior valid public label");
  NativeLeaderboardRow wrong_root;ConsiderLeaderboardDisplayName(wrong_root,1,id_a,claim_a.first,claim_b.second);check(!wrong_root.display_name,"label whose disclosure does not match immutable root is not displayed");
+ auto policy_ledger=*projection_ledger;policy_ledger.audit_chain=f.chain;policy_ledger.audit_operator_rules=NativeAuditOperatorRules{f.chain,16640};auto policy_report=policy_ledger.begin()->second;policy_report.jobs[0]->actor=policy_report.owner;policy_report.jobs[0]->issued=1000;
+ const auto policy_bindings=f.Bindings(policy_ledger);check(!LeaderboardQualifiedAt(policy_ledger,policy_report,policy_bindings,16639)&&!LeaderboardQualifiedAt(policy_ledger,policy_report,policy_bindings,16640),"crossing16640 alone cannot rehabilitate old self assignment because native policy uses fixed job issued height");
  std::cout<<"CHECKS "<<checks<<std::endl;return 0;
  }catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<std::endl;return 1;}}

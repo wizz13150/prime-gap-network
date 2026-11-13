@@ -125,6 +125,19 @@ class CycleExecution:
     def ref(audit):
         return dict(stage='assigned', request=audit['request_id'], slot=audit['slot'], attempt=audit['attempt'])
 
+    def bound_audit(self, audit, position):
+        """Recover a persisted exact binding when current.json missed its update."""
+        if type(position) is not int or position not in (0, 1):
+            raise ValueError('Physical audit position zero or one required')
+        ref = self.ref(audit)
+        with self.lock:
+            matches = [cycle for cycle, tasks in self.cycles.items()
+                       if tasks[position] is not None and all(
+                           tasks[position].get(k) == ref[k] for k in ('request', 'slot', 'attempt'))]
+        if len(matches) > 1:
+            raise ValueError('Physical audit is bound to multiple cycles')
+        return matches[0] if matches else None
+
     def bind(self, cycle, position, audit):
         task = self.ref(audit)
         def change(records):

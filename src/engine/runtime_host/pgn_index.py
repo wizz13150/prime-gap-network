@@ -7,12 +7,15 @@ from pathlib import Path
 import json
 import sqlite3
 import threading
+import time
 from pgn_projection import Projection
 from pgn_paths import state_path, readonly_sqlite_uri
 
 # SQLite enforces the main database page limit, including uncheckpointed pages.
 MAX_SESSION_INDEX_BYTES = 128 * 1024 * 1024
 MAX_WAL_WRITE_START_BYTES = 32 * 1024 * 1024
+WAL_CHECKPOINT_ATTEMPTS = 2
+WAL_CHECKPOINT_BUSY_MS = 100
 
 
 class SessionIndexBudgetExceeded(BufferError):
@@ -21,6 +24,10 @@ class SessionIndexBudgetExceeded(BufferError):
 
 class SessionIndexWalBudgetExceeded(SessionIndexBudgetExceeded):
     code = 'SESSION_INDEX_WAL_BUDGET_REACHED'
+
+    def __init__(self, message, *, observation=None):
+        super().__init__(message)
+        self.observation = observation
 
 
 def index_page_budget(connection):
@@ -55,6 +62,7 @@ class GapIndex(MutableMapping):
         self._writer_thread = threading.get_ident()
         self.configuration = json.loads(json.dumps(configuration))
         self.path = state_path(path)
+        self.last_wal_checkpoint = None
         self.db = sqlite3.connect(str(self.path))
         try:
             self._initialize(session_id, configuration, configuration_hash)
@@ -126,27 +134,74 @@ class GapIndex(MutableMapping):
         self._assert_writer()
         if self.db.in_transaction:
             raise RuntimeError('Session index already has an unresolved transaction')
-        if self.wal_bytes() <= MAX_WAL_WRITE_START_BYTES:
+        before = self.wal_bytes()
+        if before <= MAX_WAL_WRITE_START_BYTES:
             return
         # Never remove a WAL file by hand. SQLite may checkpoint/truncate only
-        # when every reader permits it. A pinned reader yields immediate, typed
-        # backpressure instead of unbounded growth. Allow a short snapshot to
-        # finish before treating the reader as pinned; a zero-time checkpoint
-        # turns ordinary presentation reads into a fatal-looking storage error.
+        # when concurrent users permit it. BUSY does not identify a reader:
+        # another writer may also block it, even with all frames backfilled.
+        # Two short attempts absorb a transient release without restarting the
+        # exact job; a persistent conflict still yields bounded backpressure.
+        started = time.monotonic_ns()
+        observation = self._wal_observation('checkpoint', before)
         timeout = int(self.db.execute('PRAGMA busy_timeout').fetchone()[0])
         try:
-            self.db.execute('PRAGMA busy_timeout=100')
-            try:
-                self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
-            except sqlite3.OperationalError as error:
-                if getattr(error, 'sqlite_errorcode', None) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
-                    raise
+            self.db.execute(f'PRAGMA busy_timeout={WAL_CHECKPOINT_BUSY_MS}').fetchone()
+            for attempt in range(WAL_CHECKPOINT_ATTEMPTS):
+                attempt_started = time.monotonic_ns()
+                sample = dict(attempt=attempt+1, checkpoint=None,
+                              wal_before_bytes=self.wal_bytes(),
+                              sqlite_errorcode=None, sqlite_errorname=None)
+                try:
+                    cursor = self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                    try:
+                        row = cursor.fetchone()
+                    finally:
+                        cursor.close()
+                    if row is None or len(row) != 3 or any(type(n) is not int for n in row):
+                        raise RuntimeError('SQLite checkpoint did not return its three counters')
+                    sample['checkpoint'] = list(row)
+                except sqlite3.OperationalError as error:
+                    code = getattr(error, 'sqlite_errorcode', None)
+                    if code is None or code & 255 not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                        raise
+                    sample.update(sqlite_errorcode=code,
+                                  sqlite_errorname=getattr(error, 'sqlite_errorname', None))
+                sample.update(wal_after_bytes=self.wal_bytes(),
+                              elapsed_ms=(time.monotonic_ns()-attempt_started)/1_000_000)
+                observation['attempts'].append(sample)
+                if sample['wal_after_bytes'] <= MAX_WAL_WRITE_START_BYTES:
+                    break
         finally:
-            self.db.execute(f'PRAGMA busy_timeout={timeout}')
-        if self.wal_bytes() > MAX_WAL_WRITE_START_BYTES:
-            raise SessionIndexWalBudgetExceeded(
-                'Session index WAL budget reached; close the long-running history reader and retry; durable work retained'
-            )
+            self.db.execute(f'PRAGMA busy_timeout={timeout}').fetchone()
+        observation.update(wal_after_bytes=self.wal_bytes(),
+                           elapsed_ms=(time.monotonic_ns()-started)/1_000_000)
+        self.last_wal_checkpoint = observation
+        if observation['wal_after_bytes'] > MAX_WAL_WRITE_START_BYTES:
+            raise self._wal_wait(observation)
+
+    def _wal_observation(self, stage, before):
+        return dict(schema='PGN_SESSION_INDEX_WAL_WAIT_V1', stage=stage,
+                    index=self.path.name, session=self.path.parent.name[:128],
+                    sqlite_version=sqlite3.sqlite_version,
+                    wal_limit_bytes=MAX_WAL_WRITE_START_BYTES,
+                    wal_before_bytes=before, wal_after_bytes=before,
+                    elapsed_ms=0, attempts=[], holder='unknown')
+
+    def _wal_wait(self, observation):
+        self.last_wal_checkpoint = observation
+        attempts = observation['attempts']
+        last = attempts[-1] if attempts else {}
+        result = last.get('checkpoint')
+        checkpoint = ('('+','.join(map(str, result))+')'
+                      if result is not None else
+                      str(last.get('sqlite_errorname') or 'not attempted'))
+        message = ('Storage busy; saved work retained and will retry '
+                   f"(SQLite {observation['sqlite_version']}; "
+                   f"WAL {observation['wal_before_bytes']}->{observation['wal_after_bytes']} B; "
+                   f"checkpoint={checkpoint}; {len(attempts)} attempts/"
+                   f"{observation['elapsed_ms']:.0f} ms)")
+        return SessionIndexWalBudgetExceeded(message, observation=observation)
 
     @contextmanager
     def write_transaction(self):
@@ -155,8 +210,9 @@ class GapIndex(MutableMapping):
             self.db.execute('BEGIN IMMEDIATE')
             # Recheck while holding the SQLite writer lock: another writer may
             # have committed between the checkpoint and BEGIN IMMEDIATE.
-            if self.wal_bytes() > MAX_WAL_WRITE_START_BYTES:
-                raise SessionIndexWalBudgetExceeded('Session index WAL changed before writer admission; durable work retained')
+            admitted_wal = self.wal_bytes()
+            if admitted_wal > MAX_WAL_WRITE_START_BYTES:
+                raise self._wal_wait(self._wal_observation('writer_admission', admitted_wal))
             yield
 
     def meta(self, key, default=None):

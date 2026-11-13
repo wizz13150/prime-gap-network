@@ -3,6 +3,7 @@
 #pragma once
 #include <pgn/native_report_audit.h>
 #include <pgn/rpc_public_attribution.h>
+#include <pgn/leaderboard_utc_window.h>
 #include <algorithm>
 #include <map>
 #include <set>
@@ -55,40 +56,71 @@ struct NativeLeaderboardSnapshot {
     int32_t height{};
     LeaderboardBindings bindings;
     std::vector<NativeLeaderboardRow> rows;
+    LeaderboardUTCWindow window;
 };
+
+inline bool LeaderboardQualifiedAt(const NativeAuditLedger& source,const NativeReportAudit& report,
+                                    const LeaderboardBindings& bindings,int32_t height){
+    NativeAuditLedger identity;
+    identity.audit_chain=source.audit_chain;identity.audit_operator_rules=source.audit_operator_rules;
+    const auto bind=[&](const CScript& script){identity.participants.emplace(Bytes{script.begin(),script.end()},NativeAuditMembership{LeaderboardOperatorAt(bindings,script,height),true});};
+    bind(report.owner);for(const auto& job:report.jobs)if(job)bind(job->actor);
+    // Exact native eligibility formula. Its policy heights are job.issued, not
+    // the current tip; this temporary identity view grants no authority.
+    return NativeAuditReportQualified(identity,report);
+}
+inline int32_t LeaderboardQualificationHeight(const NativeAuditLedger& ledger,const NativeReportAudit& report,
+                                             const LeaderboardBindings& bindings,const CBlockIndex& tip){
+    if(!NativeAuditReportQualified(ledger,report))throw std::runtime_error("No current native qualification");
+    const int32_t first=std::max(report.jobs[0]->passed_height,report.jobs[1]->passed_height);
+    if(first<=0||first>tip.nHeight)throw std::runtime_error("Native qualification date unavailable");
+    std::vector<int32_t> candidates{first};
+    const auto consider=[&](const CScript& script){const auto at=bindings.find(Bytes{script.begin(),script.end()});if(at!=bindings.end()&&at->second.height>first&&at->second.height<=tip.nHeight)candidates.push_back(at->second.height);};
+    consider(report.owner);consider(report.jobs[0]->actor);consider(report.jobs[1]->actor);
+    std::sort(candidates.begin(),candidates.end());candidates.erase(std::unique(candidates.begin(),candidates.end()),candidates.end());
+    bool qualified=false;int32_t current_episode=-1;
+    for(const auto height:candidates){const bool next=LeaderboardQualifiedAt(ledger,report,bindings,height);if(next&&!qualified)current_episode=height;qualified=next;}
+    if(!qualified||current_episode<0)throw std::runtime_error("Native qualification chronology unavailable");
+    return current_episode;
+}
 
 // Caller supplies an immutable ledger from ReadRpcAuditLedger and authenticated
 // enrollment heights from that exact branch. No caller-authored identity/name
 // enters production. All big-integer sums and sorting run outside cs_main.
 inline NativeLeaderboardSnapshot BuildNativeLeaderboard(
     const NativeAuditLedger& ledger, const CBlockIndex& tip, const uint256& genesis,
-    const void* chainstate, LeaderboardBindings bindings) {
+    const void* chainstate, LeaderboardBindings bindings,LeaderboardUTCWindow window={}) {
     NativeLeaderboardSnapshot result{chainstate, genesis, tip.GetBlockHash(), tip.nHeight, std::move(bindings), {}};
+    result.window=window;
     for (const auto& [script, member] : ledger.participants) {
         const auto at = result.bindings.find(script);
         if (at == result.bindings.end() || at->second.operator_id != member.operator_id || at->second.height > tip.nHeight)
             throw std::runtime_error("Leaderboard membership provenance unavailable");
     }
     std::map<uint256, NativeLeaderboardRow> grouped;
-    const auto rowFor = [&](const CScript& script, int32_t height) -> NativeLeaderboardRow& {
+    const auto rowFor = [&](const CScript& script, int32_t height,bool activity=true) -> NativeLeaderboardRow& {
         const auto id = LeaderboardOperatorAt(result.bindings, script, height);
         auto& row = grouped[id]; row.operator_id = id;
         row.signing_scripts.emplace(script.begin(), script.end());
-        row.last_activity_height = std::max(row.last_activity_height, height);
+        if(activity)row.last_activity_height = std::max(row.last_activity_height, height);
         return row;
     };
     for (const auto& [id, report] : ledger) {
         const auto* confirmation = tip.GetAncestor(report.report.height);
         if (!confirmation || confirmation->GetBlockHash() != report.report.block || report.range.length <= 0)
             throw std::runtime_error("Leaderboard report provenance invalid");
-        auto& owner = rowFor(report.owner, report.report.height);
-        ++owner.tickets_reported;
+        const bool reported_in_window=!window.utc_start||window.Contains(confirmation->GetBlockTime());
+        auto& owner = rowFor(report.owner, report.report.height,reported_in_window);
+        if(reported_in_window)++owner.tickets_reported;
         // Cosmetic, self-declared/non-unique; the row was already selected by
         // the authenticated historical operator. Never key identity/rights on it.
         ConsiderLeaderboardDisplayName(owner,report.report.height,id,report.owner_reveal,report.report.commitment.root);
         if (NativeAuditReportQualified(ledger, report)) {
-            ++owner.tickets_validated;
-            owner.validated_search_positions += report.range.length;
+            const auto height=window.utc_start?LeaderboardQualificationHeight(ledger,report,result.bindings,tip):report.report.height;
+            if(!window.utc_start||window.Contains(LeaderboardEventTime(tip,height))){
+                ++owner.tickets_validated;owner.validated_search_positions += report.range.length;
+                if(window.utc_start)owner.last_activity_height=std::max(owner.last_activity_height,height);
+            }
         }
         for (size_t slot = 0; slot < report.jobs.size(); ++slot) {
             const auto& job = report.jobs[slot];
@@ -96,7 +128,9 @@ inline NativeLeaderboardSnapshot BuildNativeLeaderboard(
                 !NativeAuditActorAllowed(ledger, report, job->actor, uint8_t(slot), tip.nHeight)) continue;
             if (job->passed_height <= 0 || job->passed_height > tip.nHeight)
                 throw std::runtime_error("Leaderboard audit finalization provenance unavailable");
-            ++rowFor(job->actor, job->passed_height).audits_finalized_valid;
+            const bool in_window=!window.utc_start||window.Contains(LeaderboardEventTime(tip,job->passed_height));
+            auto& actor=rowFor(job->actor,job->passed_height,in_window);
+            if(in_window)++actor.audits_finalized_valid;
         }
     }
     // Include known aliases for a productive operator, without creating rows
@@ -106,7 +140,8 @@ inline NativeLeaderboardSnapshot BuildNativeLeaderboard(
         if (row != grouped.end()) row->second.signing_scripts.insert(script);
     }
     result.rows.reserve(grouped.size());
-    for (auto& [id, row] : grouped) result.rows.push_back(std::move(row));
+    for (auto& [id, row] : grouped)if(!window.utc_start||row.tickets_reported||row.tickets_validated||row.audits_finalized_valid)
+        result.rows.push_back(std::move(row));
     std::sort(result.rows.begin(), result.rows.end(), [](const auto& a, const auto& b) {
         if (a.validated_search_positions != b.validated_search_positions)
             return a.validated_search_positions > b.validated_search_positions;
@@ -136,6 +171,11 @@ inline UniValue NativeLeaderboardPage(const NativeLeaderboardSnapshot& snapshot,
     if (limit < 1 || limit > 100) throw std::invalid_argument("Leaderboard page must contain 1 through 100 rows");
     UniValue out{UniValue::VOBJ}, rows{UniValue::VARR};
     out.pushKV("schema", "PGN_LEADERBOARD_V1");
+    if(snapshot.window.utc_start){
+        out.pushKV("period","today_utc");out.pushKV("utc_start",*snapshot.window.utc_start);out.pushKV("utc_end",*snapshot.window.utc_start+86400);
+        out.pushKV("event_time_source","canonical_block_header_time");out.pushKV("validation_date_scope","latest_current_qualification_episode");
+        out.pushKV("history_complete",true);
+    }
     out.pushKV("genesis", snapshot.genesis.GetHex()); out.pushKV("bestblockhash", snapshot.tip.GetHex());
     out.pushKV("height", snapshot.height); out.pushKV("total", uint64_t(snapshot.rows.size()));
     out.pushKV("offset", offset); out.pushKV("limit", limit);

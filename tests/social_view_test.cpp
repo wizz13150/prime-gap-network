@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include "social_v4_checks.h"
 #include "social_chat_checks.h"
+#include "social_leaderboard_utc_checks.h"
 #include "social/social_numbers.h"
 #include <QClipboard>
 using namespace pgn;
@@ -103,6 +104,7 @@ int main(int argc,char** argv){
     QTemporaryDir temp;check(temp.isValid(),"No temporary draft directory");
     test::v4::run(app,temp.path()+"/v4-contract");
     test::chat::run(temp.path()+"/send-contract/drafts.json");
+    test::utc::run(app,temp.path()+"/utc-contract/drafts.json");
     social::DraftStore store(temp.path()+"/store/drafts.json");social::Drafts d,loaded;
     d.sections[0].body=QString::fromUtf8("Unicode café 🌌");check(store.save(A(),d).isEmpty()&&store.load(A(),loaded).isEmpty()&&loaded.sections[0].body==d.sections[0].body,"Unicode round-trip failed");
     check(store.path(A())!=store.path(B())&&store.path(A())!=store.path(C()),"Draft identity/genesis collision");
@@ -184,7 +186,7 @@ int main(int argc,char** argv){
         auto badMetric=data;(badMetric.miners[2].*field).provenance.genesis=C().genesis;check(!social::validate(badMetric,pending.last().request).isEmpty(),"Wrong-genesis value accepted");
         badMetric=data;(badMetric.miners[2].*field).provenance.authenticated=false;check(!social::validate(badMetric,pending.last().request).isEmpty(),"Unauthenticated metric accepted");
     }
-    auto* window=find<QComboBox>(*view,"pgn-social-miner-window");check(window->count()==1&&window->currentText()=="All recorded activity"&&pending.last().request.window==social::Window::AllTime,"Qt138 advertises an unsupported observation window");
+    auto* window=find<QComboBox>(*view,"pgn-social-miner-window");check(window->count()==2&&window->itemText(1)==social::windowLabel(social::Window::Day)&&window->currentText()=="All recorded activity"&&pending.last().request.window==social::Window::AllTime,"Leaderboard observation windows or default changed");
     view->refresh();const auto oldPage=pending.last();view->setIdentity(B());oldPage.reply(data,{});check(table->rowCount()==0,"Late old-identity leaderboard page accepted");
     view->setIdentity(A());auto current=snapshot(pending.last().request);current.miners=miners();pending.last().reply(current,{});
     view->refresh();pending.last().reply({},"Source unavailable");check(table->rowCount()==4&&view->property("pgn_social_state_3")=="error","Error erased known snapshot");
@@ -244,7 +246,7 @@ int main(int argc,char** argv){
         }
     }
     std::cout<<"PASS: V4 mixed surfaces and contrast; BBCode source/toolbar/preview/bounds/safe resources; Discord-style channels/participants and scoped drafts; service-authoritative roles and refusal; no hidden superior; identity/revocation/recovery/replay adapter guards; Chat/Leaderboard native context menus with canonical targets; retired sections inaccessible; native keyboard/focus; bounded atomic drafts; genesis/provenance/exact volume sort and scientific display; 500-row pagination; offline/loading/empty/error; safe late/destruction; same-operation send retry/restart; no optimistic insert; Posted vs Delivered; wrong-scope/401 refusal\n";
-    std::cout<<"CHECKS "<<(checks+test::v4::checks+test::chat::checks)<<"\n";
+    std::cout<<"CHECKS "<<(checks+test::v4::checks+test::chat::checks+test::utc::checks)<<"\n";
     return 0;
  }catch(const std::exception& error){std::cerr<<"FAIL: "<<error.what()<<'\n';return 1;}
 }

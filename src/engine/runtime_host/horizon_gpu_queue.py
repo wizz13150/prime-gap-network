@@ -111,11 +111,12 @@ class ResidentGpuQueue:
             return self.service.should_yield(job.context["role"], elapsed, other_ready)
 
     def _next(self):
-        if self.resume_job is not None:
-            if not self.admitted(self.resume_job):
-                return None
+        if self.resume_job is not None and self.admitted(self.resume_job):
             job, self.resume_job = self.resume_job, None
             return job
+        # Retain a paused task whose admission is temporarily closed, but let
+        # independently eligible work run. In particular an audit can be the
+        # prerequisite that makes this paused search admissible again.
         # Search remains FIFO. Audit preparation may finish out of order, so
         # find the first permitted audit within the existing ten-job bound.
         search = self.search[0] if self.search and self.admitted(self.search[0]) else None
@@ -193,7 +194,12 @@ class ResidentGpuQueue:
                     # OFF/ON controls own the desired state. This older job's
                     # pause acknowledgement must not erase a newer ON.
                     with self.condition:
-                        self.resume_job = job
+                        if self.resume_job is None:
+                            self.resume_job = job
+                        else:
+                            # A different paused task may already be deferred.
+                            # Never overwrite its identity or unresolved Future.
+                            (self.search if job.context["role"] == "search" else self.audits).appendleft(job)
                     self.on_paused()
                     announced_pause = True
                     self.last_completed = None

@@ -6,11 +6,12 @@
 #include <QVector>
 #include <functional>
 #include <optional>
+#include <limits>
 namespace pgn::social {
 enum class Section { Chat, Publications, Forum, Miners };
 enum class Window { AllTime, Day, Week, Month };
 inline QString windowLabel(Window w) {
-    switch(w) { case Window::Day:return "Last 24 hours"; case Window::Week:return "Last 7 days";
+    switch(w) { case Window::Day:return QString::fromUtf8("Aujourd’hui (UTC)"); case Window::Week:return "Last 7 days";
     case Window::Month:return "Last 30 days"; default:return "All time"; }
 }
 inline QStringList categories() { return {"General","Mining","Research","Support"}; }
@@ -79,6 +80,16 @@ struct ConnectionSummary {QString networkLabel;int connectedPeers{};};
 struct SendRequest {Identity identity;QString channel,requestId,bbcode;};
 enum class SendOutcome {Accepted,Posted,Rejected,Uncertain};
 struct SendResult {Identity identity;QString channel,requestId;SendOutcome outcome{SendOutcome::Uncertain};QString messageId,reason;};
+struct LeaderboardPeriod {
+    QString anchor;qint64 height{-1};std::optional<qint64> utcStart;
+    bool operator==(const LeaderboardPeriod&)const=default;
+};
+inline bool validLeaderboardPeriod(const LeaderboardPeriod& p,Window window){
+    if(!QRegularExpression("^[0-9a-f]{64}$").match(p.anchor).hasMatch()||p.height<0)return false;
+    if(window==Window::AllTime)return !p.utcStart;
+    return window==Window::Day&&p.utcStart&&*p.utcStart>=0&&*p.utcStart%86400==0
+        &&*p.utcStart<=std::numeric_limits<qint64>::max()-86400;
+}
 struct Snapshot {
     Identity identity; Section section{}; bool authenticated{};
     QString source; QDateTime observedUtc;
@@ -90,6 +101,7 @@ struct Snapshot {
     std::optional<AccessSnapshot> access;
     std::optional<SendAvailability> chatSend;
     std::optional<ConnectionSummary> connection;
+    std::optional<LeaderboardPeriod> leaderboardPeriod;
 };
 struct ThreadRequest {Identity identity;QString topic,cursor;int limit{50};};
 struct ThreadSnapshot {Identity identity;QString topic,source;bool authenticated{};QDateTime observedUtc;QVector<Reply> replies;QString nextCursor;};
@@ -145,6 +157,7 @@ inline QString validate(const Snapshot& v,const ReadRequest& r,QDateTime now=QDa
     }
     if(r.section==Section::Miners) {
         if(!v.entries.isEmpty()||v.window!=r.window)return "Miner observation window does not match the request.";
+        if((r.window==Window::Day&&!v.leaderboardPeriod)||(v.leaderboardPeriod&&!validLeaderboardPeriod(*v.leaderboardPeriod,r.window)))return "Leaderboard interval or canonical anchor is unavailable.";
         for(const auto& m:v.miners) {
             if(m.id.isEmpty()||m.id.size()>256||ids.contains(m.id)||m.name.trimmed().isEmpty()||m.name.size()>160||m.socialMemberId.size()>256)
                 return "Invalid or duplicate miner identity.";

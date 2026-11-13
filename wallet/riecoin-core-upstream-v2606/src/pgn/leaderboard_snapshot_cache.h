@@ -39,9 +39,9 @@ class LeaderboardSnapshotCache {
     }
 public:
     std::mutex build_mutex;
-    std::shared_ptr<const NativeLeaderboardSnapshot> Get(const void* state,const uint256& tip,const uint256& genesis,const CChain& active){
+    std::shared_ptr<const NativeLeaderboardSnapshot> Get(const void* state,const uint256& tip,const uint256& genesis,const CChain& active,LeaderboardUTCWindow window={}){
         AssertLockHeld(cs_main);std::lock_guard guard(mutex_);
-        for(const auto& value:{newest_,previous_})if(Matches(value,state,genesis,active)&&value->tip==tip)return value;
+        for(const auto& value:{newest_,previous_})if(Matches(value,state,genesis,active)&&value->tip==tip&&value->window==window)return value;
         return {};
     }
     // Keep only one prior canonical projection before allocating a successor.
@@ -55,7 +55,7 @@ public:
         AssertLockHeld(cs_main);
         if(!LeaderboardAnchorCanonical(*value,active))throw std::runtime_error("Leaderboard snapshot reset: anchor was reorganized");
         std::lock_guard guard(mutex_);
-        previous_=Matches(newest_,value->chainstate,value->genesis,active)&&newest_->tip!=value->tip?newest_:nullptr;
+        previous_=Matches(newest_,value->chainstate,value->genesis,active)&&!(newest_->tip==value->tip&&newest_->window==value->window)?newest_:nullptr;
         newest_=std::move(value);
     }
 };
