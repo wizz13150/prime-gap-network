@@ -217,7 +217,7 @@ public:
     void presentDirect(){
         const auto scope=scopeKey();const auto data=directPacket_.value("scopes").toObject().value(scope).toObject();
         sessionSummary_->present(directPacket_.value("scopes").toObject().value("session").toObject(),directPacket_.value("scopes").toObject().value("history").toObject(),directPacket_);
-        if(data.isEmpty()){presentedDirect_={};best_->setRowCount(0);recent_->setRowCount(0);gapStatistics_->setRowCount(0);meritStatistics_->setRowCount(0);setProperty("pgn_results_points",QVariant{});state_->setText("Awaiting "+scopeLabel().toLower()+" data");return;}
+        if(data.isEmpty()){presentedDirect_={};latest_={};fill(best_,{});fill(recent_,{});setProperty("pgn_results_best_rows",0);setProperty("pgn_results_recent_rows",0);gapStatistics_->setRowCount(0);meritStatistics_->setRowCount(0);setProperty("pgn_results_points",QVariant{});state_->setText("Awaiting "+scopeLabel().toLower()+" data");return;}
         // Progress/rates still reach the summary on every input. The result
         // tables only need work when their data, identity or layout changes.
         const QJsonObject presentation{{"ticket",directPacket_.value("ticket_id")},{"scope",scopeKey()},
