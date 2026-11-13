@@ -62,7 +62,7 @@ inline std::optional<ElapsedMeritQuote> DeriveElapsedMeritTarget(
 
 struct ElapsedRetargetSchedule {uint256 chain;int32_t height;uint32_t half_life_seconds,retained_floor_q16;int64_t higher_floor_activation_mtp{};uint32_t higher_floor_q16{};};
 inline constexpr int32_t TestnetElapsedRetargetHeight=3456;
-inline constexpr int64_t TestnetGoldFloorActivationMtp=1794607200; // 2026-11-13 22:00 UTC
+inline constexpr int64_t TestnetGoldFloorActivationMtp=1794610800; // 2026-11-13 23:00 UTC
 inline constexpr uint32_t TestnetGoldFloorQ16=55U*32768U; // Exact27.5
 inline std::optional<ElapsedRetargetSchedule> ConfiguredElapsedRetarget(const uint256& chain){
     if(!PgnTestnetServiceActivation(chain))return {};
