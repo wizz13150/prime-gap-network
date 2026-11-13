@@ -17,7 +17,7 @@ from horizon_update_client import AuthenticatedUpdates
 from horizon_component_install import CohortStore, _write, MARKER as INSTALL_MARKER
 import horizon_update_progress as progress
 
-VERSION='2026.11.13.25'
+VERSION='2026.11.13.26'
 
 
 def maintain_installation(cache,context,context_sha,result):
@@ -102,7 +102,7 @@ def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,
     if action=='prepare':return client.prepare(selected)
     stage.require(all(type(request[k])is str and Path(request[k]).is_absolute()for k in ('base_cohort','installation_store')),'Absolute code/store paths required')
     store_path=Path(request['installation_store'])
-    store=(CohortStore(store_path,context,context_sha)if store_path.exists()else CohortStore.initialize(store_path,Path(request['base_cohort']),context,context_sha))
+    store=(CohortStore(store_path,context,context_sha,running_base=Path(request['base_cohort']))if store_path.exists()else CohortStore.initialize(store_path,Path(request['base_cohort']),context,context_sha))
     verify_running_base=None
     if action=='install':
         stage.require(context['platform'] in ('windows-x86_64','linux-x86_64'),'Native installation platform is unsupported')

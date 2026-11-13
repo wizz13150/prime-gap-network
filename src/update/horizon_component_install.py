@@ -177,8 +177,9 @@ def inventory(root):
 
 
 class CohortStore:
-    def __init__(self,root,context,context_sha256):
+    def __init__(self,root,context,context_sha256,*,running_base=None):
         self.root=stage._plain_chain(root);self.context=context;self.context_sha256=context_sha256
+        self.running_base=stage._plain_chain(running_base)if running_base is not None else None
         self.commit_warning=''
         self.retention=dict(removed=0,in_use=0)
         stage.require(stage._read_plain(self.root/'.owner',128)==MARKER,'Not an owned installation store')
@@ -322,7 +323,21 @@ class CohortStore:
     def current(self):
         value=stage._json(stage._read_plain(self.root/'current.json',stage.MAX_MANIFEST))
         stage.require(value.get('schema')=='PGN_ACTIVE_COHORT_V1'and value.get('network')==self.context['network']and value.get('genesis_hash')==self.context['genesis_hash'],'Selector context differs')
-        _,_,digest,_=inventory(Path(value['cohort']))
+        stage.require(type(value.get('cohort'))is str and Path(value['cohort']).is_absolute()and
+            type(value.get('inventory_sha256'))is str and stage.DIGEST.fullmatch(value['inventory_sha256'])and
+            type(value.get('sequence'))is int and 0<=value['sequence']<2**63,'Invalid selected cohort identity')
+        selected=stage._plain_chain(value['cohort'])
+        if self.running_base is not None and self.running_base!=selected and not stage._plain_chain(selected/'components.json').exists():
+            # A manual replacement may outlive its deleted former code folder.
+            # This is a preparation view only: verify the complete actual base
+            # and installed version context; never execute the missing selector.
+            # activate() still requires explicit native ownership adoption first.
+            actual,_,_,_=inventory(self.running_base)
+            stage.require(actual['network']==self.context['network']and actual.get('platform','windows-x86_64')==self.context['platform'],'Running base network or platform differs')
+            versions={c['id']:c['version']for c in actual['components']}
+            stage.require(versions=={c['id']:c['version']for c in self.context['installed']},'Running base differs from installed component context')
+            return value
+        _,_,digest,_=inventory(selected)
         stage.require(digest==value['inventory_sha256'],'Selected cohort changed')
         return value
 
@@ -389,10 +404,13 @@ class CohortStore:
             for installed in self.context['installed']:
                 stage.require(actual_versions.get(installed['id'])==installed['version'],'Installed versions changed since the update request')
             if base!=Path(before['cohort']):
-                selected_inventory=inventory(Path(before['cohort']))[0]
-                for component in selected_inventory['components']:
-                    version=actual_versions.get(component['id'])
-                    stage.require(version is not None and not stage._older(version,component['version']),'Running base would downgrade a selected component')
+                if stage._plain_chain(Path(before['cohort'])/'components.json').exists():
+                    selected_inventory=inventory(Path(before['cohort']))[0]
+                    for component in selected_inventory['components']:
+                        version=actual_versions.get(component['id'])
+                        stage.require(version is not None and not stage._older(version,component['version']),'Running base would downgrade a selected component')
+                else:
+                    stage.require(self.running_base==base,'Missing former installation requires the declared running base')
                 if verify_running_base is not None:
                     # Only explicit installation can adopt an already-running
                     # portable package. Signature/stage validation has completed;
