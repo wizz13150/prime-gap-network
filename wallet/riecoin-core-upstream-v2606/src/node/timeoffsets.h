@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <deque>
+#include <limits>
 
 namespace node {
 class Warnings;
@@ -33,14 +34,20 @@ private:
     node::Warnings& m_warnings;
 
 public:
-    /** Do not connect to peers with clock off by more than this amount.
-     *  Raise a warning if it is found that the difference between system and network time is larger. */
+    /** Reference-network admission bound; native PGN uses this for warnings only.
+     * A VERSION time sample includes unmeasured one-way delivery delay. */
     static constexpr std::chrono::seconds MAX_TIME_OFFSET{5};
 
     /** Compare VERSION time with socket receipt, not delayed message handling. */
     static constexpr std::chrono::seconds FromVersionTime(std::chrono::seconds peer_time, std::chrono::seconds receipt_time)
     {
-        return peer_time - receipt_time;
+        using Rep = std::chrono::seconds::rep;
+        const Rep peer{peer_time.count()}, receipt{receipt_time.count()};
+        constexpr auto low{std::numeric_limits<Rep>::min()};
+        constexpr auto high{std::numeric_limits<Rep>::max()};
+        if (receipt > 0 && peer < low + receipt) return std::chrono::seconds{low};
+        if (receipt < 0 && peer > high + receipt) return std::chrono::seconds{high};
+        return std::chrono::seconds{peer - receipt};
     }
 
     /** Add a new time offset sample. */

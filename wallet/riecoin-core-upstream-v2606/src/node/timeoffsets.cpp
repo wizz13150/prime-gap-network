@@ -55,7 +55,7 @@ bool TimeOffsets::WarnIfOutOfSync() const
 
     bilingual_str msg{strprintf(_(
         "Your computer's date and time appear to be more than %d seconds out of sync with the network, "
-        "this may prevent connections to peers. Consider enabling automatic clock synchronization or "
+        "this may prevent validating current blocks. Consider enabling automatic clock synchronization or "
         "features such as NTP. After you've confirmed your computer's clock and timezone, this message "
         "should no longer appear when you restart your node. Without a restart, it should stop showing "
         "automatically after you've connected to a sufficient number of new outbound peers, which may "

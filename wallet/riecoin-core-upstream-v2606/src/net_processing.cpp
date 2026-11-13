@@ -3560,7 +3560,14 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             m_outbound_time_offsets.WarnIfOutOfSync();
         }
 
-        if (std::chrono::abs(peer.m_time_offset.load()) > TimeOffsets::MAX_TIME_OFFSET
+        // VERSION time is an unauthenticated one-way sample. Transport or sender
+        // queue delay is indistinguishable from a clock behind ours. Native PGN
+        // keeps the warning/diagnostic but validates every block timestamp with
+        // our local clock in ContextualCheckBlockHeader, never this peer sample.
+        // Retain the reference-network admission rule outside the native profile.
+        if (!m_chainman.GetParams().GetConsensus().pgn_native_proof.has_value()
+         && (peer.m_time_offset.load() > TimeOffsets::MAX_TIME_OFFSET
+          || peer.m_time_offset.load() < -TimeOffsets::MAX_TIME_OFFSET)
          && m_chainman.GetParams().GetChainType() != ChainType::REGTEST) // Disable for RegTest since this breaks many Tests.
         {
             LogInfo("peer=%d has too large time offset %d s, disconnecting (check your system clock and timezone if it happens too often and prevents you from connecting to peers)\n", pfrom.GetId(), Ticks<std::chrono::seconds>(peer.m_time_offset.load()));
