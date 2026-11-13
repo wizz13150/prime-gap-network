@@ -74,6 +74,22 @@ class NativeDutyTests(unittest.TestCase):
         x=copy.deepcopy(base);x['request_id']='b'*64;values.append(x)
         for value in values:
             with self.subTest(value=value),self.assertRaises(ValueError):duty.context(value,work())
+    def test_two_confirmed_slots_of_one_report_survive_cold_cycle_resume(self):
+        w=work();rpc=Rpc(w)
+        rpc.w['native_audit_service']['credits'][1]['request_id']=rpc.w['native_audit_service']['credits'][0]['request_id']
+        value=duty.observe(rpc,w,w['genesis'])
+        self.assertEqual([c['slot']for c in value['credits']],[0,1])
+        with tempfile.TemporaryDirectory()as path:
+            with WorkCycleJournal(path,w['genesis'])as journal:
+                journal.prepare(w,native_service=value)
+                self.assertTrue(journal.may_search(w['request_id']))
+                self.assertEqual(len(journal.snapshot(w['request_id'])['native_service']['credits']),2)
+            with WorkCycleJournal(path,w['genesis'])as reopened:
+                self.assertTrue(reopened.may_search(w['request_id']))
+                self.assertEqual(duty.observe(rpc,w,w['genesis'],value),value)
+    def test_same_slot_attempt_cannot_be_counted_twice_by_changing_commitment(self):
+        w=work();value=receipt(w);value['credits'][1]=dict(value['credits'][0],commitment='8'*64)
+        with self.assertRaises(ValueError):duty.context(value,w)
     def test_only_explicit_missing_rpc_allows_legacy_gate(self):
         class Missing:
             def __init__(self,code):self.code=code

@@ -35,17 +35,17 @@ def context(value,work):
             or type(value['issuance_height'])is not int or not 0<value['issuance_height']<1<<31
             or type(value['credits'])is not list or len(value['credits'])>2):
         raise ValueError('Malformed confirmed native service context')
-    seen=set();reports=set()
+    seen=set()
     for ref in value['credits']:
         if (type(ref)is not dict or set(ref)!={'request_id','slot','attempt','commitment'}
-                or not identity(ref['request_id'])or ref['request_id']==work['request_id']or ref['request_id']in reports
+                or not identity(ref['request_id'])or ref['request_id']==work['request_id']
                 or type(ref['slot'])is not int or ref['slot']not in(0,1)
                 or type(ref['attempt'])is not int or not 0<=ref['attempt']<1<<32
                 or type(ref['commitment'])is not str or re.fullmatch('[0-9a-f]{64}',ref['commitment'])is None):
             raise ValueError('Invalid or reused confirmed audit credit')
         key=(ref['request_id'],ref['slot'],ref['attempt'])
         if key in seen:raise ValueError('Duplicate confirmed audit credit')
-        seen.add(key);reports.add(ref['request_id'])
+        seen.add(key)
     return copy.deepcopy(value)
 
 
