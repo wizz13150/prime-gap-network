@@ -1,5 +1,6 @@
 #include <array>
 #include <new>
+#include <streams.h>
 // Copyright (c) 2026 The PGN developers. MIT.
 // Blind audit events: commitment precedes every answer disclosure.
 #pragma once
@@ -363,11 +364,11 @@ inline bool SameReportBase(const NativeReportAudit& a,const NativeReportAudit& b
         a.range.ticket_id==b.range.ticket_id&&a.range.start==b.range.start&&
         a.range.length==b.range.length&&a.range.segments==b.range.segments;
 }
-inline bool Fits(const NativeAuditLedger& ledger,size_t extra_bytes)
+inline bool Fits(const NativeAuditLedger& ledger,size_t extra_bytes,size_t resident_limit=16*1024*1024)
 {
-    constexpr size_t limit=16*1024*1024;
+    const size_t limit=resident_limit;
     size_t used=sizeof(ledger)+1024;
-    if(extra_bytes>limit-used)return false;
+    if(used>limit||extra_bytes>limit-used)return false;
     used+=extra_bytes;
     const auto charge=[&](size_t bytes){if(bytes>limit-used)return false;used+=bytes;return true;};
     if(!charge(ledger.authority.capacity()))return false;
@@ -385,6 +386,7 @@ inline bool Fits(const NativeAuditLedger& ledger,size_t extra_bytes)
     }
     return true;
 }
+#include <pgn/native_audit_checkpoint_codec.h>
 template<class Extra> struct LedgerState {NativeAuditLedger audits;Extra extra;};
 template<class Extra,class Context> struct Snapshot {
     uint256 chain,tip;int32_t height{-1};
@@ -392,8 +394,16 @@ template<class Extra,class Context> struct Snapshot {
     std::array<uint64_t,22> budgets{};
     std::optional<Context> context;
     std::optional<LedgerState<Extra>> state;
+    std::optional<std::vector<NativeReplayCheckpointPin>> disk;
+
 };
 struct NoExtraState {};
+template<class Extra>struct ExtraCodec;
+template<>struct ExtraCodec<NoExtraState>{
+    static constexpr uint8_t id=0;
+    static void Write(DataStream&,const NoExtraState&,std::vector<std::pair<uint256,size_t>>*){}
+    static NoExtraState Read(DataStream&){return {};}
+};
 
 // Keep hook state together with the ledger at the same authenticated prefix.
 // BeforeBlock runs before that block's audit events, including on extension.
@@ -402,7 +412,7 @@ inline std::optional<LedgerState<Extra>> ReadIncremental(
     const CCoinsView& view,const CBlockIndex& parent,const NativeRequestHistoryArchive& history,
     const RangePolicyReadBudget& policy_budget,const RangeScheduleBudget& schedule_budget,
     ScriptWorkBudget signature_budget,Snapshot<Extra,Context>& cached,const Context& context,
-    BeforeBlock&& before_block,ExtraCharge&& extra_charge)
+    BeforeBlock&& before_block,ExtraCharge&& extra_charge,size_t resident_limit=16*1024*1024)
 {
     AssertLockHeld(cs_main);
     const auto full=[&]() -> std::optional<LedgerState<Extra>> {
@@ -414,6 +424,18 @@ inline std::optional<LedgerState<Extra>> ReadIncremental(
         if(!ledger)return {};
         return LedgerState<Extra>{std::move(*ledger),std::move(extra)};
     };
+    // Recover only a digest this process retained after actual validation.
+    // A restart has no digest and must use the independent full replay oracle.
+    if(!cached.state&&cached.disk){
+        try{
+            const auto raw=history.LoadReplayCheckpoint(ExtraCodec<Extra>::id,*cached.disk);
+            RequireAudit(raw.has_value(),"Changed replay checkpoint");
+            DataStream stream{std::span<const unsigned char>{*raw}};
+            auto ledger=ReadCheckpointLedger(stream);auto extra=ExtraCodec<Extra>::Read(stream);
+            RequireAudit(stream.empty(),"Trailing replay checkpoint bytes");
+            cached.state=LedgerState<Extra>{std::move(ledger),std::move(extra)};
+        }catch(const std::exception&){cached=Snapshot<Extra,Context>{};}
+    }
     const auto key=NativeAuditReplayBudgetKey(policy_budget,schedule_budget,signature_budget);
     const auto head=view.GetPgnFactHead();
     const auto* anchor=cached.height>=0&&cached.height<=parent.nHeight?parent.GetAncestor(cached.height):nullptr;
@@ -457,13 +479,30 @@ inline std::optional<LedgerState<Extra>> ReadIncremental(
     if(!reuse){cached=Snapshot<Extra,Context>{};result=full();}
     try{
         const auto charge=result?extra_charge(result->extra):std::optional<size_t>{};
-        if(result&&head&&charge&&Fits(result->audits,*charge)){
+        if(result&&head){
             Snapshot<Extra,Context> next;
             next.chain=head->chain;next.tip=parent.GetBlockHash();next.height=parent.nHeight;
-            next.archive=&history;next.budgets=key;next.context=context;next.state=*result;
+            next.archive=&history;next.budgets=key;next.context=context;
+            if(charge&&Fits(result->audits,*charge,resident_limit))next.state=*result;
+            else{
+                DataStream stream;std::vector<std::pair<uint256,size_t>> offsets;
+                WriteCheckpointLedger(stream,result->audits,&offsets);
+                uint256 extra_id;extra_id.begin()[0]=2;offsets.emplace_back(extra_id,stream.size());
+                ExtraCodec<Extra>::Write(stream,result->extra,&offsets);
+                const auto raw=std::span<const unsigned char>{reinterpret_cast<const unsigned char*>(stream.data()),stream.size()};
+                std::vector<NativeReplayCheckpointPin> pins;pins.reserve(offsets.size());
+                for(size_t i=0;i<offsets.size();++i){
+                    const size_t end=i+1<offsets.size()?offsets[i+1].second:raw.size();
+                    const auto piece=raw.subspan(offsets[i].second,end-offsets[i].second);
+                    pins.push_back({offsets[i].first,piece.size(),AuditSha(piece)});
+                }
+                const std::vector<NativeReplayCheckpointPin> empty;
+                history.StoreReplayCheckpoint(ExtraCodec<Extra>::id,raw,pins,cached.disk?*cached.disk:empty);
+                next.disk=std::move(pins);
+            }
             cached=std::move(next);
         }else cached=Snapshot<Extra,Context>{};
-    }catch(const std::bad_alloc&){cached=Snapshot<Extra,Context>{};}
+    }catch(const std::exception&){cached=Snapshot<Extra,Context>{};}
     return result;
 }
 } // namespace native_audit_replay_detail

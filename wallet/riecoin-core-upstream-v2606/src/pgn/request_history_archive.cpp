@@ -5,6 +5,10 @@
 #include <streams.h>
 #include <merkleblock.h>
 #include <cstring>
+#include <crypto/sha256.h>
+#include <map>
+#include <set>
+#include <memory>
 
 namespace pgn::core {
 namespace {
@@ -38,6 +42,58 @@ struct Record {
         *this=std::move(next);
     }
 };
+}
+namespace {
+auto ReplayKey(uint8_t codec,const uint256& key){return std::pair{std::string{"PGN/replay-checkpoint/v1"},std::pair{codec,key}};}
+struct ReplayValue {
+    size_t expected{};std::vector<unsigned char> bytes;
+    template<class Stream>void Unserialize(Stream& s){
+        const auto size=ReadCompactSize(s,false);
+        if(size!=expected||size!=s.size())throw std::ios_base::failure("Replay checkpoint size mismatch");
+        bytes.resize(size);s.read(std::as_writable_bytes(std::span{bytes}));
+    }
+};
+}
+size_t NativeRequestHistoryArchive::StoreReplayCheckpoint(uint8_t codec,std::span<const unsigned char> raw,
+    std::span<const NativeReplayCheckpointPin> next,std::span<const NativeReplayCheckpointPin> prior)const{
+    AssertLockHeld(cs_main);CDBBatch batch{m_db};
+    std::map<uint256,const NativeReplayCheckpointPin*> old;
+    for(const auto& pin:prior)old.emplace(pin.key,&pin);
+    size_t offset{},changed{};
+    for(const auto& pin:next){
+        if(pin.bytes>raw.size()-offset)throw std::ios_base::failure("Invalid checkpoint extent");
+        const auto found=old.find(pin.key);
+        if(found==old.end()||found->second->bytes!=pin.bytes||found->second->digest!=pin.digest){
+            batch.Write(ReplayKey(codec,pin.key),std::vector<unsigned char>{raw.begin()+offset,raw.begin()+offset+pin.bytes});++changed;
+        }
+        if(found!=old.end())old.erase(found);offset+=pin.bytes;
+    }
+    if(offset!=raw.size())throw std::ios_base::failure("Trailing checkpoint extent");
+    for(const auto& [key,pin]:old){batch.Erase(ReplayKey(codec,key));++changed;}
+    if(prior.empty()){
+        // A fresh process has no trusted pin list. Retire old branch-only cache
+        // keys using names alone; no database value establishes authority.
+        std::set<uint256> current;for(const auto& pin:next)current.insert(pin.key);
+        std::unique_ptr<CDBIterator> cursor{m_db.NewIterator()};cursor->Seek(ReplayKey(codec,uint256{}));
+        while(cursor->Valid()){
+            decltype(ReplayKey(codec,uint256{})) key;
+            if(!cursor->GetKey(key)||key.first!="PGN/replay-checkpoint/v1"||key.second.first!=codec)break;
+            if(!current.contains(key.second.second)){batch.Erase(key);++changed;}
+            cursor->Next();
+        }
+    }
+    if(changed)m_db.WriteBatch(batch); // Atomic latest projection, no per-block copies.
+    return changed;
+}
+std::optional<std::vector<unsigned char>> NativeRequestHistoryArchive::LoadReplayCheckpoint(uint8_t codec,
+    std::span<const NativeReplayCheckpointPin> pins)const{
+    AssertLockHeld(cs_main);std::vector<unsigned char> out;
+    for(const auto& pin:pins){
+        ReplayValue value{pin.bytes,{}};if(!m_db.Read(ReplayKey(codec,pin.key),value))return {}; // Auxiliary cache: caller-bound decoder, then mandatory process digest.
+        std::array<unsigned char,32> digest;CSHA256{}.Write(value.bytes.data(),value.bytes.size()).Finalize(digest.data());
+        if(digest!=pin.digest)return {};out.insert(out.end(),value.bytes.begin(),value.bytes.end());
+    }
+    return out;
 }
 NativeRequestHistoryArchive::NativeRequestHistoryArchive(fs::path path,size_t bytes):m_db(Parameters(std::move(path),bytes)){}
 RequestArchiveVerdict NativeRequestHistoryArchive::StoreBlock(const CCoinsView& view,const CBlockIndex& parent,

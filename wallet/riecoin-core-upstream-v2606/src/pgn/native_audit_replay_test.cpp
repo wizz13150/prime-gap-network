@@ -1,5 +1,6 @@
 // Public known-key synthetic native history. No live wallet/network.
 #include <pgn/native_audit_replay_test_helpers.h>
+#include <pgn/native_work_duty_admission.h>
 #include <pgn/chain_science_policy.h>
 #include <pgn/chain_monetary_policy.h>
 #include <pgn/candidate_reserved_science.h>
@@ -183,6 +184,51 @@ int main(int argc,char** argv){
     NativeRequestHistoryArchive missing{path/"missing-history",1<<20};
     need(!compare(view_admitted,admitted_index,missing,policy_budget,schedule,signature_budget),"Different empty archive borrowed cached authority");
     need(compare(view_admitted,admitted_index,history,policy_budget,schedule,signature_budget).has_value(),"Recovery after unavailable archive");
+
+    // Force the exact resident-cache boundary using genuine signed history.
+    // The callback count distinguishes incremental restoration from replay.
+    using namespace native_audit_replay_detail;
+    Snapshot<NoExtraState,uint8_t> spilled;
+    unsigned replayed{};
+    const auto disk_read=[&](){return ReadIncremental(view_admitted,admitted_index,history,policy_budget,schedule,signature_budget,spilled,uint8_t{0},
+        [&](const NativeAuditLedger&,const CBlockIndex&,const VerifiedNativeRequestBlock&,NoExtraState&){++replayed;return true;},
+        [](const NoExtraState&)->std::optional<size_t>{return 0;},1);};
+    auto first_disk=disk_read();need(first_disk&&spilled.disk&&!spilled.state&&replayed>0,"Full verified prefix was not checkpointed at resident boundary");
+    need(NativeAuditReplaySame(first_disk->audits,*restored),"Spilled authenticated state differs from full replay");
+    auto immediate=history.LoadReplayCheckpoint(0,*spilled.disk);need(immediate.has_value(),"checkpoint immediate read failed");
+    DataStream immediate_stream{std::span<const unsigned char>{*immediate}};auto immediate_ledger=ReadCheckpointLedger(immediate_stream);
+    need(immediate_stream.empty()&&NativeAuditReplaySame(immediate_ledger,*restored),"checkpoint immediate codec mismatch");
+    replayed=0;auto second_disk=disk_read();need(second_disk&&spilled.disk&&!spilled.state&&replayed==0,"Resident boundary repeated whole history");
+    need(NativeAuditReplaySame(first_disk->audits,second_disk->audits),"Checkpoint restoration changed audit state");
+    auto raw=history.LoadReplayCheckpoint(0,*spilled.disk);need(raw&&raw->size()>10,"Stored checkpoint unavailable");
+    need(history.StoreReplayCheckpoint(0,*raw,*spilled.disk,*spilled.disk)==0,"Unchanged checkpoint rewrote database entries");
+    auto pins=*spilled.disk;
+    need(history.StoreReplayCheckpoint(254,*raw,pins,{})==pins.size(),"Initial auxiliary projection missed entries");
+    auto changed_bytes=*raw;size_t position=pins.front().bytes;need(pins.size()>2&&pins[1].bytes>0,"Per-report checkpoint not separated");
+    changed_bytes[position]^=1;
+    pins[1].digest=AuditSha(std::span<const unsigned char>{changed_bytes}.subspan(position,pins[1].bytes));
+    need(history.StoreReplayCheckpoint(254,changed_bytes,pins,*spilled.disk)==1,"One changed report rewrote other entries");
+    const auto changed_read=history.LoadReplayCheckpoint(254,pins);need(changed_read&&*changed_read==changed_bytes,"Atomic changed-entry projection roundtrip");
+    const auto header=std::span<const unsigned char>{changed_bytes}.first(pins.front().bytes);
+    const std::vector<NativeReplayCheckpointPin> header_only{pins.front()};
+    need(history.StoreReplayCheckpoint(254,header,header_only,{})==pins.size(),"Fresh-context rewrite retained old branch-only cache entries");
+    need(history.LoadReplayCheckpoint(254,header_only).has_value()&&!history.LoadReplayCheckpoint(254,pins),"Retired branch projection remained readable");
+    raw->back()^=1;history.StoreReplayCheckpoint(0,*raw,*spilled.disk,{});
+    replayed=0;auto repaired=disk_read();need(repaired&&replayed>0&&NativeAuditReplaySame(repaired->audits,*restored),"Corrupt checkpoint was accepted or prevented exact replay repair");
+    Snapshot<NoExtraState,uint8_t> restarted;
+    replayed=0;auto cold=ReadIncremental(view_admitted,admitted_index,history,policy_budget,schedule,signature_budget,restarted,uint8_t{0},
+        [&](const NativeAuditLedger&,const CBlockIndex&,const VerifiedNativeRequestBlock&,NoExtraState&){++replayed;return true;},
+        [](const NoExtraState&)->std::optional<size_t>{return 0;},1);
+    need(cold&&replayed>0&&NativeAuditReplaySame(cold->audits,*restored),"Fresh process context trusted unauthenticated disk projection");
+    auto rich=*restored;auto& rich_report=rich.begin()->second;rich_report.expected.emplace();for(size_t i=0;i<100;++i)(*rich_report.expected)[i]=i*17;
+    rich_report.details_root=AuditSha(Bytes{1,2,3});rich_report.owner_reveal="private-codec-fixture";
+    for(unsigned slot=0;slot<2;++slot){auto& job=rich_report.jobs[slot];job.emplace();job->actor=miner;job->attempt=slot+3;job->issued=3;job->deadline=33;job->stage=slot?NativeAuditJob::Failed:NativeAuditJob::Passed;job->commitment="commitment";job->reveal="reveal";job->passed_height=17;job->time_lease=auditTimeLease(100,60);}
+    DataStream encoded;WriteCheckpointLedger(encoded,rich);auto decoded=ReadCheckpointLedger(encoded);need(encoded.empty()&&NativeAuditReplaySame(rich,decoded),"Complete checkpoint codec dropped audit fields");
+    NativeDutySpent spent;spent.emplace(NativeDutyReference{hashes[0],1,7,std::string(64,'a')},hashes[1]);
+    DataStream spent_stream;std::vector<std::pair<uint256,size_t>> spent_offsets;ExtraCodec<NativeDutySpent>::Write(spent_stream,spent,&spent_offsets);
+    auto spent_copy=ExtraCodec<NativeDutySpent>::Read(spent_stream);need(spent_stream.empty()&&spent_copy==spent&&spent_offsets.size()==1,"Spent-credit checkpoint lost or duplicated a reference");
+    std::cerr<<"PASS resident-boundary, no-history same-tip, corruption repair, cold distrust, full-field codec\n";
+
     std::cout<<"{\"PASS\":true,\"whole_state_comparisons\":"<<comparisons<<",\"native_signed_enrollments\":2,\"reorg_and_restore\":true,\"warm_budget_rejections\":true,\"empty_archive_refused\":true}\n";
     return 0;
   }catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}
