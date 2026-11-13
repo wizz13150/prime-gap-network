@@ -7,6 +7,7 @@
 #include "ui/social_access_dialog.h"
 #include "ui/social_controls.h"
 #include "ui/social_presentation.h"
+#include "ui/social_chat_list.h"
 #include <QInputMethodEvent>
 #include "ui/social_forum_thread.h"
 #include <QFrame>
@@ -55,10 +56,6 @@ QVBoxLayout* vertical(QWidget* widget,int margin=0){
 }
 QString stamp(const QDateTime& value){return value.toUTC().toString("yyyy-MM-dd HH:mm 'UTC'");}
 QString safeTip(const QString& value){return "<qt>"+value.left(1000).toHtmlEscaped().replace("\n","<br/>")+"</qt>";}
-void settleInitialChat(QListWidget* list){
-    QTimer::singleShot(0,list,[list]{if(!list->isVisible()||!list->property("pgn_initial_scroll").toBool())return;
-        list->doItemsLayout();list->scrollToBottom();list->setProperty("pgn_initial_scroll",false);});
-}
 QString metadata(const social::Entry& entry){
     QStringList result;if(!entry.author.isEmpty())result<<entry.author;
     if(entry.createdUtc.isValid())result<<stamp(entry.createdUtc);
@@ -138,7 +135,7 @@ SocialView::SocialView(QString path,social::Services services,QWidget* parent)
             p.dataSlot->addWidget(p.ranking);
              connect(p.filter,&QComboBox::currentIndexChanged,this,[this]{auto& q=pages_[3];++q.generation;q.busy=q.loaded=false;q.nextCursor.clear();q.miners.clear();q.leaderboardPeriod.reset();q.windowInfo->setText(q.filter->currentIndex()==1?"UTC interval loading…":QString{});renderMiners();updateAccess();read(3);});
         }else{
-        p.list=new QListWidget;p.list->setWordWrap(true);p.list->setMouseTracking(true);p.list->viewport()->setAttribute(Qt::WA_Hover,true);p.list->setObjectName(QString("pgn-social-list-%1").arg(i));p.list->setAccessibleName(i==0?"Global message chronology":i==1?"Publication feed":"Forum topics");
+        p.list=i==0?new SocialChatList:new QListWidget;p.list->setWordWrap(true);p.list->setMouseTracking(true);p.list->viewport()->setAttribute(Qt::WA_Hover,true);p.list->setObjectName(QString("pgn-social-list-%1").arg(i));p.list->setAccessibleName(i==0?"Global message chronology":i==1?"Publication feed":"Forum topics");
             p.list->setItemDelegate(new SocialEntryDelegate(i,p.list));p.list->setMouseTracking(true);
             if(i==0)p.list->installEventFilter(this);if(i==2){p.list->viewport()->installEventFilter(this);p.list->setCursor(Qt::PointingHandCursor);}
             p.list->setSelectionMode(QAbstractItemView::SingleSelection);p.dataSlot->addWidget(p.list);
@@ -150,6 +147,7 @@ SocialView::SocialView(QString path,social::Services services,QWidget* parent)
         if(i==2){auto* headers=new QHBoxLayout;headers->setContentsMargins(24,4,12,4);headers->setSpacing(0);headers->addWidget(text("Topic"),1);for(const auto& spec:QList<QPair<QString,int>>{{"Participants",140},{"Replies",88},{"Activity",140},{"State",100}}){auto* label=text(spec.first);label->setFixedWidth(spec.second);headers->addWidget(label);}browseBox->addLayout(headers);}
         browseBox->addWidget(p.dataSlot,1);
         auto* pager=new QHBoxLayout;p.count=text({});p.count->setObjectName(QString("pgn-social-loaded-%1").arg(i));pager->addWidget(p.count,1);
+        if(i==0){auto* chat=static_cast<SocialChatList*>(p.list);auto* latest=new QPushButton("New messages · Jump to latest");latest->setObjectName("pgn-social-new-messages");latest->setAccessibleName("New messages. Jump to latest message");latest->hide();pager->addWidget(latest);chat->unseenChanged=[latest](bool unseen){latest->setVisible(unseen);};connect(latest,&QPushButton::clicked,chat,[this,chat]{chat->jumpToLatest();read(0);});}
         p.more=new QPushButton(i==0?"Older messages":i==1?"Older publications":i==2?"More topics":"Load more");p.more->setObjectName(QString("pgn-social-more-%1").arg(i));pager->addWidget(p.more);browseBox->addLayout(pager);
         connect(p.more,&QPushButton::clicked,this,[this,i]{read(i,true);});
         if(i==0){
@@ -301,9 +299,9 @@ bool SocialView::saveDrafts(){
 }
 void SocialView::setIdentity(social::Identity identity){
     if(identity==identity_)return;if(dirty_)saveDrafts();autosave_.stop();++sendEpoch_;identity_=std::move(identity);drafts_={};dirty_=false;loadError_.clear();loadFailed_=false;replyId_.clear();pages_[0].canSend=pages_[0].sending=false;pages_[0].sendNotice.clear();pages_[0].sendWhy.clear();
-    channel_.clear();channelData_.clear();channels_->clear();members_->clear();replyPostId_.clear();memberCount_->setText("Participants unavailable");channelTitle_->setText("Conversation");channelDescription_->clear();access_.reset();if(accessDialog_)delete accessDialog_;
+    static_cast<SocialChatList*>(pages_[0].list)->resetConversation();channel_.clear();channelData_.clear();channels_->clear();members_->clear();replyPostId_.clear();memberCount_->setText("Participants unavailable");channelTitle_->setText("Conversation");channelDescription_->clear();access_.reset();if(accessDialog_)delete accessDialog_;
     if(identity_.valid()){loadError_=store_.load(identity_,drafts_);loadFailed_=!loadError_.isEmpty();const auto key=store_.path(identity_);if(pending_.contains(key)){drafts_=pending_.value(key);dirty_=true;}else if(pending_.size()>=64){loadFailed_=true;loadError_="Recover pending drafts before editing another identity.";}}
-    for(auto& p:pages_){++p.generation;++p.threadGeneration;p.threadBusy=false;if(p.thread)p.thread->clear();p.loaded=p.busy=p.replyMode=false;p.entries.clear();p.miners.clear();p.selectedId.clear();p.nextCursor.clear();p.observedUtc={};p.leaderboardPeriod.reset();if(p.windowInfo){p.windowInfo->clear();p.windowInfo->setToolTip({});}
+    for(auto& p:pages_){++p.generation;++p.threadGeneration;p.threadBusy=false;if(p.thread)p.thread->clear();p.loaded=p.busy=p.replyMode=false;p.entries.clear();p.miners.clear();p.selectedId.clear();p.nextCursor.clear();p.chatHistoryGeneration.clear();p.observedUtc={};p.leaderboardPeriod.reset();if(p.windowInfo){p.windowInfo->clear();p.windowInfo->setToolTip({});}
         if(p.list){QSignalBlocker block(p.list);p.list->clear();}if(p.detail)p.detail->clear();if(p.ranking)p.ranking->setRowCount(0);if(p.journey)p.journey->setCurrentIndex(0);}
     updateAccess();for(int i=0;i<3;++i)loadEditor(i);read(tabs_->currentIndex());
 }
@@ -385,6 +383,7 @@ void SocialView::readThread(){
 
 void SocialView::renderList(int i){
     auto& p=pages_[i];QString selected;const int row=p.list->currentRow();if(row>=0&&row<p.list->count())selected=p.list->item(row)->data(Qt::UserRole).toString();
+    auto* chat=i==0?static_cast<SocialChatList*>(p.list):nullptr;if(chat)chat->beginUpdate();
     const int scroll=p.list->verticalScrollBar()->value();QSignalBlocker block(p.list);p.list->clear();
     int entryIndex=0;for(const auto& e:p.entries){const auto display=SocialDisplayName(e.authorId,e.author);QString value=i==0?display+" · "+stamp(e.createdUtc)+"\n"+e.body:i==1?e.title+"\n"+metadata(e)+"\n"+e.body.left(210):e.title+"\n"+metadata(e);
         auto* item=new QListWidgetItem(value);item->setData(Qt::UserRole,e.id);item->setData(AuthorRole,display);item->setData(TimeRole,i==0?e.createdUtc.toUTC().toString("HH:mm"):stamp(e.createdUtc));item->setData(BodyRole,e.body);item->setData(TitleRole,e.title);item->setData(CategoryRole,e.category);item->setData(AuthorIdRole,e.authorId);item->setData(RepliesRole,e.replyCount.value_or("unavailable"));item->setData(ActivityRole,e.lastActivity.isValid()?e.lastActivity.toUTC().toString("MM-dd HH:mm 'UTC'"):"unavailable");item->setData(StateRole,e.state.isEmpty()?"unavailable":e.state);
@@ -392,7 +391,7 @@ void SocialView::renderList(int i){
         item->setData(ActivityTimeRole,e.lastActivity);item->setData(LastContributorRole,e.lastContributor);QStringList people,peopleInfo;if(e.contributors)for(const auto& person:*e.contributors){people<<person.name;peopleInfo<<person.name+" · "+person.id;}item->setData(ContributorsRole,people);
         if(i==2){item->setText(value+"\nReplies: "+e.replyCount.value_or("unavailable")+" · Activity: "+item->data(ActivityRole).toString()+" · State: "+item->data(StateRole).toString());item->setToolTip(safeTip(item->text()+"\nRecent contributors: "+peopleInfo.join(", ")+"\nLast contributor: "+e.lastContributor));item->setData(Qt::AccessibleDescriptionRole,"Enter reads the topic. Menu or Shift+F10 opens its actions.");}
         p.list->addItem(item);if(e.id==selected)p.list->setCurrentItem(item);}
-    p.list->verticalScrollBar()->setValue(scroll);filter(i);
+    if(!chat)p.list->verticalScrollBar()->setValue(scroll);filter(i);if(chat)chat->endUpdate();
 }
 void SocialView::filter(int i){
     auto& p=pages_[i];const auto query=p.search->text();int visible=0;
@@ -416,6 +415,12 @@ void SocialView::read(int i,bool more){
     services_.read(request,[weak,i,generation,request,more](social::Snapshot data,QString error){
         if(!weak)return;auto& p=weak->pages_[i];if(p.generation!=generation||!p.busy||weak->identity_!=request.identity)return;
         p.busy=false;p.refresh->setEnabled(true);if(error.isEmpty())error=social::validate(data,request);
+        if(error.isEmpty()&&i==0&&!data.chatHistoryGeneration.isEmpty()){
+            if(more&&p.chatHistoryGeneration!=data.chatHistoryGeneration)error="Chat history source changed; refresh before loading older messages.";
+            if(p.chatHistoryGeneration==data.chatHistoryGeneration){QMap<QString,const social::Entry*> prior;for(const auto& entry:p.entries)prior.insert(entry.id,&entry);
+                for(const auto& entry:data.entries)if(prior.contains(entry.id)){const auto& old=*prior[entry.id];if(old.authorId!=entry.authorId||old.body!=entry.body||old.createdUtc!=entry.createdUtc||old.bbcode!=entry.bbcode){error="Chat history contains a conflicting immutable message ID.";break;}}
+            }
+        }
          if(error.isEmpty()&&more){QSet<QString> ids;if(i==3){if(p.leaderboardPeriod!=data.leaderboardPeriod)error="Leaderboard anchor or UTC interval changed; refresh the ranking.";for(const auto& item:p.miners)ids.insert(item.id);for(const auto& item:data.miners)if(ids.contains(item.id))error="Page overlaps loaded miner identities.";}
             else{for(const auto& item:p.entries)ids.insert(item.id);for(const auto& item:data.entries)if(ids.contains(item.id))error="Page overlaps loaded records.";}
             if((i==3?p.miners.size()+data.miners.size():p.entries.size()+data.entries.size())>LoadedLimit)error="Loaded data limit reached. Refine the filter or refresh.";}
@@ -429,14 +434,28 @@ void SocialView::present(int i,const social::Snapshot& data,bool append){
         if(changed&&accessDialog_)if(auto* dialog=dynamic_cast<SocialAccessDialog*>(accessDialog_.data()))dialog->invalidateAccess(data.access->session,"Permissions or session changed · refresh the authenticated access view.");
         if(error.isEmpty())access_=data.access;else access_.reset();}
     if(i==0){pages_[0].canSend=data.chatSend&&data.chatSend->allowed;pages_[0].sendWhy=data.chatSend?data.chatSend->reason:QString{};if(!append)chatDirectory(data);updateChatSend();}
-    auto& p=pages_[i];const bool initial=!p.loaded;p.loaded=true;p.observedUtc=data.observedUtc;p.nextCursor=data.nextCursor;
+    auto& p=pages_[i];const bool continuous=i==0&&!data.chatHistoryGeneration.isEmpty()&&p.chatHistoryGeneration==data.chatHistoryGeneration;
+    const auto previousCursor=p.nextCursor;const bool historyChanged=i==0&&p.loaded&&!data.chatHistoryGeneration.isEmpty()&&p.chatHistoryGeneration!=data.chatHistoryGeneration;
+    if(historyChanged){static_cast<SocialChatList*>(p.list)->resetConversation();p.entries.clear();}if(i==0)p.chatHistoryGeneration=data.chatHistoryGeneration;
+    p.loaded=true;p.observedUtc=data.observedUtc;p.nextCursor=data.nextCursor;
      if(i==3){p.leaderboardPeriod=data.leaderboardPeriod;
          if(data.leaderboardPeriod&&data.leaderboardPeriod->utcStart){const auto start=QDateTime::fromSecsSinceEpoch(*data.leaderboardPeriod->utcStart,Qt::UTC),end=start.addDays(1);p.windowInfo->setText(start.toString("yyyy-MM-dd")+" → "+end.toString("yyyy-MM-dd")+" · UTC");p.windowInfo->setToolTip("Fixed interval ["+stamp(start)+", "+stamp(end)+"). Canonical block-header time, not physical execution time. Reports: inclusion; audits: first PASSED; validated volume: current qualification episode. Anchor: "+data.leaderboardPeriod->anchor);}
          else{p.windowInfo->clear();p.windowInfo->setToolTip({});}
          if(append)p.miners+=data.miners;else p.miners=data.miners;renderMiners();}
-    else{if(append)p.entries+=data.entries;else p.entries=data.entries;
+    else{if(i==0&&p.loaded&&!append&&!p.entries.isEmpty()){
+            QSet<QString> old;for(const auto& entry:p.entries)old.insert(entry.id);const auto& tail=p.entries.last();bool fresh=false,own=false;
+            for(const auto& entry:data.entries)if(!old.contains(entry.id)){fresh=true;own|=entry.authorId==identity_.subject&&(entry.createdUtc>tail.createdUtc||(entry.createdUtc==tail.createdUtc&&entry.id>tail.id));}
+            if(fresh)static_cast<SocialChatList*>(p.list)->newMessages(own);
+        }if(continuous&&!append){
+            auto merged=p.entries;QSet<QString> ids;for(const auto& entry:merged)ids.insert(entry.id);for(const auto& entry:data.entries)if(!ids.contains(entry.id))merged.append(entry);
+            auto* chat=static_cast<SocialChatList*>(p.list);
+            if(merged.size()<=LoadedLimit||chat->followingLatest()){const bool older=!p.entries.isEmpty()&&(data.entries.isEmpty()||p.entries.first().createdUtc<data.entries.first().createdUtc||(p.entries.first().createdUtc==data.entries.first().createdUtc&&p.entries.first().id<data.entries.first().id));p.entries=std::move(merged);if(older)p.nextCursor=previousCursor;}
+            else p.nextCursor=previousCursor; // Keep the reader's bounded window; Jump latest requests the current page.
+            if(data.participants){QMap<QString,QString> labels;for(const auto& member:*data.participants)labels.insert(member.id,member.name);for(auto& entry:p.entries)entry.author=labels.value(entry.authorId,entry.authorId);}
+        }else if(append)p.entries+=data.entries;else p.entries=data.entries;
         std::stable_sort(p.entries.begin(),p.entries.end(),[i](const auto& a,const auto& b){const auto x=i==2&&a.lastActivity.isValid()?a.lastActivity:a.createdUtc,y=i==2&&b.lastActivity.isValid()?b.lastActivity:b.createdUtc;return x==y?a.id<b.id:i==0?x<y:x>y;});
-        renderList(i);if((p.detail||p.thread)&&!p.selectedId.isEmpty()){if(i==2&&!append){++p.threadGeneration;p.threadBusy=false;}showDetail(i,true);}if(i==0&&initial){p.list->setProperty("pgn_initial_scroll",true);settleInitialChat(p.list);}}
+        if(i==0&&p.entries.size()>LoadedLimit){p.entries.remove(0,p.entries.size()-LoadedLimit);p.nextCursor=p.entries.first().id;}
+        renderList(i);if((p.detail||p.thread)&&!p.selectedId.isEmpty()){if(i==2&&!append){++p.threadGeneration;p.threadBusy=false;}showDetail(i,true);}}
     p.refresh->setEnabled(true);const int total=i==3?p.miners.size():p.entries.size();p.more->setEnabled(!p.nextCursor.isEmpty()&&total<LoadedLimit);
     if(i==0&&data.connection){const auto& state=*data.connection;network_->setText(state.networkLabel);network_->setToolTip(safeTip(identity_.genesis));pageState(i,state.connectedPeers?"loaded":"ready",state.connectedPeers?QString("Connected · %1 peer%2").arg(state.connectedPeers).arg(state.connectedPeers==1?"":"s"):"Waiting for a peer connection");}
     else pageState(i,total?"loaded":"empty",total?"Updated "+data.observedUtc.toUTC().toString("HH:mm")+" UTC":"Empty snapshot · "+data.observedUtc.toUTC().toString("HH:mm")+" UTC");
@@ -474,6 +493,8 @@ void SocialView::previewChat(){
     else{chatEditor_->setCurrentIndex(0);pages_[0].draft->setFocus();}
 }
 void SocialView::chatDirectory(const social::Snapshot& data){
+    QString selfName;if(data.participants)for(const auto& person:*data.participants)if(person.id==identity_.subject){selfName=person.name;break;}
+    account_->setText(SocialDisplayName(identity_.subject,selfName));
     channelTitle_->setProperty("channelId",data.channel);channelTitle_->setText("Conversation");channelDescription_->clear();
     QSignalBlocker guard(channels_);channels_->clear();channelData_=data.channels.value_or(QVector<social::Channel>{});
     for(const auto& channel:channelData_){auto* item=new QListWidgetItem("#  "+channel.name,channels_);item->setData(Qt::UserRole,channel.id);item->setToolTip(safeTip(channel.description));
@@ -515,7 +536,7 @@ void SocialView::sendChat(){
         if((result.outcome==social::SendOutcome::Accepted||result.outcome==social::SendOutcome::Posted)&&!result.messageId.isEmpty()&&result.messageId.size()<=256){
             if(weak->drafts_.chatOperations.value(request.channel).requestId==request.requestId)weak->drafts_.chatOperations.remove(request.channel);
             const bool unchanged=page.draft->toPlainText()==request.bbcode;if(unchanged)page.draft->clear();weak->dirty_=true;weak->saveDrafts();page.sendNotice=unchanged?(result.reason.isEmpty()?"Sent · confirmation received":result.reason.left(180)):"Previous message published · current draft kept.";
-            ++page.generation;page.busy=false;weak->read(0);
+            static_cast<SocialChatList*>(page.list)->followPublished();++page.generation;page.busy=false;weak->read(0);
         }else{page.sendNotice=result.outcome==social::SendOutcome::Rejected?"Send refused · "+result.reason.left(150):"Publication not confirmed · draft kept. Retry safely. "+result.reason.left(100);
             weak->pageState(0,"error",page.sendNotice);if(result.reason.contains("401")){page.canSend=false;page.sendWhy=page.sendNotice;}}
         weak->updateChatSend();
@@ -523,8 +544,8 @@ void SocialView::sendChat(){
 }
 void SocialView::selectChannel(){
     auto* item=channels_->currentItem();if(!item)return;const QString chosen=item->data(Qt::UserRole).toString();if(chosen.isEmpty()||chosen==channel_)return;
-    if(dirty_)saveDrafts();++sendEpoch_;channel_=chosen;if(accessDialog_)delete accessDialog_;auto& p=pages_[0];p.canSend=p.sending=false;p.sendNotice.clear();++p.generation;p.loaded=p.busy=false;p.entries.clear();p.list->clear();p.nextCursor.clear();members_->clear();memberCount_->setText("Participants loading…");
-    channelTitle_->setText(item->text());loadEditor(0);read(0);
+    if(dirty_)saveDrafts();++sendEpoch_;static_cast<SocialChatList*>(pages_[0].list)->resetConversation();channel_=chosen;if(accessDialog_)delete accessDialog_;auto& p=pages_[0];p.canSend=p.sending=false;p.sendNotice.clear();++p.generation;p.loaded=p.busy=false;p.entries.clear();p.list->clear();p.nextCursor.clear();members_->clear();memberCount_->setText("Participants loading…");
+    p.chatHistoryGeneration.clear();channelTitle_->setText(item->text());loadEditor(0);read(0);
 }
 void SocialView::openAccess(QString member,QString channel){
     if(accessDialog_){accessDialog_->raise();accessDialog_->activateWindow();return;}
@@ -560,8 +581,6 @@ bool SocialView::eventFilter(QObject* object,QEvent* event){
     if(object==pages_[0].draft&&event->type()==QEvent::InputMethod)chatPreedit_=!static_cast<QInputMethodEvent*>(event)->preeditString().isEmpty();
     if(object==pages_[0].draft&&event->type()==QEvent::KeyPress){auto* key=static_cast<QKeyEvent*>(event);if((key->key()==Qt::Key_Return||key->key()==Qt::Key_Enter)&&!chatPreedit_&&!(key->modifiers()&(Qt::ShiftModifier|Qt::ControlModifier|Qt::AltModifier|Qt::MetaModifier))){if(pages_[0].send->isEnabled())sendChat();return true;}}
     if(pages_[2].list&&object==pages_[2].list->viewport()&&event->type()==QEvent::MouseButtonRelease){auto* mouse=static_cast<QMouseEvent*>(event);if(mouse->button()==Qt::LeftButton&&mouse->position().x()>=pages_[2].list->viewport()->width()-34){const auto pos=mouse->position().toPoint();if(auto* item=pages_[2].list->itemAt(pos)){pages_[2].list->setCurrentItem(item);contextMenu(2,pos);return true;}}}
-    if(object==pages_[0].list&&(event->type()==QEvent::Show||event->type()==QEvent::Resize)
-        &&pages_[0].list->property("pgn_initial_scroll").toBool())settleInitialChat(pages_[0].list);
     return QWidget::eventFilter(object,event);
 }
 }

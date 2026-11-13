@@ -22,8 +22,9 @@ inline QString SocialDisplayName(const QString& id,const QString& profile={}){
  return "Miner "+fingerprint.left(4)+QString::fromUtf8("…")+fingerprint.right(4);
 }
 inline QString SocialAvatarInitials(const QString& id,const QString& profile={}){
- const auto name=SocialDisplayName(id,profile);
- if(name.startsWith("Miner "))return SocialFingerprint(id).left(2).toUpper();
+ auto name=SocialDisplayName(id,profile);
+ if(name==SocialDisplayName(id))return SocialFingerprint(id).left(2).toUpper();
+ name.remove(QRegularExpression(" · [0-9a-f]{8}…[0-9a-f]{6}$"));
  const auto words=name.split(' ',Qt::SkipEmptyParts);return (words.value(0).left(1)+(words.size()>1?words.last().left(1):QString{})).toUpper();
 }
 inline QColor SocialAvatarColor(const QString& id){

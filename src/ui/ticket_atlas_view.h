@@ -12,6 +12,8 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QLabel>
+#include <QMenu>
+#include <QCursor>
 #include <cmath>
 #include <functional>
 
@@ -90,11 +92,26 @@ private:
             else{
                 guard->snapshot_=value;guard->setProperty("pgn_ticket_atlas_snapshot",value);guard->setProperty("pgn_ticket_atlas_error",QString{});
                 guard->viewport(pgn::wallet::atlasInteger(value.value("start")),pgn::wallet::atlasInteger(value.value("end")));
-                guard->status_->setText(QString("%1 tickets in view · %2 tracked · %3 · wheel to zoom, drag to move").arg(value.value("visible_assignments").toInteger()).arg(value.value("tracked_assignments").toInteger()).arg(value.value("details_truncated").toBool()?QString("Coverage density: click a band to zoom"):QString("Individual tickets: click to inspect")));
+                guard->status_->setText(QString("%1 tickets in view · %2 tracked · %3 · wheel to zoom, drag to move").arg(value.value("visible_assignments").toInteger()).arg(value.value("tracked_assignments").toInteger()).arg(value.value("details_truncated").toBool()?QString("Coverage groups: click to inspect tickets"):QString("Individual tickets: click to inspect")));
                 if(!guard->autoFocused_){guard->autoFocused_=true;guard->focusActive();}
                 if(value.value("start")==guard->first_&&value.value("end")==guard->last_)guard->startupWarm_=false;
             }
             if(guard->pending_)guard->requestSoon();
+        });
+    }
+    void inspectRange(const QString& start,const QString& end,const QString& stage={}){
+        const QPointer<TicketAtlasView> guard(this);const auto viewportStart=first_,viewportEnd=last_;const auto position=QCursor::pos();
+        reader_(start,end,256,[guard,viewportStart,viewportEnd,stage,position](QJsonObject value,QString error){
+            if(!guard||guard->first_!=viewportStart||guard->last_!=viewportEnd)return;
+            if(!error.isEmpty()){guard->status_->setText(error);return;}
+            QJsonArray rows;for(const auto& item:value.value("details").toArray()){const auto row=item.toObject();if((stage.isEmpty()||row.value("stage").toString()==stage)&&!row.value("request").toString().isEmpty())rows.append(row);}
+            if(rows.isEmpty()){guard->status_->setText("No ticket details available for this marker");return;}
+            const auto select=[guard](const QString& id){if(guard){guard->setSelected(id);if(guard->inspect)guard->inspect(id);}};
+            if(rows.size()==1){select(rows.first().toObject().value("request").toString());return;}
+            auto* menu=new QMenu(guard);menu->setAttribute(Qt::WA_DeleteOnClose);
+            for(const auto& item:rows){const auto row=item.toObject();const auto id=row.value("request").toString();auto* action=menu->addAction("Ticket "+row.value("ticket_number").toString()+" · "+id.left(12));QObject::connect(action,&QAction::triggered,guard,[select,id]{select(id);});}
+            if(value.value("details_truncated").toBool()){menu->addSeparator();menu->addAction("More tickets here — use the wheel to narrow the view")->setEnabled(false);}
+            menu->popup(position);
         });
     }
     void zoom(int steps,qreal x){
@@ -175,15 +192,15 @@ protected:
     void mouseMoveEvent(QMouseEvent* e)override{if(dragging_){const int dx=e->position().toPoint().x()-pressed_.x();if(pressedBitScale_){const auto a=atlasBitCoordinate(pressedFirst_),b=atlasBitCoordinate(pressedLast_);const auto delta=(Int(b-a)*dx/int(std::max(1.,plot().width()))).convert_to<qint64>();viewport(atlasBitInteger(a-delta),atlasBitInteger(b-delta));}else{const Int delta=(pressedLast_-pressedFirst_)*dx/int(std::max(1.,plot().width()));viewport(pressedFirst_-delta,pressedLast_-delta);}e->accept();}else QWidget::mouseMoveEvent(e);}
     void mouseReleaseEvent(QMouseEvent* e)override{if(!dragging_){QWidget::mouseReleaseEvent(e);return;}dragging_=false;setCursor(Qt::OpenHandCursor);
         if((e->position().toPoint()-pressed_).manhattanLength()<6){QStringList found;for(const auto& hit:hits_)if(hit.first.contains(e->position())){
-                if(hit.second.value("atlas_bin").toBool()){viewport(pgn::wallet::atlasInteger(hit.second.value("start")),pgn::wallet::atlasInteger(hit.second.value("end")));requestSoon();return;}
+                if(hit.second.value("atlas_bin").toBool()){inspectRange(hit.second.value("start").toString(),hit.second.value("end").toString());return;}
                 found.append(hit.second.value("request").toString());
             }
             if(found.size()==1){setSelected(found.first());if(inspect)inspect(selected_);return;}
-            if(found.size()>1){zoom(2,e->position().x());return;}
+            if(found.size()>1){auto* menu=new QMenu(this);menu->setAttribute(Qt::WA_DeleteOnClose);for(const auto& id:found){auto* action=menu->addAction(id.left(16));connect(action,&QAction::triggered,this,[this,id]{setSelected(id);if(inspect)inspect(id);});}menu->popup(e->globalPosition().toPoint());return;}
         }
         requestSoon();e->accept();
     }
-    void mouseDoubleClickEvent(QMouseEvent* e)override{if(plot().contains(e->position()))zoom(2,e->position().x());}
+    void mouseDoubleClickEvent(QMouseEvent* e)override{e->accept();}
 public:
     void prepareStartup(){startupWarm_=true;fetch();}
     explicit TicketAtlasView(Reader reader,QWidget* parent=nullptr):QWidget(parent),reader_(std::move(reader)){
@@ -206,7 +223,7 @@ public:
         if(action=="active")focusActive();
         else if(action=="bin"){
             const auto bins=snapshot_.value("bins").toArray();const int index=command.value("index").toInt(-1);
-            if(index>=0&&index<bins.size()){const auto bin=bins[index].toObject();viewport(pgn::wallet::atlasInteger(bin.value("start")),pgn::wallet::atlasInteger(bin.value("end")));requestSoon();}
+            if(index>=0&&index<bins.size()){const auto bin=bins[index].toObject();inspectRange(bin.value("start").toString(),bin.value("end").toString(),command.value("stage").toString());}
         }
         else if(action=="overview"&&!snapshot_.isEmpty()){viewport(pgn::wallet::atlasInteger(snapshot_.value("range_origin")),pgn::wallet::atlasInteger(snapshot_.value("range_limit")));requestSoon();}
         else if(action=="zoom")zoom(std::clamp(command.value("steps").toInt(),-4,4),plot().left()+plot().width()*std::clamp(command.value("x_ppm").toInt(500000),0,1000000)/1000000.);

@@ -1,5 +1,7 @@
 #include "social/social_core_service.h"
 #include "social/social_signing_contract.h"
+#include "social/social_public_names.h"
+#include <QElapsedTimer>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
@@ -27,15 +29,37 @@ struct CoreSocialService::Impl {
  CoreSocialService* owner;CoreSocialContext context;CoreSocialCrypto crypto;CoreSocialRpc rpc;QString path;
  QTimer clock;bool running{},reading{},submitting{},ready{},outboxBad{};quint64 epoch{};
  QString generation,error,historyNotice; qint64 cursor{};int peers{};
+  PublicNames names;QElapsedTimer nameClock;bool nameReading{};quint64 nameLookup{};qint64 nextNames{};QString nameError;
  struct Record{QByteArray message;QString signature;QJsonObject object;};
  struct Operation{QString digest;QByteArray message;QString signature;bool local{},confirmed{};QByteArray receipt;QString receiptSignature;bool rejected{},posted{};};
  struct Waiting{SendRequest request;std::function<void(SendResult)> done;QPointer<QTimer> timer;};
  QMap<QString,Record> records;QMap<QString,Operation> operations;QMap<QString,QVector<Waiting>> waiting;
  QSet<QString> receipting;
  Impl(CoreSocialService* o,CoreSocialContext c,CoreSocialCrypto k,CoreSocialRpc r,QString p):owner(o),context(std::move(c)),crypto(std::move(k)),rpc(std::move(r)),path(std::move(p)){
-  clock.setInterval(2000);QObject::connect(&clock,&QTimer::timeout,owner,[this]{poll();retry();});
+  clock.setInterval(2000);QObject::connect(&clock,&QTimer::timeout,owner,[this]{poll();retry();pollNames();});
  }
  void changed(){if(owner->changed)owner->changed();}
+ bool namesFailed(QString reason){const auto previous=names.revision();names.clear();nameReading=false;nextNames=nameClock.elapsed()+5000;
+  if(nameError!=reason){nameError=std::move(reason);if(owner->diagnostic)owner->diagnostic("Public names: "+nameError);}return previous!=names.revision();}
+ void namePage(QString cursor,quint64 lookup){
+  if(!running||!nameReading||lookup!=nameLookup||!owner->leaderboard)return;
+  if(names.remaining()<=0){if(namesFailed("Registry exceeds the bounded name lookup; cryptographic IDs retained."))changed();return;}
+  const ReadRequest request{Section::Miners,context.identity,Window::AllTime,std::move(cursor),qMin(100,names.remaining())};
+  const QPointer<CoreSocialService> weak(owner);const auto e=epoch;const auto completed=std::make_shared<bool>(false);
+  owner->leaderboard(request,[weak,e,lookup,request,completed](Snapshot snapshot,QString failure){
+   if(!weak||!weak->impl_->running||weak->impl_->epoch!=e||!weak->impl_->nameReading||weak->impl_->nameLookup!=lookup||*completed)return;*completed=true;
+   auto& p=*weak->impl_;const auto before=p.names.revision();
+   if(failure.isEmpty())failure=p.names.append(request,snapshot);
+   if(!failure.isEmpty()){p.namesFailed(std::move(failure));if(before!=p.names.revision())p.changed();return;}
+   if(p.names.collecting()){const auto next=p.names.nextCursor();QTimer::singleShot(0,weak,[weak,e,lookup,next]{if(weak&&weak->impl_->running&&weak->impl_->epoch==e)weak->impl_->namePage(next,lookup);});}
+   else{p.nameReading=false;p.nextNames=p.nameClock.elapsed()+60000;p.nameError.clear();if(before!=p.names.revision())p.changed();}
+  });
+ }
+ void pollNames(){
+  if(!running||!ready||nameReading||!owner->leaderboard||!nameClock.isValid()||nameClock.elapsed()<nextNames)return;
+  nameReading=true;names.begin(context.identity);namePage({},++nameLookup);
+ }
+ QString displayName(const QString& script)const{const auto resolved=names.display(context.identity,script);return resolved.isEmpty()?script:resolved;}
  void report(QString e){if(error==e)return;error=std::move(e);if(owner->diagnostic)owner->diagnostic(error);changed();}
  QJsonObject common()const{return {{"v",1},{"genesis",context.identity.genesis},{"origin","pgn-social://"+context.identity.genesis},{"sender_script",context.identity.subject},{"signing_address",context.address},{"device",context.device},{"channel",context.channel},{"created_ms",QDateTime::currentMSecsSinceEpoch()},{"nonce",nonce()}};}
  bool validContext()const{return context.identity.valid()&&hexField(context.identity.subject,44)&&context.identity.subject.startsWith("0014")&&hexField(context.device,32)&&!context.address.isEmpty()&&bool(crypto.sign)&&bool(crypto.verify)&&bool(rpc);}
@@ -170,20 +194,22 @@ struct CoreSocialService::Impl {
   });
  }
  Snapshot snapshot(ReadRequest request)const{
+  // Carry the existing authenticated native continuity token to the UI. A
+  // refresh returns the latest page, not a deletion of earlier loaded pages.
   Snapshot out;out.identity=context.identity;out.section=request.section;out.authenticated=ready;out.source="PGN native relay · wallet signatures verified";out.observedUtc=QDateTime::currentDateTimeUtc();out.channel=context.channel;out.connection=ConnectionSummary{context.networkLabel,peers};out.channels=QVector<Channel>{{context.channel,"Global","Network conversation"}};out.chatSend=SendAvailability{ready&&!outboxBad,outboxBad?QString("Pending-message file needs attention; existing file preserved."):QString("Wallet-signed publication; recipient delivery is confirmed separately.")};
-  QVector<Record> visible;QMap<QString,QDateTime> authors;
+  out.chatHistoryGeneration=generation;QVector<Record> visible;QMap<QString,QDateTime> authors;
   for(const auto& r:records)if(r.message.startsWith("PGN/SOCIAL/EVENT/1\n")&&r.object.value("channel").toString()==context.channel){visible.append(r);const auto script=r.object.value("sender_script").toString();const auto time=QDateTime::fromMSecsSinceEpoch(r.object.value("created_ms").toInteger(),Qt::UTC);if(!authors.contains(script)||authors[script]<time)authors[script]=time;}
   std::sort(visible.begin(),visible.end(),[](const Record& a,const Record& b){const auto x=a.object.value("created_ms").toInteger(),y=b.object.value("created_ms").toInteger();return x==y?a.object.value("event_id").toString()<b.object.value("event_id").toString():x<y;});
   int end=visible.size();if(!request.cursor.isEmpty()){end=-1;for(int i=0;i<visible.size();++i)if(visible[i].object.value("event_id").toString()==request.cursor){end=i;break;}if(end<0)end=0;}
-  const int begin=qMax(0,end-qBound(1,request.limit,100));for(int i=begin;i<end;++i){const auto& v=visible[i].object;Entry entry;entry.id=v.value("event_id").toString();entry.authorId=v.value("sender_script").toString();entry.author=entry.authorId;entry.createdUtc=QDateTime::fromMSecsSinceEpoch(v.value("created_ms").toInteger(),Qt::UTC);entry.body=QString::fromUtf8(QByteArray::fromBase64(v.value("bbcode_b64").toString().toLatin1()));entry.bbcode=true;out.entries.append(entry);}if(begin>0)out.nextCursor=visible[begin].object.value("event_id").toString();
-  QVector<Participant> members{{context.identity.subject,context.identity.subject,"You",{}}};for(auto it=authors.begin();it!=authors.end()&&members.size()<200;++it)if(it.key()!=context.identity.subject)members.append({it.key(),it.key(),"Last message "+it.value().toString("HH:mm 'UTC'"),{}});out.participants=members;return out;
+   const int begin=qMax(0,end-qBound(1,request.limit,100));for(int i=begin;i<end;++i){const auto& v=visible[i].object;Entry entry;entry.id=v.value("event_id").toString();entry.authorId=v.value("sender_script").toString();entry.author=displayName(entry.authorId);entry.createdUtc=QDateTime::fromMSecsSinceEpoch(v.value("created_ms").toInteger(),Qt::UTC);entry.body=QString::fromUtf8(QByteArray::fromBase64(v.value("bbcode_b64").toString().toLatin1()));entry.bbcode=true;out.entries.append(entry);}if(begin>0)out.nextCursor=visible[begin].object.value("event_id").toString();
+   QVector<Participant> members{{context.identity.subject,displayName(context.identity.subject),"You",{}}};for(auto it=authors.begin();it!=authors.end()&&members.size()<200;++it)if(it.key()!=context.identity.subject)members.append({it.key(),displayName(it.key()),"Last message "+it.value().toString("HH:mm 'UTC'"),{}});out.participants=members;return out;
  }
 };
 CoreSocialService::CoreSocialService(CoreSocialContext c,CoreSocialCrypto k,CoreSocialRpc r,QString path,QObject* parent):QObject(parent),impl_(std::make_unique<Impl>(this,std::move(c),std::move(k),std::move(r),std::move(path))){}
 CoreSocialService::~CoreSocialService(){stop();}
 const Identity& CoreSocialService::identity()const{return impl_->context.identity;}
-void CoreSocialService::start(){auto& p=*impl_;if(p.running)return;if(!p.validContext()){p.report("Verified Social wallet context is unavailable.");return;}p.running=true;++p.epoch;p.load();const QPointer<CoreSocialService> weak(this);const auto e=p.epoch;p.checkSaved(p.operations.keys(),0,[weak,e]{if(!weak||!weak->impl_->running||weak->impl_->epoch!=e)return;auto& p=*weak->impl_;p.clock.start();p.poll();p.retry();});}
-void CoreSocialService::stop(){auto& p=*impl_;if(!p.running)return;p.running=false;++p.epoch;p.clock.stop();const auto ids=p.waiting.keys();for(const auto& id:ids)p.finish(id,SendOutcome::Uncertain,"Social connection changed; pending message preserved.");}
+void CoreSocialService::start(){auto& p=*impl_;if(p.running)return;if(!p.validContext()){p.report("Verified Social wallet context is unavailable.");return;}p.running=true;++p.epoch;p.nameClock.start();p.nextNames=0;p.nameReading=false;p.load();const QPointer<CoreSocialService> weak(this);const auto e=p.epoch;p.checkSaved(p.operations.keys(),0,[weak,e]{if(!weak||!weak->impl_->running||weak->impl_->epoch!=e)return;auto& p=*weak->impl_;p.clock.start();p.poll();p.retry();p.pollNames();});}
+void CoreSocialService::stop(){auto& p=*impl_;if(!p.running)return;p.running=false;++p.epoch;p.clock.stop();p.nameReading=false;++p.nameLookup;p.names.clear();const auto ids=p.waiting.keys();for(const auto& id:ids)p.finish(id,SendOutcome::Uncertain,"Social connection changed; pending message preserved.");}
 Services CoreSocialService::services(){Services out;const QPointer<CoreSocialService> weak(this);
  out.read=[weak](ReadRequest request,Services::Reply done){if(!weak){done({},"Social connection closed.");return;}auto& p=*weak->impl_;if(request.identity!=p.context.identity||request.limit<1||request.limit>100){done({},"Social identity or page mismatch.");return;}if(request.section==Section::Miners){if(weak->leaderboard)weak->leaderboard(request,std::move(done));else done({},"Authenticated per-miner counters are not available yet.");return;}if(request.section!=Section::Chat){done({},"This section is deferred.");return;}if(!p.ready){done({},p.error.isEmpty()?QString("Connecting to the native Social relay…"):p.error);return;}done(p.snapshot(request),{});};
  out.sendChat=[weak](SendRequest request,std::function<void(SendResult)> done){if(weak)weak->impl_->send(std::move(request),std::move(done));else done({request.identity,request.channel,request.requestId,SendOutcome::Uncertain,{},"Social connection closed; draft preserved."});};return out;
