@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 import threading
 import copy
 import time
-from horizon_audit_pressure import AuditPressure, WeightedService
 from pgn_index import SessionIndexWalBudgetExceeded
 
 @dataclass
@@ -38,8 +37,6 @@ class ResidentGpuQueue:
         self.active = None
         self.resume_job = None
         self.clock_ns = clock_ns
-        self.audit_pressure = AuditPressure(clock=policy_clock)
-        self.service = WeightedService(self.audit_pressure.weights())
         self.last_completed = None
         self.timings = deque(maxlen=32)
         self.pause_generation = 0
@@ -76,20 +73,12 @@ class ResidentGpuQueue:
         with self.condition:
             self.condition.notify_all()
 
-    def update_audit_backlog(self, compute_slots, audit_operators, oldest_seconds):
-        with self.condition:
-            weights = self.audit_pressure.update(compute_slots, audit_operators, oldest_seconds)
-            self.service.update_weights(weights)
-            self.condition.notify_all()
-
     def audit_service_view(self):
         with self.condition:
-            view = self.audit_pressure.view()
-            view["target_audit_share"] = view.pop("audit_share")
-            view.update(search_ready=len(self.search), audit_ready=len(self.audits),
+            return dict(mode="two_regular_one_catchup",regular_audits=2,catch_up_audits=1,
+                        search_ready=len(self.search),audit_ready=len(self.audits),
                         active_role=self.active.context["role"] if self.active else None,
                         search_waiting_for_audits=self.search_waiting_for_audits)
-            return view
 
     def admitted(self, job):
         if time.monotonic() < job.storage_retry_after:
@@ -108,7 +97,7 @@ class ResidentGpuQueue:
                 return False  # Amortize checkpoint and context handoff costs.
             other = self.audits if job.context["role"] == "search" else self.search
             other_ready = any(self.admitted(candidate) for candidate in other)
-            return self.service.should_yield(job.context["role"], elapsed, other_ready)
+            return job.context["role"] == "search" and other_ready
 
     def _next(self):
         if self.resume_job is not None and self.admitted(self.resume_job):
@@ -122,7 +111,7 @@ class ResidentGpuQueue:
         search = self.search[0] if self.search and self.admitted(self.search[0]) else None
         audit = next((job for job in self.audits if self.admitted(job)), None)
         self.search_waiting_for_audits = bool(self.search) and search is None
-        role = self.service.choose(search is not None, audit is not None)
+        role = "audit" if audit is not None else "search" if search is not None else None
         if role == "audit":
             self.audits.remove(audit)
             return audit
@@ -177,8 +166,6 @@ class ResidentGpuQueue:
                                     lambda: self.should_yield(job, started))
                           if callable(scheduled) else self.engine.run_ticket(job.ticket, job.maximum_piece))
                 finished = self.clock_ns()
-                with self.condition:
-                    self.service.charge(job.context["role"], finished - started)
                 if result.get("state") == "YIELDED":
                     if result.get("ticket_id") != job.ticket["ticket_id"]:
                         raise ValueError("Scheduler checkpoint belongs to another ticket")

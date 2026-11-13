@@ -156,4 +156,30 @@ int main(){
     assert(GetNextWorkRequired(transition,params)==legacy_at_activation);
     std::printf("PASS production pow entry: height%d preserves %u; post-transition drought target %u; new Gold header matches; old ancestry unchanged\n",TestnetElapsedRetargetHeight,legacy_at_activation,next);
     std::puts("PASS retarget history: scientific-only count, interleaved coordination, exact median, fork, old ancestry, cache eviction, policy change, invalid header");
+    {
+    Branch upgraded;upgraded.next=50000;
+    auto* origin=&upgraded.append(nullptr,false,1000,policy.initial_q16);auto* tip=origin;
+    const uint32_t floor=55U*32768U;const int64_t activation=20000;
+    unsigned pre{},post{};
+    for(int64_t stamp=1600;stamp<=40000;stamp+=600){
+        tip=&upgraded.append(tip,false,stamp,policy.initial_q16);
+        const auto old=DeriveElapsedMeritTarget(*tip,*origin,policy,1800);
+        const auto changed=DeriveElapsedMeritTarget(*tip,*origin,policy,1800,0,activation,floor);
+        assert(old&&changed);
+        if(tip->GetMedianTimePast()<activation){assert(old->target_q16==changed->target_q16);++pre;}
+        else{assert(changed->target_q16>=floor);++post;}
+    }
+    assert(pre&&post);
+    assert(DeriveElapsedMeritTarget(*tip,*origin,policy,1800)->target_q16<floor);
+    const auto before=DeriveElapsedMeritTarget(*tip,*origin,policy,1800,0,activation,floor)->target_q16;
+    for(unsigned i=0;i<12;++i)tip=&upgraded.append(tip,true,tip->GetBlockTime()+1,before);
+    const auto recovery=DeriveElapsedMeritTarget(*tip,*origin,policy,1800,0,activation,floor);
+    assert(recovery&&recovery->target_q16>floor);
+    assert(!DeriveElapsedMeritTarget(*tip,*origin,policy,1800,0,activation,policy.maximum_q16+1));
+    assert(!DeriveElapsedMeritTarget(*tip,*origin,policy,1800,0,0,floor));
+    const auto reopened=DeriveElapsedMeritTarget(*tip,*origin,policy,1800,0,activation,floor);
+    assert(reopened&&reopened->target_q16==recovery->target_q16);
+    std::printf("PASS exact27.5 scheduled floor: %u old-history points unchanged, %u post-cutover points bounded, immediate Gold recovery %u Q16\n",pre,post,recovery->target_q16);
+    }
+
 }

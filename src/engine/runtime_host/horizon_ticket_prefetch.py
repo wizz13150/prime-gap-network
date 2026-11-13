@@ -19,6 +19,7 @@ class TicketPrefetch:
         self.condition = threading.Condition()
         self.ready = None
         self.error = None
+        self.native_service_status = None
         self.thread = threading.Thread(target=self._run, name="ticket-preparation", daemon=True)
 
     def start(self):
@@ -53,6 +54,8 @@ class TicketPrefetch:
                 with self.condition:
                     self.ready = None
                     self.error = str(error)[:400]
+                    status=getattr(error,"native_service_status",None)
+                    if status is not None:self.native_service_status=status
                     self.condition.notify_all()
                 self.stopping.wait(1)
 

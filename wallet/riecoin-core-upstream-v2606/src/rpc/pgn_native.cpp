@@ -164,7 +164,7 @@ RPCMethod getpgnstate(){
     result.pushKV("merit_retarget_mode",int64_t(tip.nHeight)+1>=retarget->height?"elapsed_mtp_bounded":"gold_median_legacy");
     result.pushKV("merit_retarget_activation_height",retarget->height);
     result.pushKV("merit_retarget_half_life_seconds",uint64_t(retarget->half_life_seconds));
-    result.pushKV("merit_retarget_minimum_q16",uint64_t(retarget->retained_floor_q16));
+    result.pushKV("merit_retarget_minimum_q16",uint64_t(retarget->higher_floor_q16&&tip.GetMedianTimePast()>=retarget->higher_floor_activation_mtp?std::max(retarget->retained_floor_q16,retarget->higher_floor_q16):retarget->retained_floor_q16));
   }
   result.pushKV("range_origin",range.policy->Definition().origin.convert_to<std::string>());result.pushKV("ticket_width",range.policy->Definition().width.convert_to<std::string>());result.pushKV("range_limit",range.policy->Definition().limit.value_or(range.policy->Definition().origin+range.policy->Definition().width*range.policy->Definition().slots).convert_to<std::string>());result.pushKV("selection_window",range.policy->Definition().selection_window);
    result.pushKV("active_lease_count",uint64_t(total_active));result.pushKV("lease_offset",offset);int64_t index=0,taken=0;UniValue leases{UniValue::VARR};for(const auto& lease:leases_to_show){if(selected&&lease.owner.Id()!=*selected)continue;if(index++<offset)continue;if(taken++>=limit)break;

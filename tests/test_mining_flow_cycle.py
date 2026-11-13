@@ -132,7 +132,7 @@ class MiningFlowCycleTests(unittest.TestCase):
                         return dict(schema='PGN_NATIVE_WORK_DUTY_STATUS_V1',genesis=work['genesis'],
                             bestblockhash='a'*64,enforced=native,may_request=not held and
                             (not have_audits or sum(v['state']=='committed'for v in self.jobs.values())>=2),
-                            status='audit_work_required')
+                            status='audit_work_required',credits=[dict(request_id=k,slot=0,attempt=0,commitment=v['commitment'])for k,v in sorted(self.jobs.items())if v['state']=='committed'][:2])
                     if method == 'getblockheader':return dict(hash=args[0],height=16,confirmations=5)
                     if method == 'getblockhash':
                         # Issuance block at 16 and current parent at 20 must
@@ -255,7 +255,7 @@ class MiningFlowCycleTests(unittest.TestCase):
                 (flow.run if full_run else flow.gpu.run)()
                 if full_run:
                     self.assertTrue(flow.closed);self.assertTrue(worker.source.closed)
-                    for thread in [flow.prefetch.thread,flow.report_thread,flow.pressure_thread,*flow.audit_threads]:
+                    for thread in [flow.prefetch.thread,flow.report_thread,*flow.audit_threads]:
                         self.assertFalse(thread.is_alive())
                 cycle = flow.cycles.snapshot(work['request_id']) if flow.cycles.contains(work['request_id'])else None
                 if should_search:

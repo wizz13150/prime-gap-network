@@ -25,11 +25,9 @@ class AuditPrefetchTests(unittest.TestCase):
         self.assertEqual([j.context['presentation']['offset']for j in self.queue.audits],['0','10','20','30','40'])
     def test_staged_partitions_keep_audit_service_ready_across_producer_gap(self):
         self.proxy.register_preparation(self.tickets)
-        self.queue.update_audit_backlog(100,1,86400)
-        self.queue.service.charge('search',1000)
         self.queue.submit(dict(ticket_id='b'*64),dict(role='search'),64)
         for _ in range(5):
-            job=self.queue._next();self.assertEqual(job.context['role'],'audit');self.queue.service.charge('audit',10)
+            job=self.queue._next();self.assertEqual(job.context['role'],'audit')
         self.assertEqual(self.queue._next().context['role'],'search')
     def test_completed_future_reused_but_changed_work_not_accepted(self):
         self.proxy.register_preparation(self.tickets);future=self.proxy.queue_ticket(self.tickets[0],64);future.set_result({'state':'COMPLETE'})

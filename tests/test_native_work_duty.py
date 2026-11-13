@@ -101,7 +101,7 @@ class NativeDutyTests(unittest.TestCase):
                     physical=CycleExecution(path,w['genesis'])
                     if not cold:physical.prepare(w['request_id'],{w['request_id']})
                     before=physical.snapshot(w['request_id'])
-                    flow=MiningFlow.__new__(MiningFlow);flow.cycles=journal;flow.physical_audits=physical
+                    flow=MiningFlow.__new__(MiningFlow);flow.unbound_service_audits=set();flow.cycles=journal;flow.physical_audits=physical
                     flow.worker=SimpleNamespace(rpc=rpc,args=SimpleNamespace(genesis=w['genesis']),network_lock=threading.RLock())
                     flow.cycle_audit_positions={};flow.finalizer=None;flow.outbox=SimpleNamespace(capacity_available=lambda:True)
                     w['native_audit_service']=rpc.w['native_audit_service']
@@ -188,7 +188,7 @@ class NativeDutyTests(unittest.TestCase):
                 j.prepare(w,native_service=receipt(w));j.advance(w['request_id'],'running')
                 before=j.snapshot(w['request_id'])
             with WorkCycleJournal(path,w['genesis'])as j:
-                flow=MiningFlow.__new__(MiningFlow);flow.cycles=j
+                flow=MiningFlow.__new__(MiningFlow);flow.unbound_service_audits=set();flow.cycles=j
                 flow.worker=SimpleNamespace(rpc=rpc,args=SimpleNamespace(genesis=w['genesis']),network_lock=threading.RLock())
                 rpc.canonical=False
                 with self.assertRaises(RuntimeError):flow.prepare_cycle(w)
@@ -201,7 +201,7 @@ class NativeDutyTests(unittest.TestCase):
             w=work();old=receipt(w,block='d'*64);rpc=Rpc(w)
             j.prepare(w,native_service=old);j.advance(w['request_id'],'running');j.advance(w['request_id'],'completed')
             j.hold(w['request_id'],WorkCycleJournal.reorg_hold);before=j.snapshot(w['request_id'])
-            flow=MiningFlow.__new__(MiningFlow);flow.cycles=j
+            flow=MiningFlow.__new__(MiningFlow);flow.unbound_service_audits=set();flow.cycles=j
             flow.worker=SimpleNamespace(rpc=rpc,args=SimpleNamespace(genesis=w['genesis']),network_lock=threading.RLock())
             rpc.old_confirmations=2
             with self.assertRaises(ValueError):flow.refresh_cycle_confirmations(w['request_id'])
