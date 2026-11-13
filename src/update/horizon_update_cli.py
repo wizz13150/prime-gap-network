@@ -17,7 +17,7 @@ from horizon_update_client import AuthenticatedUpdates
 from horizon_component_install import CohortStore, _write, MARKER as INSTALL_MARKER
 import horizon_update_progress as progress
 
-VERSION='2026.11.12.24'
+VERSION='2026.11.13.25'
 
 
 def maintain_installation(cache,context,context_sha,result):
@@ -103,7 +103,17 @@ def run(request,*,repositories=REPOSITORIES,fetcher=None,lifecycle_factory=None,
     stage.require(all(type(request[k])is str and Path(request[k]).is_absolute()for k in ('base_cohort','installation_store')),'Absolute code/store paths required')
     store_path=Path(request['installation_store'])
     store=(CohortStore(store_path,context,context_sha)if store_path.exists()else CohortStore.initialize(store_path,Path(request['base_cohort']),context,context_sha))
-    candidate=store.prepare(client,selected)
+    verify_running_base=None
+    if action=='install':
+        stage.require(context['platform'] in ('windows-x86_64','linux-x86_64'),'Native installation platform is unsupported')
+        if context['platform']=='windows-x86_64':
+            from horizon_windows_install import WindowsCohortLifecycle
+            native_lifecycle=WindowsCohortLifecycle
+        else:
+            from horizon_linux_install import LinuxCohortLifecycle
+            native_lifecycle=LinuxCohortLifecycle
+        verify_running_base=lambda base:native_lifecycle.verify_running_base(store,base,request['activation'])
+    candidate=store.prepare(client,selected,base_cohort=Path(request['base_cohort']),verify_running_base=verify_running_base)
     if action=='install':
         stage.require(context['platform'] in ('windows-x86_64','linux-x86_64'),'Native installation platform is unsupported')
         if lifecycle_factory is None:

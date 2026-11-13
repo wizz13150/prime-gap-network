@@ -8,6 +8,8 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QString>
+#include <QVersionNumber>
+#include <map>
 #include <optional>
 #include <stdexcept>
 
@@ -56,6 +58,31 @@ inline SelectedCohort selectedUpdateCohort(const QString& applicationDirectory,c
    }
   }
   require(primary,"Selected UI entry point is absent");
+  // Starting a newly extracted complete package is an explicit code choice.
+  // An older shortcut may follow the managed selector, but the selector must
+  // never replace a newer running component with an older one. UI versions
+  // alone do not identify Core/GPU-only updates.
+  if(QFileInfo::exists(applicationDirectory+"/components.json")){
+   const auto running=QJsonDocument::fromJson(read(applicationDirectory+"/components.json",128*1024)).object();
+   const auto versions=[&](const QJsonObject& inventory){
+    require(inventory.value("schema")=="PGN_COMPONENT_MANIFEST_V1"&&inventory.value("network")==network,"Running update inventory is invalid");
+    std::map<QString,QVersionNumber> result;
+    const auto components=inventory.value("components").toArray();
+    require(!components.isEmpty()&&components.size()<=4,"Component version inventory is invalid");
+    for(const auto& entry:components){
+     const auto component=entry.toObject();const auto id=component.value("id").toString(),text=component.value("version").toString();qsizetype suffix{};
+     const auto version=QVersionNumber::fromString(text,&suffix);
+     require((id=="ui"||id=="core"||id=="gpu"||id=="cpu")&&!version.isNull()&&suffix==text.size()&&result.emplace(id,version).second,"Component version is invalid or duplicated");
+    }
+    require(result.contains("ui"),"UI component version is absent");return result;
+   };
+   const auto current=versions(running),selected=versions(manifest);
+   for(const auto& [id,version]:current){
+    const auto target=selected.find(id);
+    if(target==selected.end()||QVersionNumber::compare(version,target->second)>0)return {};
+   }
+  }
+
   return {directory+"/"+primaryName,{}};
  }catch(const std::exception& error){return {{},QString::fromUtf8(error.what())};}
 }

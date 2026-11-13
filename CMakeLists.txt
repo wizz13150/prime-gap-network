@@ -1837,3 +1837,8 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME session-wal-observation COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_session_wal_observation.py")
   set_tests_properties(session-wal-observation PROPERTIES TIMEOUT 60)
 endif()
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME running-update-base COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_running_update_base.py")
+    set_tests_properties(running-update-base PROPERTIES TIMEOUT 90 LABELS "updater;security;recovery;no-gpu" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+endif()

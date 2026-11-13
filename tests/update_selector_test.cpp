@@ -31,5 +31,21 @@ int main(int argc,char** argv){
  pointer.insert("cohort",outside);publish();check(!select().error.isEmpty());
  pointer.insert("cohort",candidate);publish();check(select().error.isEmpty());
  check(pgn::app::selectedUpdateCohort(candidate,store,"testnet",QString(64,'5'),false).executable.isEmpty());
+ // A fresh manual package must not be redirected back to an older managed
+ // matrix, including Core-only releases which intentionally keep the UI version.
+ write(base+"/"+primary,exe);
+ const auto running=[&](const QString& ui,const QString& core){
+  QJsonObject c=component;c.insert("version",ui);QJsonArray rows{c};if(!core.isEmpty())rows.append(QJsonObject{{"id","core"},{"version",core},{"files",QJsonArray{}}});
+  write(base+"/components.json",QJsonDocument(QJsonObject{{"schema","PGN_COMPONENT_MANIFEST_V1"},{"network","testnet"},{"components",rows}}).toJson(QJsonDocument::Compact));
+ };
+ running("3.0",{});check(select().executable.isEmpty()&&select().error.isEmpty());
+ running("1.0",{});check(select().executable==candidate+"/"+primary);
+ running("2.0",{});check(select().executable==candidate+"/"+primary);
+ manifest.insert("components",QJsonArray{component,QJsonObject{{"id","core"},{"version","2026.11.10.12"},{"files",QJsonArray{}}}});
+ raw=QJsonDocument(manifest).toJson(QJsonDocument::Compact);write(candidate+"/components.json",raw);pointer.insert("inventory_sha256",sha(raw));publish();
+ running("2.0","2026.11.13.17");check(select().executable.isEmpty()&&select().error.isEmpty());
+ running("2.0","2026.11.9.9");check(select().executable==candidate+"/"+primary);
+ running("1.0","2026.11.13.17");check(select().executable.isEmpty()); // Mixed matrices must not downgrade Core either.
+ running("2.0","2026.11.13.17suffix");check(!select().error.isEmpty());
  std::cout<<"PASS "<<checks<<" update shortcut/selection integrity checks; inert files only\n";
 }
