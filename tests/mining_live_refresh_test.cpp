@@ -76,6 +76,12 @@ QJsonObject run(QSize size,bool baseline){
   pgn::ui::presentMiningRecordEligibility(view.get(),QJsonArray{first});
   require(best->item(0,0)->text().startsWith("★"),"record eligibility did not refresh cached data");
   require(!best->item(0,0)->icon().isNull()&&best->item(0,0)->data(Qt::AccessibleDescriptionRole).toString()=="Reference improvement","verified reference improvement needs a distinct rosette independently of the ticket target");
+  auto missing=frame();missing.insert("ticket_id",QString(64,'e'));missing.remove("scopes");missing.insert("work_role","audit");
+  pgn::ui::presentMiningTicketData(view.get(),missing);QApplication::processEvents();
+  require(!best->item(0,0)&&!recent->item(0,0),"new audit without checkpoints must clear the previous scope");
+  view->resize(size+QSize(11,0));QApplication::processEvents();QApplication::processEvents();
+  require(!best->item(0,0)&&!recent->item(0,0),"resize resurrected results from the previous ticket while awaiting the new audit");
+  require(view->property("pgn_results_best_rows").toInt()==0&&view->property("pgn_results_recent_rows").toInt()==0,"empty scope diagnostics retained old row counts");
   packet.insert("ticket_id",QString(64,'d'));scope.insert("best",QJsonArray{});scope.insert("recent",QJsonArray{});scopes.insert("ticket",scope);packet.insert("scopes",scopes);
   pgn::ui::presentMiningTicketData(view.get(),packet);QApplication::processEvents();
   require(!best->item(0,0)&&!recent->item(0,0),"old rows survived the next empty ticket");
