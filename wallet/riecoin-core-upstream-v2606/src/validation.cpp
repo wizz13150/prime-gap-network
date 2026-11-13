@@ -3381,7 +3381,10 @@ bool Chainstate::ConnectTip(
         view.Flush(/*reallocate_cache=*/false); // No need to reallocate since it only has capacity for 1 block
         // Initial enrollment has no predecessor forward record. Persist its
         // matching UTXO/head atomically before any child can stage continuity.
-        if(native_genesis)CoinsTip().Flush(false);
+        // Preserve the normal block-data -> block-index -> UTXO write order.
+        // A direct coins flush could survive a crash while the genesis index
+        // and its fully validated status had never reached disk.
+        if(native_genesis&&!FlushStateToDisk(state,FlushStateMode::FORCE_FLUSH))return false;
     }
     const auto time_4{SteadyClock::now()};
     m_chainman.time_flush += time_4 - time_3;
@@ -5410,8 +5413,28 @@ bool Chainstate::LoadGenesisBlock()
     // m_blockman.m_block_index. Note that we can't use m_chain here, since it is
     // set based on the coins db, not the block index db, which is the only
     // thing loaded at this point.
-    if (m_blockman.m_block_index.contains(params.GenesisBlock().GetHash()))
+    const auto recheck_genesis = [&](CBlockIndex* index) {
+        if(!index)return false;
+        if(index->IsValid(BLOCK_VALID_SCRIPTS))return true;
+        if(!m_chainman.m_options.pgn_candidate_science_budget||!m_chainman.m_options.pgn_candidate_bootstrap_budget)return true;
+        const auto& genesis=params.GenesisBlock();
+        if(index->pprev||index->nHeight!=0||index->GetBlockHash()!=genesis.GetHash()||
+           index->nTx!=genesis.vtx.size()||!index->IsValid(BLOCK_VALID_TREE))return false;
+        // A prior direct genesis coins flush may have survived without its
+        // index validity flags. Re-run the existing full genesis validator
+        // against an empty scratch view, never reset the persisted wallet or
+        // chainstate and never weaken the request-history script-valid gate.
+        CCoinsViewCache scratch{&CoinsViewEmpty::Get()};
+        CBlock body{genesis};body.fChecked=false;body.checked_amount_max.reset();
+        body.m_checked_merkle_root=false;body.m_checked_witness_commitment=false;
+        BlockValidationState checked;
+        if(!ConnectBlock(body,checked,index,scratch)||!index->IsValid(BLOCK_VALID_SCRIPTS)){
+            LogError("Native genesis index recovery failed: %s",checked.ToString());return false;
+        }
         return true;
+    };
+    if (auto* existing=m_blockman.LookupBlockIndex(params.GenesisBlock().GetHash()))
+        return recheck_genesis(existing);
 
     try {
         const CBlock& block = params.GenesisBlock();
@@ -5432,6 +5455,7 @@ bool Chainstate::LoadGenesisBlock()
         }
         CBlockIndex* pindex = m_blockman.AddToBlockIndex(block, m_chainman.m_best_header,native_work);
         m_chainman.ReceivedBlockTransactions(block, pindex, blockPos);
+        if(!recheck_genesis(pindex))return false;
     } catch (const std::runtime_error& e) {
         LogError("%s: failed to write genesis block: %s\n", __func__, e.what());
         return false;
