@@ -367,27 +367,48 @@ class CohortStore:
             previous={k:v for k,v in before.items()if k!='previous'})
         return current==expected
 
-    def prepare(self,client,selected):
+    def prepare(self,client,selected,*,base_cohort=None,verify_running_base=None):
         # Never accept a caller-created boolean "authenticated" receipt.
         stage.require(client.context==self.context and client.context_sha256==self.context_sha256,'Authentication client context differs')
         with locked_cache(self.root):self.require_resolved_transaction()
         # Hold the download-cache lock through every stage read/copy. A second
         # helper must not reclaim our authenticated source after prepare returns.
         with client.prepared(selected,discard_after=True) as receipt:
-            return self._prepare_authenticated_receipt(receipt)
+            return self._prepare_authenticated_receipt(receipt,base_cohort=base_cohort,verify_running_base=verify_running_base)
 
-    def _prepare_authenticated_receipt(self,receipt):
+    def _prepare_authenticated_receipt(self,receipt,*,base_cohort=None,verify_running_base=None):
         stage.require(receipt['publisher_authenticated']and receipt['context_sha256']==self.context_sha256,'Authenticated preparation required')
         source=Path(receipt['stage']);plan=stage.verify_stage(source,receipt['manifest_sha256'],self.context,self.context_sha256)
         manifest=stage._json(stage._read_plain(source/'component-bundle.json',stage.MAX_MANIFEST))
         with locked_cache(self.root):
             before=self.current();self.require_resolved_transaction(before)
-            base=Path(before['cohort']);old,old_files,_,_=inventory(base)
+            base=stage._plain_chain(base_cohort if base_cohort is not None else before['cohort'])
+            old,old_files,base_digest,_=inventory(base)
+            stage.require(old['network']==self.context['network'] and old.get('platform','windows-x86_64')==self.context['platform'],'Running base network or platform differs')
             actual_versions={c['id']:c['version']for c in old['components']}
             for installed in self.context['installed']:
                 stage.require(actual_versions.get(installed['id'])==installed['version'],'Installed versions changed since the update request')
+            if base!=Path(before['cohort']):
+                selected_inventory=inventory(Path(before['cohort']))[0]
+                for component in selected_inventory['components']:
+                    version=actual_versions.get(component['id'])
+                    stage.require(version is not None and not stage._older(version,component['version']),'Running base would downgrade a selected component')
+                if verify_running_base is not None:
+                    # Only explicit installation can adopt an already-running
+                    # portable package. Signature/stage validation has completed;
+                    # verify its exact native UI identity and application genesis
+                    # before changing the baseline. Downloads alone never do so.
+                    verify_running_base(base)
+                    journal=self.root/'transaction.json'
+                    # require_resolved_transaction() above proved this journal
+                    # completed. Retire it before the atomic baseline write, so a
+                    # crash on either side remains retryable without fabricating
+                    # an incomplete activation or overwriting recovery evidence.
+                    journal.unlink(missing_ok=True)
+                    before=dict(before,cohort=str(base),inventory_sha256=base_digest,previous=None)
+                    _write(self.root/'current.json',before)
             chosen=set(receipt['selection']);stage.require(chosen==set(plan['selected_with_dependencies']),'Selection differs from authenticated stage')
-            key=stage.sha(json.dumps([before['inventory_sha256'],receipt['manifest_sha256'],sorted(chosen)],separators=(',',':')).encode())
+            key=stage.sha(json.dumps([base_digest,receipt['manifest_sha256'],sorted(chosen)],separators=(',',':')).encode())
             cohorts=self.root/'cohorts';cohorts.mkdir(exist_ok=True);destination=cohorts/key[:20]
             rows={c['id']:c for c in old['components'] if c['id']not in chosen};files={f['relative']:f['file']for f in old_files.values()if f['component']not in chosen}
             for component in manifest['components']:
@@ -406,7 +427,7 @@ class CohortStore:
             if destination.exists():
                 _,_,digest,_=inventory(destination);stage.require(digest==expected_digest,'Existing prepared cohort differs from authenticated files')
                 return self._remember_prepared(dict(schema='PGN_PREPARED_COHORT_V1',cohort=str(destination),inventory_sha256=digest,
-                    expected_current=before,sequence=manifest['sequence'],selected=sorted(chosen),cohort_key_sha256=key))
+                    expected_current=before,base_cohort=str(base),sequence=manifest['sequence'],selected=sorted(chosen),cohort_key_sha256=key))
             # Reuse code only from a verified immutable cohort in this store.
             # A user's unpacked installation or staging cache may be edited;
             # neither is allowed to share backing storage with installed code.
@@ -449,7 +470,7 @@ class CohortStore:
             finally:
                 if pending.exists():stage._remove_pending(pending,cohorts)
             return self._remember_prepared(dict(schema='PGN_PREPARED_COHORT_V1',cohort=str(destination),inventory_sha256=digest,
-                expected_current=before,sequence=manifest['sequence'],selected=sorted(chosen),cohort_key_sha256=key))
+                expected_current=before,base_cohort=str(base),sequence=manifest['sequence'],selected=sorted(chosen),cohort_key_sha256=key))
 
     def activate(self,candidate,drain_owned,start_and_verify,restore_previous):
         """Publish only after exact owned shutdown and verified candidate startup.
@@ -462,6 +483,7 @@ class CohortStore:
             self.commit_warning=''
             before=self.current();self.require_resolved_transaction(before)
             stage.require(before==candidate['expected_current'],'Installation changed since preparation')
+            stage.require(candidate.get('base_cohort',before['cohort'])==before['cohort'],'Prepared portable base requires owned installation verification')
             path=stage._plain_chain(candidate['cohort']);stage.require(path.parent==self.root/'cohorts','Candidate is outside installation store')
             _,_,digest,_=inventory(path);stage.require(digest==candidate['inventory_sha256'],'Prepared candidate changed')
             stage.require(candidate['sequence']>=before['sequence'],'Installation sequence would roll back')

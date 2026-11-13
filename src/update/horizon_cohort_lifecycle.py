@@ -14,6 +14,23 @@ from horizon_component_install import inventory, _write
 from horizon_lifecycle import ProcessAbsentError
 
 class NativeCohortLifecycle:
+    @classmethod
+    def verify_running_base(cls,store,base,activation):
+        """Read-only proof for adopting the UI the user actually launched."""
+        stage._keys(activation,'schema ui_pid ui_birth application_root data_root')
+        stage.require(activation['schema']==cls.activation_schema and store.context['platform']==cls.platform,'Invalid native activation context')
+        stage.require(cls.valid_birth(activation['ui_birth']),'Exact UI creation time required')
+        stage.require(all(type(activation[k])is str and len(activation[k])<=32768 and Path(activation[k]).is_absolute()for k in ('application_root','data_root')),'Absolute application/data paths required')
+        base=stage._plain_chain(base);root=stage._plain_chain(activation['application_root']);data=stage._plain_chain(activation['data_root'])
+        stage.require(data not in (base,store.root) and not data.is_relative_to(base),'User data must be separate from code')
+        _,files,_,_=inventory(base)
+        with cls.own_process(activation['ui_pid'],base/cls.ui_relative,files[cls.ui_relative.casefold()]['sha256'],activation['ui_birth'])as ui:
+            state=cls.ipc(ui,'--inspect-owned')
+            stage.require(not ui.exited(),'Running UI exited during baseline verification')
+            stage.require(state.get('pgn_update_application_root')==str(root).replace('\\','/') and
+                          state.get('pgn_update_data_root')==str(data).replace('\\','/') and
+                          state.get('pgn_update_genesis')==store.context['genesis_hash'],'Activation differs from the actual owned UI')
+
     def __init__(self, store, base, activation):
         stage._keys(activation, 'schema ui_pid ui_birth application_root data_root')
         stage.require(activation['schema']==self.activation_schema, 'Invalid native activation context')
