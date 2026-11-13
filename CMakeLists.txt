@@ -1645,6 +1645,9 @@ target_link_libraries(pgn-observed-ticket-productivity-test PRIVATE Qt6::Core pg
 add_test(NAME observed-ticket-productivity COMMAND pgn-observed-ticket-productivity-test)
 
 if(Python3_Interpreter_FOUND)
+    add_test(NAME network-startup-recovery COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_network_startup_recovery.py")
+    add_test(NAME runtime-failure-trace COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_failure_trace.py")
+    set_tests_properties(network-startup-recovery runtime-failure-trace PROPERTIES TIMEOUT 30 LABELS "network;recovery;no-gpu" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME gpu-control-resume COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_control_resume.py")
     add_test(NAME gpu-audit-service COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_audit_service.py")
     add_test(NAME gpu-service-handoff COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gpu_service_handoff.py")

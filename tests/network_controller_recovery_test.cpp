@@ -46,10 +46,10 @@ QProcess process;bool allowed=true;std::vector<bool> launches;int disconnected=0
  silence.phase("Paused",true);silence.intent(false);wait([&]{return silences==2;});need(!silence.wanted()&&starts==1,"Silence overrode manual OFF");
  silence.close();silent.write("quit\n");wait([&]{return silent.state()==QProcess::NotRunning;});
  QProcess absent;pgn::mining::NetworkControllerRecovery failed(&absent,nullptr,20,100);int failedStarts=0;failed.reconnect=[&](bool){++failedStarts;failed.launching();absent.setProgram(QCoreApplication::applicationFilePath()+".missing");absent.start();};failed.intent(true);need(failed.restartIfClosed(),"Failed-start fixture not dispatched");wait([&]{return failed.needsAttention();});need(failedStarts==1&&!failed.retryPending(),"Missing executable entered a retry loop");failed.close();
- for(const bool wanted:{true,false}){
+ for(const auto& waitingPhase:QStringList{"Waiting for controller","Waiting for connection"})for(const bool wanted:{true,false}){
   QProcess contended;pgn::mining::NetworkControllerRecovery waiting(&contended,nullptr,20,100);int attempts=0;std::vector<bool> intents;
   waiting.reconnect=[&](bool on){++attempts;intents.push_back(on);waiting.launching();contended.setProgram(QCoreApplication::applicationFilePath());contended.setArguments({"--transport"});contended.start();};
-  QObject::connect(&contended,&QProcess::started,&app,[&]{if(attempts<=2){waiting.phase("Waiting for controller",true);contended.write("quit\n");}else waiting.phase("Searching",true);});
+  QObject::connect(&contended,&QProcess::started,&app,[&]{if(attempts<=2){waiting.phase(waitingPhase,true);contended.write("quit\n");}else waiting.phase("Searching",true);});
   waiting.intent(wanted);need(waiting.restartIfClosed(),"Contended transport did not start");wait([&]{return attempts==3&&contended.state()==QProcess::Running;});
   need(!waiting.needsAttention()&&intents==std::vector<bool>(3,wanted),"Temporary owner contention lost intent or became terminal");
   waiting.close();contended.write("quit\n");wait([&]{return contended.state()==QProcess::NotRunning;});need(!waiting.retryPending(),"Closed busy transport restarted");

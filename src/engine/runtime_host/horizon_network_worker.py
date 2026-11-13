@@ -635,8 +635,12 @@ def main():
         print(json.dumps(dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", phase="Waiting for controller", error_code=error.code, message=str(error)[:400])), flush=True)
         return 1
     except Exception as error:
-        from horizon_failure_trace import failure_context,failure_message
+        from horizon_failure_trace import failure_context,failure_message,startup_failure_phase
         context=failure_context(error,bundle=args.bundle,state_root=args.state_root,cookie=args.cookie)
-        print(json.dumps(dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", phase="Needs attention", message=failure_message(context),failure=context)), flush=True)
+        phase = startup_failure_phase(error, context['step'], args.cookie)
+        message = failure_message(context)
+        if phase == 'Waiting for connection':
+            message = ('Core temporarily unavailable; reconnecting. Saved work retained. ' + message)[:600]
+        print(json.dumps(dict(schema="PGN_HORIZON_MINING_VIEW_UNAVAILABLE_V1", phase=phase, message=message,failure=context)), flush=True)
         return 1
     return 0

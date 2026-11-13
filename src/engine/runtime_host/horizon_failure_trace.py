@@ -82,3 +82,37 @@ def failure_message(context):
     cause=next((c for c in context['causes']if c.get('resource')),context['causes'][0])
     prefix=cause['error_type']+((' · file: '+cause['resource'])if cause.get('resource')else'')
     return (prefix+' · step: '+context['step']+' · '+cause['summary'])[:600]
+
+
+def startup_failure_phase(error, step, cookie=None):
+    """Retry only preflight availability failures; never replay an arbitrary RPC.
+
+    The UI owns exponential backoff and preserves its user's ON/OFF intent.
+    Proof/authentication/storage failures stay terminal, including semantic
+    exceptions which happen to have a transport exception as their context.
+    """
+    if step not in ('controller_startup', 'verifying_core'):
+        return 'Needs attention'
+    import errno
+    from urllib.error import HTTPError, URLError
+    from horizon_core_rpc import CoreRpcError, CoreRpcUnavailable
+    seen = set()
+    while isinstance(error, URLError) and not isinstance(error, HTTPError):
+        if id(error) in seen:
+            return 'Needs attention'
+        seen.add(id(error))
+        error = error.reason
+    transient = isinstance(error, (ConnectionError, TimeoutError, CoreRpcUnavailable))
+    if isinstance(error, HTTPError):
+        transient = error.code in (429, 503)
+    elif isinstance(error, CoreRpcError):
+        transient = error.code == -28  # Core is still warming up.
+    elif isinstance(error, OSError):
+        transient = transient or getattr(error, 'errno', None) in {
+            errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED,
+            errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ETIMEDOUT,
+            10050, 10051, 10053, 10054, 10060, 10061, 10064, 10065,
+        }
+        if isinstance(error, FileNotFoundError) and cookie is not None and error.filename:
+            transient = os.path.normcase(os.path.abspath(error.filename)) == os.path.normcase(os.path.abspath(cookie))
+    return 'Waiting for connection' if transient else 'Needs attention'
