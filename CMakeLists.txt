@@ -1850,3 +1850,7 @@ target_include_directories(pgn-ui-lease-test PRIVATE src)
 target_compile_features(pgn-ui-lease-test PRIVATE cxx_std_20)
 target_link_libraries(pgn-ui-lease-test PRIVATE Qt6::Core)
 add_test(NAME ui-lease COMMAND pgn-ui-lease-test)
+
+add_executable(pgn-booking-long-path-test tests/booking_long_path_test.cpp)
+target_link_libraries(pgn-booking-long-path-test PRIVATE pgn-booking)
+add_test(NAME booking-long-path COMMAND pgn-booking-long-path-test)
