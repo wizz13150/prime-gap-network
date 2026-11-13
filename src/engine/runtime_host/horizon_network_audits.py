@@ -203,7 +203,7 @@ class NetworkAudits:
         # The legacy file is now a bounded active window, not the backlog.
         # All its identities were durably registered above before replacement.
         # Rotate through the full catalogue even when every older owner waits.
-        saved = self.answers.next_page()
+        saved = self.answers.next_page(isolate_failures=True)
         pending = [name for name, _ in saved]
         # Publish recovery before any send: a crash cannot leave its only queue
         # representation in RAM. Catalogue waiting rows independently survive.

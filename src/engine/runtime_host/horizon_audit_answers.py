@@ -31,6 +31,7 @@ class AuditAnswers:
         if type(max_pages)is not int or not 8<=max_pages<=32768:raise ValueError('Audit catalogue page budget invalid')
         self.max_pages=max_pages;self._migration=None
         self._seal_lock=threading.RLock();self._retained_name=None;self._retained_scan=None
+        self.publication_issues=()
 
     @contextmanager
     def database(self):
@@ -273,15 +274,18 @@ class AuditAnswers:
             if db.execute('UPDATE answers SET waiting=0 WHERE name=?',(name,)).rowcount!=1:
                 raise ValueError('Unregistered audit acknowledgement')
 
-    def next_page(self,limit=64):
+    def next_page(self,limit=64,*,isolate_failures=False):
         """Fair bounded work window over the durable waiting catalogue.
 
         Pending answers are not removed or expired by scheduling. A validated
         cursor wraps lexically, so withheld owners cannot pin the first page.
-        Digest failures leave the cursor unchanged; a crash can delay a page
-        until the next rotation but cannot lose its durable waiting rows.
+        Strict callers leave the cursor unchanged on a digest failure.
+        Background publication can isolate a bad retained file while moving
+        through unrelated answers. Its waiting row and bytes remain intact.
         """
         if type(limit)is not int or not 1<=limit<=64:raise ValueError('Audit page exceeds budget')
+        if type(isolate_failures)is not bool:raise ValueError('Explicit publication isolation choice required')
+        self.publication_issues=()
         with self.database()as db:
             row=db.execute("SELECT value FROM meta WHERE key='waiting_cursor'").fetchone()
             cursor=row[0]if row else ''
@@ -289,13 +293,20 @@ class AuditAnswers:
             rows=db.execute('SELECT name,digest FROM answers WHERE waiting=1 AND name>? ORDER BY name LIMIT ?',(cursor,limit)).fetchall()
             if len(rows)<limit and cursor:
                 rows+=db.execute('SELECT name,digest FROM answers WHERE waiting=1 AND name<=? ORDER BY name LIMIT ?',(cursor,limit-len(rows))).fetchall()
-        result=[]
+        result=[];issues=[]
         for name,digest in rows:
-            payload=self.read_registered(name,digest)
+            try:payload=self.read_registered(name,digest)
+            except (OSError,ValueError,AuditSealRecoveryPending)as error:
+                if not isolate_failures:raise
+                # Never regenerate, acknowledge or delete this answer. A later
+                # sweep retries the same registered identity and digest.
+                issues.append(dict(name=name,error_type=type(error).__name__))
+                continue
             result.append((name,payload))
-        if result:
+        self.publication_issues=tuple(issues)
+        if rows:
             with self.database()as db:
-                db.execute("INSERT OR REPLACE INTO meta VALUES('waiting_cursor',?)",(result[-1][0],))
+                db.execute("INSERT OR REPLACE INTO meta VALUES('waiting_cursor',?)",(rows[-1][0],))
         return result
 
     def has_answers(self):

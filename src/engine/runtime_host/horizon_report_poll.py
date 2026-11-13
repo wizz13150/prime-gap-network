@@ -49,6 +49,9 @@ class ReportPoller:
             for audit in (self.owner, *self.audit_lanes):
                 try:
                     audit.reveal_committed()
+                    issues=getattr(getattr(audit,'answers',None),'publication_issues',())
+                    if issues:
+                        errors.append(str(len(issues))+' retained audit answers require recovery; unrelated valid answers remain publishable')
                 except Exception as error:
                     errors.append(str(error)[:400])
             self.audit_error = '; '.join(errors)[:400] if errors else None
