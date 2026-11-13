@@ -26,6 +26,8 @@
 #include "social_v4_checks.h"
 #include "social_chat_checks.h"
 #include "social_leaderboard_utc_checks.h"
+#include "social_public_names_checks.h"
+#include "social_chat_scroll_checks.h"
 #include "social/social_numbers.h"
 #include <QClipboard>
 using namespace pgn;
@@ -105,6 +107,7 @@ int main(int argc,char** argv){
     test::v4::run(app,temp.path()+"/v4-contract");
     test::chat::run(temp.path()+"/send-contract/drafts.json");
     test::utc::run(app,temp.path()+"/utc-contract/drafts.json");
+    test::names::run(app,temp.path()+"/names-contract/outbox.json");
     social::DraftStore store(temp.path()+"/store/drafts.json");social::Drafts d,loaded;
     d.sections[0].body=QString::fromUtf8("Unicode café 🌌");check(store.save(A(),d).isEmpty()&&store.load(A(),loaded).isEmpty()&&loaded.sections[0].body==d.sections[0].body,"Unicode round-trip failed");
     check(store.path(A())!=store.path(B())&&store.path(A())!=store.path(C()),"Draft identity/genesis collision");
@@ -245,8 +248,9 @@ int main(int argc,char** argv){
             }
         }
     }
-    std::cout<<"PASS: V4 mixed surfaces and contrast; BBCode source/toolbar/preview/bounds/safe resources; Discord-style channels/participants and scoped drafts; service-authoritative roles and refusal; no hidden superior; identity/revocation/recovery/replay adapter guards; Chat/Leaderboard native context menus with canonical targets; retired sections inaccessible; native keyboard/focus; bounded atomic drafts; genesis/provenance/exact volume sort and scientific display; 500-row pagination; offline/loading/empty/error; safe late/destruction; same-operation send retry/restart; no optimistic insert; Posted vs Delivered; wrong-scope/401 refusal\n";
-    std::cout<<"CHECKS "<<(checks+test::v4::checks+test::chat::checks+test::utc::checks)<<"\n";
+    test::scroll::run(temp.path()+"/scroll/drafts.json",argc==3&&QString::fromLocal8Bit(argv[1])=="--render-scroll"?QString::fromLocal8Bit(argv[2]):QString{});
+    std::cout<<"PASS: V4 mixed surfaces and contrast; safe BBCode; Chat/Leaderboard and scoped drafts; service-authoritative roles/refusal; canonical identity menus and public names; exact pagination/UTC/volume; send retry/restart; Posted vs Delivered; post-layout Chat scroll anchors/follow/unseen/channel isolation\n";
+    std::cout<<"CHECKS "<<(checks+test::v4::checks+test::chat::checks+test::utc::checks+test::names::checks+test::scroll::checks)<<"\n";
     return 0;
  }catch(const std::exception& error){std::cerr<<"FAIL: "<<error.what()<<'\n';return 1;}
 }
