@@ -662,6 +662,7 @@ int main(int argc,char** argv) {
    const auto resizeMatch=QRegularExpression("^Mining-([0-9]{3,4})x([0-9]{3,4})$").match(section);
   const auto cpuAction=QRegularExpression("^MiningCpu([0-7])(On|Off|Threads([0-9]{1,2}))$").match(section);
   const bool resizeAction=resizeMatch.hasMatch()&&resizeMatch.captured(1).toInt()>=640&&resizeMatch.captured(2).toInt()>=480;
+  const bool statisticsAction=QStringList{"MiningStatisticsTicket","MiningStatisticsSession","MiningStatisticsHistory"}.contains(section);
   const QStringList graphActions{"15MIN","1H","6H","1D","1W","1M","1Y","ALL","TIME","LENGTH","CURRENT","HISTORY","RESET"};
   const bool lensAction=section.startsWith("NumberLens-")&&graphActions.contains(section.mid(11));
    const bool miningGraphAction=section.startsWith("Mining-")&&graphActions.contains(section.mid(7));
@@ -669,11 +670,23 @@ int main(int argc,char** argv) {
   const QStringList communityActions{"FIRSTOPEN","OUR","RESET","ZONE100","MININGZONE","EXACTINVALID","EXACTVALID"};
   const bool communityAction=section.startsWith("Community-")&&communityActions.contains(section.mid(10));
   const QStringList reservationActions{"Reservations","Reservations-Robert","Reservations-Benxy","Reservations-Wizz"};
-   if(!cpuAction.hasMatch()&&!resizeAction&&!lensAction&&!miningGraphAction&&!recordsAction&&!communityAction&&!reservationActions.contains(section)&&!QStringList{"Social","SocialMiners","Mining","MiningMaximize","MiningOn","MiningOff","MiningExpand","MiningCollapse","MiningStatus","MiningTotalExpand","MiningTotalCollapse","MiningGroupGpuOn","MiningGroupGpuOff","MiningGroupCpuOn","MiningGroupCpuOff","Community","TicketFirst","TicketDomain","TicketActive","CommunityStatus","PublicRegister","NumberLens","NumberLensStatus","Benchmark","BenchmarkMeasure","BenchmarkStatus","Wallet","Audits","AuditsRegistry","Difficulty","Diagnostics","DiagnosticsStart","DiagnosticsStop","DiagnosticsExport","Vanity","VanityCheck","VanityStatus","VanityGenerateCPU","Network","NetworkInspectFirst","Configuration"}.contains(section))return QJsonObject{{"error","Unknown owned QA section"}};
+   if(!statisticsAction&&!cpuAction.hasMatch()&&!resizeAction&&!lensAction&&!miningGraphAction&&!recordsAction&&!communityAction&&!reservationActions.contains(section)&&!QStringList{"Social","SocialMiners","Mining","MiningMaximize","MiningOn","MiningOff","MiningExpand","MiningCollapse","MiningStatus","MiningTotalExpand","MiningTotalCollapse","MiningGroupGpuOn","MiningGroupGpuOff","MiningGroupCpuOn","MiningGroupCpuOff","Community","TicketFirst","TicketDomain","TicketActive","CommunityStatus","PublicRegister","NumberLens","NumberLensStatus","Benchmark","BenchmarkMeasure","BenchmarkStatus","Wallet","Audits","AuditsRegistry","Difficulty","Diagnostics","DiagnosticsStart","DiagnosticsStop","DiagnosticsExport","Vanity","VanityCheck","VanityStatus","VanityGenerateCPU","Network","NetworkInspectFirst","Configuration"}.contains(section))return QJsonObject{{"error","Unknown owned QA section"}};
 
   if(resizeAction){window.showNormal();window.resize(resizeMatch.captured(1).toInt(),resizeMatch.captured(2).toInt());}
 
-   if(section=="PublicRegister"){
+   if(statisticsAction){
+   major->setCurrentIndex(0);tabs->setCurrentWidget(miningPage);
+   const auto selected=section.mid(QString("MiningStatistics").size()).toLower();
+   auto* summary=window.findChild<QWidget*>("pgn-session-statistics");
+   auto* button=window.findChild<QPushButton*>("pgn-summary-"+selected);
+   auto* results=window.findChild<QWidget*>("pgn-mining-results");
+   if(!summary||!button||!results)return QJsonObject{{"error","Statistics controls absent"},{"mining_control_changed",false}};
+   button->click();QApplication::processEvents();summary->repaint();
+   const auto capture=root+"/evidence/owned-"+section+"-"+QString::number(QCoreApplication::applicationPid())+".png";
+   const bool saved=window.grab().save(capture);
+   return QJsonObject{{"gui_pid",QCoreApplication::applicationPid()},{"section",section},{"capture",capture},{"saved",saved},{"mining_control_changed",false},{"scope",summary->property("pgn_summary_scope").toString()},{"statistics",QJsonValue::fromVariant(summary->property("pgn_summary_statistics"))},{"regions",QJsonValue::fromVariant(summary->property("pgn_summary_layout_regions"))},{"history_error",results->property("pgn_history_statistics_error").toString()},{"ticket_error",results->property("pgn_ticket_statistics_error").toString()}};
+  }
+  if(section=="PublicRegister"){
    major->setCurrentIndex(0);tabs->setCurrentWidget(community);
    auto* open=community->findChild<QPushButton*>("pgn-public-register-open");if(!open)return QJsonObject{{"error","Public register button unavailable"}};open->click();
    auto* dialog=community->findChild<QWidget*>("pgn-public-register-dialog");if(!dialog)return QJsonObject{{"error","Public register dialog unavailable"}};

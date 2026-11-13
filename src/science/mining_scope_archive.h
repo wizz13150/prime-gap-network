@@ -21,7 +21,7 @@ class MiningScopeArchive {
     static constexpr qint64 maximumBytes=2*1024*1024;
     QString file_,error_,stream_,ticket_;qint64 sequence_{};QString prefix_;quint64 activeNs_{},clockNs_{};QString clockEpoch_;qint64 observedGolds_{},previousGolds_{};bool goldBaseline_{};
     QJsonObject base_,current_;std::unique_ptr<QLockFile> lock_;QElapsedTimer saved_;
-    bool dirty_{},blocked_{};
+    bool dirty_{},blocked_{},includeAudits_{};QSet<QString> retiredStreams_;
     static qint64 count(const QJsonValue& value){
         bool ok=false;const auto n=value.toVariant().toLongLong(&ok);
         if(!ok||n<0)throw std::runtime_error("Invalid archive counter");return n;
@@ -48,7 +48,7 @@ class MiningScopeArchive {
         QJsonArray out;for(int i=0;i<std::min(100,int(rows.size()));++i)out.append(rows[i]);return out;
     }
 public:
-    explicit MiningScopeArchive(QString file={}):file_(std::move(file)){
+    explicit MiningScopeArchive(QString file={},bool includeAudits=false):file_(std::move(file)),includeAudits_(includeAudits){
         if(file_.isEmpty())return;
         QDir().mkpath(QFileInfo(file_).absolutePath());lock_=std::make_unique<QLockFile>(file_+".lock");
         if(!lock_->tryLock(0)){blocked_=true;error_="Local archive is already open in another window";return;}
@@ -56,11 +56,11 @@ public:
         if(!f.open(QIODevice::ReadOnly)||f.size()>maximumBytes){blocked_=true;error_="Local archive cannot be read within its storage budget";return;}
         QJsonParseError e;const auto data=QJsonDocument::fromJson(f.readAll(),&e).object();
         if(e.error!=QJsonParseError::NoError||data.value("schema")!="PGN_MINING_SCOPE_ARCHIVE_V1"){blocked_=true;error_="Local archive format is invalid; file retained";return;}
-        stream_=data.value("stream_id").toString();ticket_=data.value("ticket_id").toString();prefix_=data.value("prefix").toString();sequence_=data.value("sequence").toInteger();base_=data.value("base").toObject();current_=data.value("current").toObject();activeNs_=current_.value("active_time_ns").toString().toULongLong();clockNs_=data.value("clock_ns").toString().toULongLong();clockEpoch_=data.value("clock_epoch").toString();observedGolds_=current_.value("observed_golds").toVariant().toLongLong();previousGolds_=current_.value("statistics").toObject().value("at_or_above_target").toVariant().toLongLong();goldBaseline_=!current_.isEmpty();
+        for(const auto& value:data.value("retired_streams").toArray())retiredStreams_.insert(value.toString());stream_=data.value("stream_id").toString();ticket_=data.value("ticket_id").toString();prefix_=data.value("prefix").toString();sequence_=data.value("sequence").toInteger();base_=data.value("base").toObject();current_=data.value("current").toObject();activeNs_=current_.value("active_time_ns").toString().toULongLong();clockNs_=data.value("clock_ns").toString().toULongLong();clockEpoch_=data.value("clock_epoch").toString();observedGolds_=current_.value("observed_golds").toVariant().toLongLong();previousGolds_=current_.value("statistics").toObject().value("at_or_above_target").toVariant().toLongLong();goldBaseline_=!current_.isEmpty();
     }
     ~MiningScopeArchive(){flush();}
     const QString& error()const{return error_;}
-    void resumeFrom(const MiningScopeArchive& other){if(!other.error_.isEmpty())return;stream_=other.stream_;ticket_=other.ticket_;sequence_=other.sequence_;prefix_=other.prefix_;base_=other.base_;current_=other.current_;activeNs_=other.activeNs_;clockNs_=other.clockNs_;clockEpoch_=other.clockEpoch_;observedGolds_=other.observedGolds_;previousGolds_=other.previousGolds_;goldBaseline_=other.goldBaseline_;}
+    void resumeFrom(const MiningScopeArchive& other){if(!other.error_.isEmpty())return;stream_=other.stream_;ticket_=other.ticket_;sequence_=other.sequence_;prefix_=other.prefix_;base_=other.base_;current_=other.current_;retiredStreams_=other.retiredStreams_;activeNs_=other.activeNs_;clockNs_=other.clockNs_;clockEpoch_=other.clockEpoch_;observedGolds_=other.observedGolds_;previousGolds_=other.previousGolds_;goldBaseline_=other.goldBaseline_;}
     static QJsonObject merge(const QJsonObject& older,const QJsonObject& newer){
         if(older.isEmpty())return newer;if(newer.isEmpty())return older;
         auto a=older.value("statistics").toObject(),b=newer.value("statistics").toObject();
@@ -71,40 +71,54 @@ public:
     bool observe(const QJsonObject& frame){
         if(blocked_)return false;
         try{
-            // An auditor computes someone else's range. Keep its work out of
-            // the miner's ticket, discovery and public-record history.
             const auto role=frame.value("work_role");
-            if(role=="audit"){flush();return false;}
-            if(!role.isUndefined()&&role!="search")throw std::runtime_error("Unsupported source activity; discovery archive retained");
-            const auto stream=frame.value("stream_id").toString(),ticket=frame.value("ticket_id").toString(),prefix=frame.value("positions").toString();const auto sequence=frame.value("local_sequence").toInteger();
+            if(role=="audit"&&!includeAudits_){flush();return false;}
+            if(!role.isUndefined()&&role!="search"&&!(includeAudits_&&role=="audit"))throw std::runtime_error("Unsupported source activity; discovery archive retained");
+            const auto stream=frame.value("stream_id").toString(),ticket=frame.value("ticket_id").toString(),prefix=frame.value("positions").toString();
+            const auto sequence=frame.value("local_sequence").toInteger();
             if(stream.isEmpty()||ticket.size()!=64||sequence<1||prefix.isEmpty())throw std::runtime_error("Source archive identity is unavailable");
-            if(!stream_.isEmpty()&&stream_!=stream)throw std::runtime_error("Local archive belongs to another source stream");
-            if(sequence<sequence_||(sequence==sequence_&&!ticket_.isEmpty()&&ticket_!=ticket))throw std::runtime_error("Out-of-order source snapshot; archive retained");
-            if(sequence==sequence_&&!prefix_.isEmpty()&&lessUnsigned(prefix,prefix_))throw std::runtime_error("Source prefix moved backwards; archive retained");
+            const bool rollover=!stream_.isEmpty()&&stream_!=stream;
+            if(rollover&&retiredStreams_.contains(stream))throw std::runtime_error("Retired source snapshot ignored; archive retained");
+            if(!rollover&&(sequence<sequence_||(sequence==sequence_&&!ticket_.isEmpty()&&ticket_!=ticket)))throw std::runtime_error("Out-of-order source snapshot; archive retained");
+            const bool sameTicket=!current_.isEmpty()&&ticket==ticket_;
+            if(sameTicket&&!prefix_.isEmpty()&&lessUnsigned(prefix,prefix_))throw std::runtime_error("Source prefix moved backwards; archive retained");
             auto current=frame.value("scopes").toObject().value("ticket").toObject();if(current.isEmpty())return false;
-            const auto stats=current.value("statistics").toObject();const auto total=count(stats.value("count_total"));const auto above=count(stats.value("at_or_above_target"));qint64 bands=above;
+            const auto stats=current.value("statistics").toObject();const auto total=count(stats.value("count_total")),above=count(stats.value("at_or_above_target"));qint64 bands=above;
             const auto bins=stats.value("merit_band_counts").toObject(),thresholds=stats.value("threshold_counts").toObject();
             if(bins.size()>128||thresholds.size()>128||!stats.value("statistics_target").isDouble())throw std::runtime_error("Incomplete source statistics");
             for(auto i=bins.begin();i!=bins.end();++i)bands=sum(bands,count(i.value()));if(bands!=total)throw std::runtime_error("Merit histogram does not match source count");
             for(auto i=thresholds.begin();i!=thresholds.end();++i)if(count(i.value())>total)throw std::runtime_error("Gap histogram exceeds source count");
             current.insert("ticket_count",QString("1"));
             for(const auto& key:{QString("best"),QString("recent")}){auto rows=current.value(key).toArray();if(rows.size()>100)throw std::runtime_error("Source row budget exceeded");for(int i=0;i<rows.size();++i){auto row=rows[i].toObject();row.insert("target_merit",frame.value("target_merit"));rows[i]=row;}current.insert(key,rows);}
-            const bool sameTicket=sequence==sequence_&&ticket==ticket_;const auto tests=frame.value("tests").toString("0");
+            const auto tests=frame.value("tests").toString("0");
             current.insert("observed_positions",sameTicket?addDecimal(current_.value("observed_positions").toString(),subtractDecimal(prefix,prefix_)):QString("0"));
             current.insert("observed_tests",sameTicket?addDecimal(current_.value("observed_tests").toString(),subtractDecimal(tests,current_.value("tests").toString("0"))):QString("0"));
-            if(sequence>sequence_&&!current_.isEmpty()){base_=merge(base_,current_);activeNs_=0;clockNs_=0;clockEpoch_.clear();observedGolds_=0;previousGolds_=0;goldBaseline_=false;}
+            auto nextBase=base_;if(!sameTicket&&!current_.isEmpty())nextBase=merge(base_,current_);
+            quint64 nextActive=sameTicket?activeNs_:0;const auto oldClock=sameTicket?clockNs_:0;const auto oldEpoch=sameTicket?clockEpoch_:QString{};
             bool clockOk=false;const auto clock=frame.value("compute_time_ns").toString().toULongLong(&clockOk);const auto epoch=frame.value("compute_epoch").toString();
-            if(clockOk){if(!clockEpoch_.isEmpty()&&epoch==clockEpoch_&&clock>=clockNs_)activeNs_+=clock-clockNs_;clockNs_=clock;clockEpoch_=epoch;}
-            if(goldBaseline_){if(above<previousGolds_)throw std::runtime_error("Source Gold counter moved backwards");observedGolds_=sum(observedGolds_,above-previousGolds_);}previousGolds_=above;goldBaseline_=true;current.insert("observed_golds",QString::number(observedGolds_));
-            current.insert("positions",prefix);current.insert("tests",frame.value("tests").toString());current.insert("active_time_ns",QString::number(activeNs_));current.insert("completed_tickets",frame.value("phase")=="Report ready"?QString("1"):QString("0"));
-            error_.clear();const bool changed=current!=current_||ticket!=ticket_;stream_=stream;ticket_=ticket;sequence_=sequence;prefix_=prefix;current_=current;dirty_|=changed;
+            if(clockOk&&!oldEpoch.isEmpty()&&epoch==oldEpoch&&clock>=oldClock){const auto delta=clock-oldClock;if(delta>std::numeric_limits<quint64>::max()-nextActive)throw std::runtime_error("Invalid active time");nextActive+=delta;}
+            qint64 nextGolds=sameTicket?observedGolds_:0;
+            if(sameTicket&&goldBaseline_){if(above<previousGolds_)throw std::runtime_error("Source Gold counter moved backwards");nextGolds=sum(nextGolds,above-previousGolds_);}
+            current.insert("observed_golds",QString::number(nextGolds));current.insert("positions",prefix);current.insert("tests",tests);current.insert("active_time_ns",QString::number(nextActive));
+            const bool fullPrefix=prefix!="0"&&frame.value("positions_total").isString()&&prefix==frame.value("positions_total").toString();
+            const bool completed=(sameTicket&&current_.value("completed_tickets")=="1")||frame.value("phase")=="Report ready"||fullPrefix;
+            current.insert("completed_tickets",completed?QString("1"):QString("0"));
+            // Commit only after every counter and histogram has validated.
+            // A source-root change is a new producer generation, not a new
+            // lifetime history. Retired generations cannot be counted twice.
+            const bool changed=current!=current_||ticket!=ticket_||rollover;
+            if(rollover)retiredStreams_.insert(stream_);
+            base_=nextBase;activeNs_=nextActive;clockNs_=clockOk?clock:oldClock;clockEpoch_=clockOk?epoch:oldEpoch;observedGolds_=nextGolds;previousGolds_=above;goldBaseline_=true;
+            stream_=stream;ticket_=ticket;sequence_=sequence;prefix_=prefix;current_=current;dirty_|=changed;error_.clear();
             if(dirty_&&(!saved_.isValid()||saved_.elapsed()>=5000))flush();return true;
         }catch(const std::exception& e){error_=QString::fromUtf8(e.what());return false;}
     }
+    QJsonObject currentScope()const{return current_;}
     QJsonObject scope()const{try{return merge(base_,current_);}catch(...){return {};}}
     void flush(){
         if(file_.isEmpty()||!dirty_||!error_.isEmpty())return;
-        const QJsonObject state{{"schema","PGN_MINING_SCOPE_ARCHIVE_V1"},{"stream_id",stream_},{"ticket_id",ticket_},{"prefix",prefix_},{"sequence",sequence_},{"clock_ns",QString::number(clockNs_)},{"clock_epoch",clockEpoch_},{"base",base_},{"current",current_}};
+        QJsonArray retired;auto generations=retiredStreams_.values();std::sort(generations.begin(),generations.end());for(const auto& value:generations)retired.append(value);
+        const QJsonObject state{{"retired_streams",retired},{"schema","PGN_MINING_SCOPE_ARCHIVE_V1"},{"stream_id",stream_},{"ticket_id",ticket_},{"prefix",prefix_},{"sequence",sequence_},{"clock_ns",QString::number(clockNs_)},{"clock_epoch",clockEpoch_},{"base",base_},{"current",current_}};
         const auto bytes=QJsonDocument(state).toJson(QJsonDocument::Compact);
         if(bytes.size()>maximumBytes){error_="Local archive storage budget reached; file retained";return;}
         QSaveFile out(file_);if(!out.open(QIODevice::WriteOnly)||out.write(bytes)!=bytes.size()||!out.commit()){error_="Local archive could not be saved; previous file retained";return;}dirty_=false;saved_.restart();

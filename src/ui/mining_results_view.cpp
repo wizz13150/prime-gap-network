@@ -43,7 +43,7 @@ class MiningResultsView final:public QWidget {
     QString scopeLabel()const{return QStringLiteral("Selected ticket");}
     QTableWidget *best_,*recent_,*gapStatistics_,*meritStatistics_;QWidget *bestHeader_{},*recentHeader_{};
     QSet<QString> eligibleRecords_;QHash<QString,double> rowTargets_;bool mixedTargets_{};
-    science::MiningScopeArchive sessionArchive_,localArchive_;
+    science::MiningScopeArchive sessionArchive_,localArchive_,ticketArchive_{QString{},true};
     int fittedRows_{10};bool fittingQueued_{};
     bool direct_{};QJsonObject directPacket_,presentedDirect_;QMap<quint32,qint64> cumulative_;
     QFutureWatcher<ResultsTurn> work_;std::shared_ptr<std::atomic_bool> cancel_;
@@ -230,7 +230,7 @@ public:
     }
     void presentDirect(){
         const auto scope=scopeKey();const auto data=directPacket_.value("scopes").toObject().value(scope).toObject();
-        sessionSummary_->present(directPacket_.value("scopes").toObject().value("session").toObject(),directPacket_.value("scopes").toObject().value("history").toObject(),directPacket_);sessionSummary_->presentTicket(data);presentStatisticsScope();
+        sessionSummary_->present(directPacket_.value("scopes").toObject().value("session").toObject(),directPacket_.value("scopes").toObject().value("history").toObject(),directPacket_);auto ticketSummary=ticketArchive_.currentScope();if(directPacket_.value("work_role")=="audit"){ticketSummary.remove("observed_golds");ticketSummary.remove("completed_tickets");}sessionSummary_->presentTicket(ticketSummary);presentStatisticsScope();
         if(data.isEmpty()){presentedDirect_={};latest_={};fill(best_,{});fill(recent_,{});setProperty("pgn_results_best_rows",0);setProperty("pgn_results_recent_rows",0);presentStatisticsScope();setProperty("pgn_results_points",QVariant{});state_->setText("Awaiting "+scopeLabel().toLower()+" data");return;}
         // Progress/rates still reach the summary on every input. The result
         // tables only need work when their data, identity or layout changes.
@@ -258,8 +258,8 @@ public:
     void networkMetrics(const QJsonObject& metrics,const QString& genesis){sessionSummary_->presentNetworkMetrics(metrics,genesis);}
     void recordEligibility(const QJsonArray& pairs){QSet<QString> keys;for(const auto& value:pairs){const auto pair=value.toObject();keys.insert(pair.value("lower_prime").toString()+":"+QString::number(pair.value("gap").toInt()));}if(keys==eligibleRecords_)return;eligibleRecords_=std::move(keys);fill(best_,latest_.best);fill(recent_,latest_.recent);}
     void ticketData(const QJsonObject& packet){
-        if(packet.value("schema")!="PGN_HORIZON_MINING_VIEW_V1")return;heading_->hide();detail_->hide();direct_=true;directPacket_=packet;if(cancel_)cancel_->store(true);
-        sessionArchive_.observe(packet);localArchive_.observe(packet);auto scopes=directPacket_.value("scopes").toObject();scopes.insert("session",sessionArchive_.scope());scopes.insert("history",localArchive_.scope());directPacket_.insert("scopes",scopes);
+        if(packet.value("schema")!="PGN_HORIZON_MINING_VIEW_V1")return;if(!ticketArchive_.observe(packet)){setProperty("pgn_ticket_statistics_error",ticketArchive_.error());return;}setProperty("pgn_ticket_statistics_error",QString{});heading_->hide();detail_->hide();direct_=true;directPacket_=packet;if(cancel_)cancel_->store(true);
+        sessionArchive_.observe(packet);localArchive_.observe(packet);setProperty("pgn_history_statistics_error",localArchive_.error());auto scopes=directPacket_.value("scopes").toObject();scopes.insert("session",sessionArchive_.scope());scopes.insert("history",localArchive_.scope());directPacket_.insert("scopes",scopes);
         request_=packet.value("request_id").toString();start_=packet.value("start").toString();end_=packet.value("end").toString();minimum_=packet.value("minimum_gap").toInt();
         const auto target=packet.value("target_merit").toDouble();target_=target>0&&std::isfinite(target)?std::optional<double>{target}:std::nullopt;
         heading_->setText(packet.value("title").toString("Network ticket"));heading_->setToolTip("Request identity: "+request_);
