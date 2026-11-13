@@ -80,10 +80,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Collected native DLL closure is incomplete' }
       - name: Verify cold native genesis and wallet crash recovery
         shell: pwsh
-        run: python tests/native_genesis_crash_recovery.py --core native-artifact/pgn-core.exe --expected-version 2026.11.13.17 --report build-native/genesis-crash.json
+        run: python tests/native_genesis_crash_recovery.py --core native-artifact/pgn-core.exe --expected-version 2026.11.13.18 --report build-native/genesis-crash.json
       - name: Verify delayed native peer handshake and extreme VERSION times
         shell: pwsh
-        run: python tests/native_peer_clock_latency.py --core native-artifact/pgn-core.exe --expected-version 2026.11.13.17 --report build-native/peer-clock.json
+        run: python tests/native_peer_clock_latency.py --core native-artifact/pgn-core.exe --expected-version 2026.11.13.18 --report build-native/peer-clock.json
       - name: Preserve the exact qualified native programs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -127,9 +127,9 @@ jobs:
           ldd build-native/bin/riecoind > native-artifact/dependencies.txt
           if grep -q 'not found' native-artifact/dependencies.txt; then exit 1; fi
       - name: Verify cold native genesis and wallet crash recovery
-        run: python3 tests/native_genesis_crash_recovery.py --core native-artifact/pgn-core --expected-version 2026.11.13.17 --report build-native/genesis-crash.json
+        run: python3 tests/native_genesis_crash_recovery.py --core native-artifact/pgn-core --expected-version 2026.11.13.18 --report build-native/genesis-crash.json
       - name: Verify delayed native peer handshake and extreme VERSION times
-        run: python3 tests/native_peer_clock_latency.py --core native-artifact/pgn-core --expected-version 2026.11.13.17 --report build-native/peer-clock.json
+        run: python3 tests/native_peer_clock_latency.py --core native-artifact/pgn-core --expected-version 2026.11.13.18 --report build-native/peer-clock.json
       - name: Preserve the exact qualified native programs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:

@@ -73,7 +73,24 @@ struct Entry {
 struct Provenance { QString genesis, source; QDateTime observedUtc; bool authenticated{}; };
 struct Counter { std::optional<QString> value; Provenance provenance; };
 struct Activity { std::optional<QDateTime> value; Provenance provenance; };
-struct Miner { QString id, name; Counter acceptedGold, validatedAudits; Activity lastActivity;QString socialMemberId;Counter ticketsReported,ticketsValidated,validatedSearchPositions,lastActivityHeight; };
+struct PublicIdentity {QString operatorId,displayName;QStringList signingScripts;bool aliasesComplete{};Provenance provenance;};
+inline QString publicIdentityDisplayName(const QString& id,const QString& label={}){
+    const auto fingerprint=id.left(8)+"…"+id.right(6);
+    if(label.isEmpty())return "Miner "+fingerprint;
+    auto visible=label;const int room=80-fingerprint.size()-3;
+    if(visible.size()>room){visible=visible.left(room-1);if(!visible.isEmpty()&&visible.back().isHighSurrogate())visible.chop(1);visible+="…";}
+    return visible+" · "+fingerprint;
+}
+inline bool publicScript(const QString& value){
+    if(value.isEmpty()||value.size()>20000||value.size()%2)return false;
+    for(const auto c:value){const auto n=c.unicode();if(!((n>='0'&&n<='9')||(n>='a'&&n<='f')))return false;}return true;
+}
+inline bool publicLabel(const QString& value){
+    if(value.trimmed().isEmpty()||value.toUtf8().size()>192)return false;
+    for(const auto c:value)if(c.isNull()||c.category()==QChar::Other_Control||c.category()==QChar::Other_Format||c.category()==QChar::Separator_Line||c.category()==QChar::Separator_Paragraph)return false;
+    return true;
+}
+struct Miner { QString id, name; Counter acceptedGold, validatedAudits; Activity lastActivity;QString socialMemberId;Counter ticketsReported,ticketsValidated,validatedSearchPositions,lastActivityHeight;std::optional<PublicIdentity> publicIdentity; };
 struct ReadRequest { Section section; Identity identity; Window window{Window::AllTime}; QString cursor; int limit{100};QString channel; };
 struct SendAvailability {bool allowed{};QString reason;};
 struct ConnectionSummary {QString networkLabel;int connectedPeers{};};
@@ -81,7 +98,7 @@ struct SendRequest {Identity identity;QString channel,requestId,bbcode;};
 enum class SendOutcome {Accepted,Posted,Rejected,Uncertain};
 struct SendResult {Identity identity;QString channel,requestId;SendOutcome outcome{SendOutcome::Uncertain};QString messageId,reason;};
 struct LeaderboardPeriod {
-    QString anchor;qint64 height{-1};std::optional<qint64> utcStart;
+    QString anchor;qint64 height{-1};std::optional<qint64> utcStart;qint64 total{-1};
     bool operator==(const LeaderboardPeriod&)const=default;
 };
 inline bool validLeaderboardPeriod(const LeaderboardPeriod& p,Window window){
@@ -102,6 +119,9 @@ struct Snapshot {
     std::optional<SendAvailability> chatSend;
     std::optional<ConnectionSummary> connection;
     std::optional<LeaderboardPeriod> leaderboardPeriod;
+    // Existing native relay generation, not a new wire field. When nonempty,
+    // entries are a window into one immutable-ID history, not its replacement.
+    QString chatHistoryGeneration;
 };
 struct ThreadRequest {Identity identity;QString topic,cursor;int limit{50};};
 struct ThreadSnapshot {Identity identity;QString topic,source;bool authenticated{};QDateTime observedUtc;QVector<Reply> replies;QString nextCursor;};
@@ -147,6 +167,7 @@ inline QString validate(const Snapshot& v,const ReadRequest& r,QDateTime now=QDa
         return "Invalid or repeated pagination token.";
     QSet<QString> ids;const QRegularExpression decimal("^(0|[1-9][0-9]{0,79})$");
     if(r.section==Section::Chat){
+        if(!v.chatHistoryGeneration.isEmpty()&&!QRegularExpression("^[0-9a-f]{64}$").match(v.chatHistoryGeneration).hasMatch())return "Invalid Chat history generation.";
         if(v.chatSend&&v.chatSend->reason.size()>256)return "Invalid Chat send availability.";
         if(v.channel.size()>256||(!r.channel.isEmpty()&&v.channel!=r.channel))return "Chat channel does not match the request.";
         if(v.channels){if(v.channels->size()>64)return "Channel directory exceeds its display limit.";
@@ -158,9 +179,14 @@ inline QString validate(const Snapshot& v,const ReadRequest& r,QDateTime now=QDa
     if(r.section==Section::Miners) {
         if(!v.entries.isEmpty()||v.window!=r.window)return "Miner observation window does not match the request.";
         if((r.window==Window::Day&&!v.leaderboardPeriod)||(v.leaderboardPeriod&&!validLeaderboardPeriod(*v.leaderboardPeriod,r.window)))return "Leaderboard interval or canonical anchor is unavailable.";
+        qsizetype aliasBytes=0;
         for(const auto& m:v.miners) {
             if(m.id.isEmpty()||m.id.size()>256||ids.contains(m.id)||m.name.trimmed().isEmpty()||m.name.size()>160||m.socialMemberId.size()>256)
                 return "Invalid or duplicate miner identity.";
+            if(m.publicIdentity){const auto& p=*m.publicIdentity;
+                if(p.operatorId!=m.id||(!p.displayName.isEmpty()&&!publicLabel(p.displayName))||p.signingScripts.size()>8||!validProvenance(p.provenance,r.identity,now))return "Public name identity or provenance invalid.";
+                QSet<QString> scripts;for(const auto& script:p.signingScripts){aliasBytes+=script.size();if(aliasBytes>32768||!publicScript(script)||scripts.contains(script))return "Public signing aliases are invalid or unbounded.";scripts.insert(script);}
+            }
             for(const auto* c:{&m.acceptedGold,&m.validatedAudits,&m.ticketsReported,&m.ticketsValidated,&m.validatedSearchPositions,&m.lastActivityHeight})
                 if(c->value&&(!decimal.match(*c->value).hasMatch()||!validProvenance(c->provenance,r.identity,now)))
                     return "A miner counter lacks valid same-genesis provenance.";

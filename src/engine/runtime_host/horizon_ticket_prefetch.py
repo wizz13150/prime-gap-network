@@ -19,10 +19,29 @@ class TicketPrefetch:
         self.condition = threading.Condition()
         self.ready = None
         self.error = None
+        self.native_service_status = None
+        self.native_service_generation = 0
         self.thread = threading.Thread(target=self._run, name="ticket-preparation", daemon=True)
 
     def start(self):
         self.thread.start()
+
+    def invalidate_native_service_status(self):
+        with self.condition:
+            self.native_service_generation += 1
+            self.native_service_status = None
+            self.condition.notify_all()
+
+    def service_observation(self):
+        with self.condition:
+            return self.native_service_status
+
+    def publish_service_observation(self, generation, status):
+        with self.condition:
+            if generation != self.native_service_generation:
+                return False
+            self.native_service_status = status
+            return True
 
     def _run(self):
         while not self.stopping.is_set():
@@ -34,6 +53,8 @@ class TicketPrefetch:
                 continue
             try:
                 with self.network_lock:
+                    with self.condition:
+                        observation_generation = self.native_service_generation
                     work = self.recovery() if callable(self.recovery) else None
                     recovered = work is not None
                     if work is None:
@@ -53,6 +74,9 @@ class TicketPrefetch:
                 with self.condition:
                     self.ready = None
                     self.error = str(error)[:400]
+                    status=getattr(error,"native_service_status",None)
+                    if status is not None:
+                        self.publish_service_observation(observation_generation, status)
                     self.condition.notify_all()
                 self.stopping.wait(1)
 

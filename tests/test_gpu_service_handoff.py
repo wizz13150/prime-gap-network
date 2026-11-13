@@ -60,7 +60,6 @@ class ServiceHandoffTests(unittest.TestCase):
         q = ResidentGpuQueue(engine, enabled, stopping, start, done,
                              lambda: paused.append(True), errors.append,
                              clock_ns=lambda: clock[0])
-        q.update_audit_backlog(1000, 1, 3600)
         futures['search'] = q.submit({'ticket_id': 'search'}, {'role': 'search'}, 64 * 10**12)
         q.run()
         self.assertEqual(errors, [])

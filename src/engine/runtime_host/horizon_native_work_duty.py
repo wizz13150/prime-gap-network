@@ -5,7 +5,9 @@ from horizon_core_rpc import CoreRpcError
 
 
 class NativeAuditServiceRequired(RuntimeError):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.native_service_status=copy.deepcopy(status)
 
 
 def identity(value):
@@ -23,7 +25,7 @@ def gate(rpc,signer,genesis):
         raise ValueError('Native work-duty status belongs to another or unknown chain')
     if value['enforced']:
         if type(value.get('may_request'))is not bool:raise ValueError('Explicit native service permission required')
-        if not value['may_request']:raise NativeAuditServiceRequired('Required audit service before the next search range: '+str(value.get('status','held'))[:80])
+        if not value['may_request']:raise NativeAuditServiceRequired('Required audit service before the next search range: '+str(value.get('status','held'))[:80],value)
     return value
 
 
