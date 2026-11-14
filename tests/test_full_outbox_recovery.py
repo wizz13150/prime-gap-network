@@ -14,6 +14,9 @@ class FullOutboxRecoveryTests(unittest.TestCase):
   issued=json.loads((ROOT/'tests/fixtures/network/issued-work.json').read_bytes())
   with tempfile.TemporaryDirectory()as temporary:
    root=Path(temporary);flow=MiningFlow.__new__(MiningFlow);flow.outbox=ReportOutbox(root)
+   flow.unbound_service_lock=threading.RLock()
+   flow.unbound_service_audits=set();flow.unbound_service_completed=set();flow.unbound_service_seeded=False
+   flow.prefetch=SimpleNamespace(native_service_status=dict(enforced=True,may_request=False,credits=[]))
    flow.finalizer=None;flow.changed=threading.Event();flow.audit_lanes=[];advanced=[];sent=[]
    flow.cycles=SimpleNamespace(reorg_held=lambda:[],contains=lambda _:True,advance=lambda *args:advanced.append(args))
    flow.worker=SimpleNamespace(root=root,quitting=threading.Event(),network_lock=threading.RLock(),
@@ -30,7 +33,7 @@ class FullOutboxRecoveryTests(unittest.TestCase):
    self.assertIsNotNone(flow.recovered_report);self.assertFalse(advanced)
    # Auditing stays eligible; new searches wait until the durable recovery
    # has been admitted, rather than overwriting the completed assignment.
-   self.assertTrue(flow.may_start_work(SimpleNamespace(context=dict(role='audit',work_cycle=None))))
+   self.assertTrue(flow.may_start_work(SimpleNamespace(context=dict(role='audit',work_cycle=None,audit_request_id='c'*64,audit_slot=0,audit_attempt=0))))
    self.assertFalse(flow.may_start_work(SimpleNamespace(context=dict(role='search'))))
    def submit(_,work):
     sent.append(work['request_id'])

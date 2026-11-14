@@ -46,6 +46,7 @@ def read_snapshot(rpc, requests, genesis):
             raise ValueError('Different, duplicate or malformed atomic audit request')
         seen.add(request)
         jobs = row.get('jobs')
+        publication_v1 = row.get('answer_publication_policy') == 'PGN_AUDIT_BODY_PUBLICATION_V1'
         if not isinstance(jobs, list) or len(jobs) > 2:
             raise ValueError('Invalid atomic audit slots')
         slots = set()
@@ -57,6 +58,9 @@ def read_snapshot(rpc, requests, genesis):
                     or job['state'] != 'assigned' and not identity(job.get('commitment'))):
                 raise ValueError('Invalid atomic audit job identity or commitment')
             slots.add(job['slot'])
+            if publication_v1 and (type(job.get('answer_published')) is not bool
+                                  or job['state'] == 'assigned' and job['answer_published']):
+                raise ValueError('Invalid canonical audit body publication state')
         if row['audited'] and (slots != {0, 1} or any(job['state'] != 'passed' for job in jobs)):
             raise ValueError('An audited report requires two passed native slots')
         if request in requested:

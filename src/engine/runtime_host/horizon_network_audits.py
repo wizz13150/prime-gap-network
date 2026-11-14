@@ -226,34 +226,73 @@ class NetworkAudits:
                 # A reorganization can temporarily hide this assignment.
                 keep.append(name)
                 continue
-            if job["state"] in ("passed", "failed"):
-                if not self.terminal_on_anchor(audit, anchor, states):
+            publication_v1 = state.get('answer_publication_policy') == 'PGN_AUDIT_BODY_PUBLICATION_V1'
+            if job["state"] in ("passed", "failed") or publication_v1 and job.get('answer_published') is True:
+                confirmed_on_anchor = self.publication_on_anchor if publication_v1 else self.terminal_on_anchor
+                if not confirmed_on_anchor(audit, anchor, states):
                     keep.append(name)
                     continue
                 self.answers.acknowledge(name)
                 continue
-            if job["state"] != "committed" or not state.get("details_root"):
+            if (job["state"] != "committed" or publication_v1 and job.get('commitment') != audit.get('answer', {}).get('commitment')
+                    or not (publication_v1 or state.get("details_root"))):
                 keep.append(name)
                 continue
-            proposal = self.apply("reveal", audit["request_id"], audit["slot"], audit["attempt"], canonical_bytes(audit["answer"]["body"]).hex())
+            proposal = self.apply("publish" if publication_v1 else "reveal", audit["request_id"], audit["slot"], audit["attempt"], canonical_bytes(audit["answer"]["body"]).hex())
             if not proposal.get("available"):
                 # The assignment can change between the initial read and send.
                 # An unavailable proposal is not a publication acknowledgement.
                 keep.append(name)
                 continue
-            confirmed = self.state(audit["request_id"])
-            verdict = next((j for j in confirmed.get("jobs", [])
-                            if j["slot"] == audit["slot"] and j["attempt"] == audit["attempt"]), None)
-            if not verdict or verdict["state"] not in ("passed", "failed"):
-                # Retain the same durable answer across delayed confirmation,
-                # reorganization and another attempt's unrelated verdict.
-                keep.append(name)
-            elif not self.terminal_on_anchor(audit, anchor):
+            if not publication_v1:
+                # A contract migration must not reinterpret legacy ACKs or
+                # retained files. Keep the existing final-verdict path intact.
+                confirmed = self.state(audit['request_id'])
+                verdict = next((j for j in confirmed.get('jobs', [])
+                                if j['slot'] == audit['slot'] and j['attempt'] == audit['attempt']), None)
+                if not verdict or verdict['state'] not in ('passed', 'failed') or not self.terminal_on_anchor(audit, anchor):
+                    keep.append(name)
+                else:
+                    self.answers.acknowledge(name)
+                continue
+            confirmed = self.states([audit['request_id']])
+            # Persist the actual publication anchor BEFORE dropping waiting.
+            # Otherwise a fork which removes only this new block could remain
+            # a descendant of the old cursor and never reopen the answer.
+            terminal_anchor = self.answers.observe(self.worker.rpc)
+            if confirmed is None or terminal_anchor is None or not self.publication_on_anchor(audit, terminal_anchor, confirmed):
                 keep.append(name)
             else:
                 self.answers.acknowledge(name)
         if keep != pending:
             save(index, keep)
+
+    def publication_on_anchor(self, audit, anchor, states=None):
+        """Close only local body delivery debt, never mathematical adjudication.
+
+        The candidate V1 capability is canonical Core state. Missing/unknown
+        capability preserves legacy Passed/Failed semantics. In both cases an
+        exact generation and commitment must be present on this same anchor.
+        """
+        if not isinstance(states, AnchoredAuditStates):
+            view = self.worker.rpc.call('getpgnworkview', ['audits', 0, 1, audit['request_id']])
+            state, rows = view.get('state', {}), view.get('audits', [])
+            if (view.get('schema') != 'PGN_WORK_VIEW_V1' or view.get('kind') != 'audits'
+                    or view.get('request_id') != audit['request_id']
+                    or state.get('genesis') != anchor['genesis']
+                    or state.get('bestblockhash') != anchor['hash'] or state.get('height') != anchor['height']
+                    or not isinstance(rows, list) or len(rows) != 1 or rows[0].get('request_id') != audit['request_id']):
+                return False
+            states = AnchoredAuditStates({audit['request_id']: rows[0]}, anchor)
+        if states.anchor != anchor:
+            return False
+        row = states.get(audit['request_id'], {})
+        job = next((j for j in row.get('jobs', []) if j.get('slot') == audit['slot'] and j.get('attempt') == audit['attempt']), None)
+        return bool(job and job.get('commitment') == audit.get('answer', {}).get('commitment')
+                    and (job.get('state') in ('passed', 'failed')
+                         or row.get('answer_publication_policy') == 'PGN_AUDIT_BODY_PUBLICATION_V1'
+                         and job.get('state') == 'committed' and job.get('answer_published') is True)
+                    and states.current(self.worker.rpc))
 
     def track_owner_report(self, work, sealed):
         self.owner_reports.import_legacy()
