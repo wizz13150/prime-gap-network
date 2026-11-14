@@ -347,7 +347,13 @@ void MiningTicketProgress::applyFrame(const QJsonObject& frame){
  cycleHistory_.observe(frame);
  const auto producer=frame.value("source_device").toString();
  frame_=frame;flow_.observe(frame,!producer.isEmpty()?producer:canvas_?canvas_->property("pgn_managed_source_device").toString():QString{},clock_.elapsed());
- setToolTip({});
+ // A phase is evidence of a failure, not evidence that a retry or durable save
+ // succeeded. Keep the complete current reason reachable when the row elides.
+ const bool attention=frame.value("phase")=="Needs attention";
+ const auto reason=frame.value("message").toString().trimmed().left(4096);
+ setToolTip(attention?QString("<qt><b>Mining stopped</b><br>%1</qt>").arg(
+     (reason.isEmpty()?QString("Open Diagnostics for the failure details"):reason).toHtmlEscaped().replace("\n","<br>")):QString{});
+ setAccessibleDescription(attention?miningAttentionStatus(reason):QString{});
  setProperty("pgn_ticket_flow_received",QVariant::fromValue(flow_.received()));setProperty("pgn_ticket_flow_coalesced",QVariant::fromValue(flow_.coalesced()));
  ensureOverlay();update();if(overlay_){overlay_->synchronize();overlay_->update();}
 }
@@ -407,6 +413,7 @@ void MiningTicketProgress::paintEvent(QPaintEvent*){
  QString remaining;
  if(eta&&std::isfinite(*eta)&&*eta<365.*86400){const auto value=qint64(std::ceil(*eta));remaining=QString("ETA ≈ %1:%2:%3").arg(value/3600,2,10,QChar('0')).arg(value/60%60,2,10,QChar('0')).arg(value%60,2,10,QChar('0'));}
  if(cycle.known&&!storageWait){const auto format=[](std::optional<double> seconds){if(!seconds||!std::isfinite(*seconds)||*seconds>=365.*86400)return QString("—");const auto n=qint64(std::ceil(*seconds));return QString("≈ %1:%2:%3").arg(n/3600,2,10,QChar('0')).arg(n/60%60,2,10,QChar('0')).arg(n%60,2,10,QChar('0'));};remaining="Cycle ETA "+format(cycle.cycleEta)+" · "+(audit?QString("audit "):QString("search "))+format(cycle.taskEta);}
+ if(attention)remaining.clear();
  // One measured row keeps the tables close to the live track. Reserve the
  // changing state/ETA first, then elide metadata instead of resizing fonts.
  constexpr double rowY=94.,rowHeight=22.,gap=16.;

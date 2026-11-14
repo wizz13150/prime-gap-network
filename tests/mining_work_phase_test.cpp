@@ -31,5 +31,14 @@ int main(int argc,char** argv){
  require(view.value("phase")=="Waiting"&&view.value("role").toString().isEmpty(),"Unknown work was guessed to be an audit");
  frame.remove("work_role");frame.insert("phase","Searching");frame.insert("title","Ticket 43");view=render(frame);
  require(view.value("phase")=="Searching"&&!view.value("quantity").toString().contains("audit"),"Audit state leaked into the next mining ticket");
- std::cout<<"PASS: seven real-widget work transitions; whole audit scope, estimates, no fabricated network verdict\n";
+ // Exercise the real widget: an error at 100% is neither success nor a known
+ // recovery. Its unelided reason must stay reachable, then clear on fresh work.
+ const auto reason=QString("storage WAL budget <4096>\nCause: busy reader ")+QString(420,QChar('x'));
+ frame.insert("phase","Needs attention");frame.insert("positions",frame.value("positions_total"));frame.insert("message",reason);view=render(frame);
+ require(view.value("status").toString().contains("storage unavailable")&&!view.value("status").toString().contains("100%")&&view.value("remaining").toString().isEmpty(),"A failed completed computation showed success or a completion ETA");
+ require(rail.toolTip().contains("&lt;4096&gt;")&&rail.toolTip().contains(QString(420,QChar('x')))&&!rail.toolTip().contains("<4096>"),"Full cause was lost or interpreted as markup");
+ require(rail.accessibleDescription().contains("storage unavailable"),"Accessible failure explanation missing");
+ frame.insert("phase","Searching");frame.insert("positions","1000000000000");view=render(frame);
+ require(rail.toolTip().isEmpty()&&rail.accessibleDescription().isEmpty()&&view.value("phase")=="Searching", "Historical failure leaked into recovered current work");
+ std::cout<<"PASS: real-widget phases, truthful failure text/full cause/accessibility, recovery clears stale explanation\n";
 }
