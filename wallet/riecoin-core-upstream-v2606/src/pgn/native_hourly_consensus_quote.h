@@ -20,8 +20,8 @@ inline HourlyConsensusResult ReadNativeHourlyConsensusQuote(
     const auto rows=ReadNativeCompleteReturns(view,parent,policy,history,
         policy_budget,schedule_budget,signature_budget,cache);
     if(!rows)return {HourlyConsensusVerdict::AwaitHistory,{}};
-    HashWriter model;
-    model<<std::string_view{"PGN_HOURLY_C1_M24_B10/1"}<<policy.Id();
+    HashWriter model{TaggedHash("PGN/HOURLY-C1-M24-B10/1")};
+    model<<policy.Id();
     const auto calibration=complete_return_detail::Id(model.GetHash());
     const auto hour=parent.GetMedianTimePast()/3600*3600;
     return PrepareCanonicalHourlyQuote(hour,complete_return_detail::Id(parent.GetBlockHash()),
