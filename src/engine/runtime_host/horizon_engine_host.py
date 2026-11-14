@@ -35,7 +35,7 @@ from pgn_index import SessionIndexWalBudgetExceeded
 
 from horizon_engine_capabilities import NATIVE_SOURCE, IMAGES, qualified_workers
 
-ENGINE_HOST_VERSION = "2026.11.14.74"
+ENGINE_HOST_VERSION = "2026.11.14.75"
 
 GAP = re.compile(r"\bGAP merit=([0-9.eE+\-]+) gap=(\d+) lower=(\d+) upper=(\d+)")
 COUNTERS = re.compile(r"\[pgn-counters\].*?\bpositions=(\d+)\b.*?\btests=(\d+)\b")
