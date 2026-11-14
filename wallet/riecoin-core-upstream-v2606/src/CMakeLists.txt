@@ -505,6 +505,13 @@ if(BUILD_TESTS)
   add_test(NAME native-project-identity COMMAND pgn-native-project-identity-test)
 endif()
 
+# Candidate publication is inactive; exercise it through explicit test ledgers.
+if(BUILD_TESTS)
+  add_executable(pgn-native-audit-publication-test pgn/native_audit_publication_test.cpp)
+  target_link_libraries(pgn-native-audit-publication-test PRIVATE core_interface riecoin_node univalue)
+  add_test(NAME native-audit-publication COMMAND pgn-native-audit-publication-test)
+endif()
+
 # Isolated qualification fixtures only; production policy remains inactive.
 add_executable(pgn-native-audit-availability-test EXCLUDE_FROM_ALL pgn/native_audit_availability_test.cpp)
 target_link_libraries(pgn-native-audit-availability-test PRIVATE core_interface riecoin_node univalue)

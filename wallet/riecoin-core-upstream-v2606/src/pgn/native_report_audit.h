@@ -5,6 +5,7 @@
 // Blind audit events: commitment precedes every answer disclosure.
 #pragma once
 #include <pgn/audit_operator_policy.h>
+#include <pgn/native_audit_publication_policy.h>
 #include <tuple>
 #include <pgn/native_report_commitment.h>
 #include <pgn/audit_lease_clock.h>
@@ -22,7 +23,7 @@ inline Bytes NativeTimedAuditAssignmentBody(){
  const std::string text="{\"lease_seconds\":"+std::to_string(NativeAuditLeaseSeconds)+",\"schema\":\"PGN_AUDIT_ASSIGNMENT_V2\"}";
  return Bytes{text.begin(),text.end()};
 }
-enum class NativeAuditAction:uint8_t {Assign,Commit,Reveal,ReportReveal,Enroll};
+enum class NativeAuditAction:uint8_t {Assign,Commit,Reveal,ReportReveal,Enroll,Publish};
 struct NativeAuditEvent {
     uint256 request,parent;
     NativeAuditAction action;
@@ -37,7 +38,7 @@ inline bool IsNativeAuditScript(const CScript& script){
 }
 inline std::optional<CScript> BuildNativeAuditEnvelope(const NativeAuditEvent& event){
     try{
-        RequireAudit(!event.request.IsNull()&&!event.parent.IsNull()&&uint8_t(event.action)<=4&&event.slot<2&&
+        RequireAudit(!event.request.IsNull()&&!event.parent.IsNull()&&uint8_t(event.action)<=5&&event.slot<2&&
             !event.actor.empty()&&event.actor.size()<=4096&&event.body.size()<=65536&&event.signature.size()<=4096,"Invalid audit fields");
         EncodingLimits limits{1,80000,32,100};detail::Writer out{{},limits};out.byte(1);
         out.raw({event.request.begin(),32});out.raw({event.parent.begin(),32});out.byte(uint8_t(event.action));out.byte(event.slot);out.little(event.attempt,4);
@@ -102,6 +103,8 @@ struct NativeAuditJob {
     std::string commitment,reveal;
     std::optional<AuditAssignmentLease> time_lease;
     int32_t passed_height{}; // First authenticated PASSED receipt; replay-derived, never caller supplied.
+    int32_t committed_height{};
+    int64_t committed_parent_time{}; // First commitment's canonical parent MTP.
 };
 inline bool NativeAuditAssignmentExpired(const NativeAuditJob& job,int32_t height,int64_t median_time){
  return job.time_lease?job.time_lease->expired(height,median_time):height>=job.deadline;
@@ -122,7 +125,51 @@ struct NativeAuditLedger:std::map<uint256,NativeReportAudit> {
     bool public_admission{};
     uint256 audit_chain;
     std::optional<NativeAuditOperatorRules> audit_operator_rules;
+    std::optional<int32_t> publication_height;
 };
+inline bool NativeAuditPublicationAt(const NativeAuditLedger& ledger,int32_t parent_height){
+ return ledger.publication_height&&!ledger.audit_chain.IsNull()&&*ledger.publication_height>=0&&
+     parent_height>=0&&int64_t(parent_height)+1>=*ledger.publication_height;
+}
+inline bool NativeAuditOwnerAbandoned(const NativeAuditLedger& ledger,const NativeReportAudit& report,const CBlockIndex& parent){
+ if(!NativeAuditPublicationAt(ledger,parent.nHeight)||report.expected||!report.owner_reveal.empty()||!report.AllCommitted())return false;
+ // The owner can reveal only after both commitments. Do not expire its
+ // response window while an auditor is still legitimately calculating.
+ // Old receipts get a canonical activation grace; no local clock is used.
+ const auto base=std::max(0,*ledger.publication_height-1);
+ const auto* anchor=parent.GetAncestor(base);if(!anchor)return false;
+ auto start=anchor->GetMedianTimePast();
+ for(const auto& job:report.jobs){
+  if(job->committed_height>0&&job->committed_height<=parent.nHeight)
+   start=std::max(start,job->committed_parent_time);
+ }
+ return start<=std::numeric_limits<int64_t>::max()-NativeAuditOwnerWaitSeconds&&
+     parent.GetMedianTimePast()>=start+NativeAuditOwnerWaitSeconds;
+}
+inline std::array<uint64_t,5> NativeAuditBodyCounts(const NativeReportAudit& report,uint8_t slot,uint32_t attempt,
+    const std::string& text,const CBlockIndex& parent){
+ UniValue body;RequireAudit(body.read(text)&&body.isObject(),"Invalid audit answer JSON");AuditKeys(body);
+ RequireAudit(body["schema"].get_str()=="PGN_AUDIT_ANSWER_V1"&&body["ticket"].get_str()==HexStr(report.range.ticket_id)&&body["attempt"].getInt<int64_t>()==attempt,"Audit answer identity mismatch");
+ const auto* seed=parent.GetAncestor(report.report.height+1);RequireAudit(seed,"Post-commit audit seed unavailable");
+ const auto partitions=NativeAuditPartitions(report.report.commitment.root,seed->GetBlockHash());
+ const auto& indices=body["partitions"].get_array();const auto& counts=body["counts"].get_array();
+ RequireAudit(slot<2&&indices.size()==5&&counts.size()==5,"Five audit results required");std::array<uint64_t,5> values;
+ for(size_t i=0;i<5;++i){RequireAudit(indices[i].getInt<int64_t>()==partitions[slot][i],"Wrong audit partition");values[i]=AuditCount(counts[i]);}
+ const auto nonce=body["nonce"].get_str();RequireAudit(nonce.size()==64&&IsHex(nonce)&&HexStr(ParseHex(nonce))==nonce,"Invalid audit nonce");return values;
+}
+inline void FinalizeNativePublishedBodies(NativeReportAudit& report,const CBlockIndex& parent){
+ if(!report.expected)return;
+ const auto* seed=parent.GetAncestor(report.report.height+1);RequireAudit(seed,"Post-commit audit seed unavailable");
+ const auto partitions=NativeAuditPartitions(report.report.commitment.root,seed->GetBlockHash());
+ for(uint8_t slot=0;slot<2;++slot){auto& job=report.jobs[slot];
+  if(!job||job->reveal.empty()||job->stage!=NativeAuditJob::Committed)continue;
+  RequireAudit(HexStr(AuditSha(Bytes{job->reveal.begin(),job->reveal.end()}))==job->commitment,"Published audit body changed");
+  const auto counts=NativeAuditBodyCounts(report,slot,job->attempt,job->reveal,parent);bool passed=true;
+  for(size_t i=0;i<5;++i)passed&=counts[i]==(*report.expected)[partitions[slot][i]];
+  job->stage=passed?NativeAuditJob::Passed:NativeAuditJob::Failed;
+  if(passed)job->passed_height=parent.nHeight+1;
+ }
+}
 inline uint256 NativeAuditOperator(const NativeAuditLedger& ledger,const CScript& script){
     const auto found=ledger.participants.find(Bytes{script.begin(),script.end()});
     if(found!=ledger.participants.end())return found->second.operator_id;
@@ -203,6 +250,7 @@ inline void ApplyNativeAuditEvent(NativeAuditLedger& ledger,const NativeAuditEve
     const uint256& chain,ScriptWorkBudget budget){
     RequireAudit(ledger.audit_chain.IsNull()||ledger.audit_chain==chain,"Audit ledger chain mismatch");
     RequireAudit(!ledger.audit_operator_rules||ledger.audit_operator_rules->chain==chain,"Audit operator rule chain mismatch");
+    RequireAudit(event.action!=NativeAuditAction::Publish||NativeAuditPublicationAt(ledger,parent.nHeight),"Audit body publication is not activated");
     if(event.action==NativeAuditAction::Enroll){
         RequireAudit(!ledger.authority.empty()&&event.actor==ledger.authority&&event.request==ledger.authority_request&&event.parent==parent.GetBlockHash()&&
             parent.nHeight>=ledger.authority_height&&event.slot==0&&event.attempt==0,"Participant admission requires the testnet authority");
@@ -257,25 +305,25 @@ inline void ApplyNativeAuditEvent(NativeAuditLedger& ledger,const NativeAuditEve
         for(auto& segment:segments)std::sort(segment.records.begin(),segment.records.end(),[](const auto& a,const auto& b){return a.lower<b.lower;});
         const auto commitment=commitRange(report.range,segments,{100,65536,32,100},AuditSha);
         if(!report.owner_reveal.empty())RequireAudit(report.owner_reveal==text,"Report answers already revealed");
-        report.expected=values;report.details_root=commitment.root;report.owner_reveal=text;return;
+        report.expected=values;report.details_root=commitment.root;report.owner_reveal=text;FinalizeNativePublishedBodies(report,parent);return;
     }
     auto& job=report.jobs[event.slot];RequireAudit(job&&job->attempt==event.attempt&&job->actor==event.actor&&NativeAuditEligible(ledger,event.actor),"Audit is not assigned to an admitted actor");
     RequireAudit(NativeAuditActorAllowed(ledger,report,event.actor,event.slot,parent.nHeight),"Audit actor violates activated operator policy");
     if(event.action==NativeAuditAction::Commit){
         RequireAudit(event.body.size()==32,"Audit commitment must be 32 bytes");const auto commitment=HexStr(event.body);
         if(job->stage==NativeAuditJob::Committed){RequireAudit(job->commitment==commitment,"Audit commitment already fixed");return;}
-        RequireAudit(job->stage==NativeAuditJob::Assigned&&!NativeAuditAssignmentExpired(*job,parent.nHeight,parent.GetMedianTimePast()),"Expired audit assignment");job->commitment=commitment;job->stage=NativeAuditJob::Committed;return;
+        RequireAudit(job->stage==NativeAuditJob::Assigned&&!NativeAuditAssignmentExpired(*job,parent.nHeight,parent.GetMedianTimePast()),"Expired audit assignment");
+        RequireAudit(parent.nHeight<std::numeric_limits<int32_t>::max(),"Audit height exhausted");
+        job->commitment=commitment;job->stage=NativeAuditJob::Committed;
+        job->committed_height=parent.nHeight+1;job->committed_parent_time=parent.GetMedianTimePast();return;
     }
-    RequireAudit(event.action==NativeAuditAction::Reveal&&report.AllCommitted()&&report.expected&&job->stage!=NativeAuditJob::Assigned,"Audit reveal stage not open");
+    const bool publication=event.action==NativeAuditAction::Publish;
+    RequireAudit(publication?(NativeAuditPublicationAt(ledger,parent.nHeight)&&job->stage!=NativeAuditJob::Assigned):
+        (event.action==NativeAuditAction::Reveal&&report.AllCommitted()&&report.expected&&job->stage!=NativeAuditJob::Assigned),"Audit reveal stage not open");
     const std::string text{event.body.begin(),event.body.end()};RequireAudit(HexStr(AuditSha(event.body))==job->commitment,"Audit answer differs from commitment");
     if(!job->reveal.empty()){RequireAudit(job->reveal==text,"Audit answer already revealed");return;}
-    UniValue body;RequireAudit(body.read(text)&&body.isObject(),"Invalid audit answer JSON");AuditKeys(body);
-    RequireAudit(body["schema"].get_str()=="PGN_AUDIT_ANSWER_V1"&&body["ticket"].get_str()==HexStr(report.range.ticket_id)&&body["attempt"].getInt<int64_t>()==event.attempt,"Audit answer identity mismatch");
-    const auto* seed=parent.GetAncestor(report.report.height+1);RequireAudit(seed,"Post-commit audit seed unavailable");const auto partitions=NativeAuditPartitions(report.report.commitment.root,seed->GetBlockHash());
-    const auto& indices=body["partitions"].get_array();const auto& counts=body["counts"].get_array();RequireAudit(indices.size()==5&&counts.size()==5,"Five audit results required");bool passed=true;
-    for(size_t i=0;i<5;++i){RequireAudit(indices[i].getInt<int64_t>()==partitions[event.slot][i],"Wrong audit partition");passed&=AuditCount(counts[i])==(*report.expected)[partitions[event.slot][i]];}
-    const auto nonce=body["nonce"].get_str();RequireAudit(nonce.size()==64&&IsHex(nonce)&&HexStr(ParseHex(nonce))==nonce,"Invalid audit nonce");job->stage=passed?NativeAuditJob::Passed:NativeAuditJob::Failed;job->reveal=text;
-    if(passed)job->passed_height=parent.nHeight+1;
+    NativeAuditBodyCounts(report,event.slot,event.attempt,text,parent);
+    job->reveal=text;FinalizeNativePublishedBodies(report,parent);
 }
 // Build the same report/range/initial-authority state for full and incremental replay.
 struct NativeAuditInitialState {NativeAuditLedger ledger;uint256 chain;};
@@ -287,7 +335,7 @@ inline std::optional<NativeAuditInitialState> InitializeNativeAuditLedger(
         auto reports=ReadConfirmedNativeReports(view,parent,history,schedule_budget);if(!reports)return {};
         NativeAuditLedger ledger;const auto fact_head=view.GetPgnFactHead();
         ledger.public_admission=fact_head&&PgnTestnetServiceActivation(fact_head->chain).has_value();
-        if(fact_head){ledger.audit_chain=fact_head->chain;ledger.audit_operator_rules=ConfiguredNativeAuditOperatorRules(ledger.audit_chain);
+        if(fact_head){ledger.audit_chain=fact_head->chain;ledger.audit_operator_rules=ConfiguredNativeAuditOperatorRules(ledger.audit_chain);ledger.publication_height=ConfiguredNativeAuditPublicationHeight(ledger.audit_chain);
             if(ledger.audit_operator_rules&&ledger.audit_operator_rules->chain!=ledger.audit_chain)return {};}
         for(int32_t height=0;height<=parent.nHeight&&ledger.authority.empty();++height){
             const auto loaded=history.Load(view,parent,height,schedule_budget.archive);if(!loaded.block)return {};
@@ -454,7 +502,8 @@ inline std::optional<LedgerState<Extra>> ReadIncremental(
             const auto& old=cached.state->audits;
             if(!initial||initial->chain!=head->chain||initial->ledger.authority!=old.authority||
                initial->ledger.authority_request!=old.authority_request||initial->ledger.authority_height!=old.authority_height||
-               initial->ledger.public_admission!=old.public_admission)reuse=false;
+               initial->ledger.public_admission!=old.public_admission||initial->ledger.audit_operator_rules!=old.audit_operator_rules||
+               initial->ledger.publication_height!=old.publication_height)reuse=false;
             if(reuse)for(const auto& [id,entry]:old){
                 const auto j=initial->ledger.find(id);
                 if(j==initial->ledger.end()||!SameReportBase(entry,j->second)){reuse=false;break;}
