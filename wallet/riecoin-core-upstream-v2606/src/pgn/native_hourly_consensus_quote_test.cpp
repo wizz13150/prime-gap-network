@@ -273,6 +273,31 @@ int main(int argc,char** argv){
     future_view.StagePgnFactCommit({{},FactHead{chain,audit_tip->GetBlockHash()},{}});
     const auto future_science=ReadChainSciencePolicy(future_view,*audit_tip,history,replay.archive,policy_budget,&schedule,&signature_budget);
     need(future_science.policy.has_value(),"Hourly target did not enter the actual native science-policy reader");
+    // Regression: the actual work/signature preimage, not just numeric equality.
+    ScientificFactContext hourly_identity{};hourly_identity.chain=chain;
+    hourly_identity.range.start=1000;hourly_identity.range.length=2000;
+    hourly_identity.range.segments=1;hourly_identity.range.ticket_id[0]=1;
+    hourly_identity.report_root[0]=2;
+    hourly_identity.policy=future_science.policy->Definition().evidence;
+    hourly_identity.proof_encoding=future_science.policy->Definition().proof;
+    const auto floor_identity=pgn::discussion::QuoteHourlyTarget(275,UINT32_MAX);
+    need(floor_identity.has_value(),"Floor identity quote unavailable");
+    hourly_identity.policy.target_numerator=floor_identity->proof_numerator;
+    hourly_identity.policy.target_denominator=floor_identity->proof_denominator;
+    auto legacy_identity=hourly_identity;
+    legacy_identity.policy.target_numerator=55;legacy_identity.policy.target_denominator=2;
+    const auto legacy_work=ScientificWorkIdentity(legacy_identity);
+    need(legacy_work&&ScientificWorkIdentity(hourly_identity)==legacy_work,
+         "Same27.5 changed the real native scientific signature challenge");
+    auto unreduced_identity=legacy_identity;
+    unreduced_identity.policy.target_numerator=275;unreduced_identity.policy.target_denominator=10;
+    need(ScientificWorkIdentity(unreduced_identity)!=legacy_work,
+         "Historical identity encoding was silently weakened to hide this regression");
+    auto changed_identity=legacy_identity;
+    changed_identity.policy.target_numerator=28;changed_identity.policy.target_denominator=1;
+    need(ScientificWorkIdentity(changed_identity)!=legacy_work,
+         "A genuinely different target reused the old signature challenge");
+
     need(future_science.policy->Definition().evidence.target_numerator==future_quote->quote->target.proof_numerator&&
          future_science.policy->Definition().evidence.target_denominator==future_quote->quote->target.proof_denominator,
          "Native proof threshold differs from the canonical hourly quote");

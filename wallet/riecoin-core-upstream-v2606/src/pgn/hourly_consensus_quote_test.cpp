@@ -15,8 +15,19 @@ int main(){
  const auto full=run(CanonicalHistory::Complete,rows);
  need(full.verdict==HourlyConsensusVerdict::Ready&&full.quote.has_value(),"complete authenticated input must be usable");
  need(full.quote->target.target_tenths==282,"measured model must stay28.2");
- need(full.quote->target.proof_numerator==282&&full.quote->target.proof_denominator==10,"decimal proof threshold must stay exact");
+ need(full.quote->target.proof_numerator==141&&full.quote->target.proof_denominator==5,"decimal proof threshold must stay exact");
  need(full.quote->target.header_q16==1848116,"Q16 identifier must be ceiling28.2");
+ const auto floor_identity=QuoteHourlyTarget(275,UINT32_MAX);
+ need(floor_identity&&floor_identity->proof_numerator==55&&floor_identity->proof_denominator==2,
+      "Unchanged27.5 must retain the legacy signed-work fraction55/2");
+ for(unsigned tenths=275;tenths<=640;++tenths){
+  const auto q=QuoteHourlyTarget(tenths,UINT32_MAX);
+  need(q&&uint64_t(q->proof_numerator)*10==uint64_t(tenths)*q->proof_denominator,
+       "Canonicalization changed the exact scientific target");
+  need(std::gcd(q->proof_numerator,q->proof_denominator)==1,
+       "Hourly proof target must have a unique reduced fraction");
+ }
+
  for(unsigned i=0;i<100;++i){
   const auto missing=run(CanonicalHistory::Unavailable,i%2?std::span<const AdmittedReturn>{rows}:std::span<const AdmittedReturn>{});
   need(missing.verdict==HourlyConsensusVerdict::AwaitHistory&&!missing.quote,"a missing local archive must never authorize an old target or zero");

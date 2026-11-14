@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <numeric>
 namespace pgn::discussion {
 struct HourlyTargetQuote {
     uint32_t target_tenths,header_q16;
@@ -13,7 +14,11 @@ inline std::optional<HourlyTargetQuote> QuoteHourlyTarget(unsigned tenths,uint32
     if(tenths<275)return {};
     const auto encoded=(uint64_t(tenths)*65536+9)/10;
     if(encoded>maximum_header_q16||encoded>std::numeric_limits<uint32_t>::max())return {};
-    return HourlyTargetQuote{tenths,uint32_t(encoded),tenths,10};
+    // The signed scientific work identity includes both integers.
+    // Equal targets must retain the legacy reduced fraction (e.g.55/2),
+    // without changing historical identity decoding or signature checks.
+    const auto divisor=std::gcd(tenths,10U);
+    return HourlyTargetQuote{tenths,uint32_t(encoded),tenths/divisor,10U/divisor};
 }
 // Only for explicitly activated decimal-target policy. Historical arbitrary
 // Q16 targets retain their existing interpretation and must not pass here.
