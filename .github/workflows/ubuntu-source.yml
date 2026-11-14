@@ -1,66 +1,30 @@
-name: Ubuntu source build
-
+name: UI150 existing portable loader
 on:
-  push:
-    branches: [main]
-    paths: ['src/**', 'tests/**', 'tools/**', 'cmake/**', 'CMakeLists.txt', '.github/workflows/ubuntu-source.yml']
-  pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  group: ubuntu-source-${{ github.ref }}
-  cancel-in-progress: true
-
+  actions: read
 jobs:
-  source-build:
+  portable-loader:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
-      - name: Check out the exact proposed source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y build-essential cmake ninja-build qt6-base-dev libqt6sql6-sqlite libgmp-dev libsqlite3-dev zlib1g-dev libboost-dev python3-venv
-      - name: Install pinned updater test dependencies
-        run: |
-          python3 -m venv .ci-python
-          .ci-python/bin/python -m pip install --disable-pip-version-check -r tools/requirements-updater.txt
-      - name: Record the actual toolchain
-        run: |
-          g++ --version
-          cmake --version
-          ninja --version
-          dpkg-query -W qt6-base-dev libgmp-dev libsqlite3-dev
-      - name: Configure from a fresh checkout
-        run: cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$PWD/.ci-python/bin/python"
-      - name: Build every default target
-        run: cmake --build build-ci --parallel 2
-      - name: Run registered isolated tests
+      - name: Obtain pinned public136 runtime and qualified UI150
         env:
-          QT_QPA_PLATFORM: offscreen
-          GSETTINGS_BACKEND: memory
-        run: ctest --test-dir build-ci --output-on-failure --timeout 180 -j2
-      - name: Preserve test diagnostics
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/wizz13150/prime-gap-network/actions/artifacts/14116273194/zip > ui.zip
+          curl --fail --location --retry 2 --output portable.tar.gz https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet/PGN-Horizon-testnet-Ubuntu-x86_64.tar.gz
+      - name: Check new ELF against the actual unchanged published libraries
+        run: python3 -I tools/qualify_ui150_portable.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: ubuntu-source-tests-${{ github.run_id }}
+          name: ui150-portable-loader
           path: |
-            build-ci/Testing/Temporary/LastTest.log
-            build-ci/Testing/Temporary/LastTestsFailed.log
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Preserve the exact qualified UI executable
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: attention-ui-ubuntu-${{ github.sha }}
-          path: build-ci/PGN-Horizon
+            PORTABLE-LOADER.json
+            loader-dependencies.txt
           if-no-files-found: error
           retention-days: 7
