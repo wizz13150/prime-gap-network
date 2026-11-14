@@ -14,7 +14,7 @@ inline NativeMainParameterDefinition BuildPgnAuditQaDefinition(){
   d.genesis.vtx[0]=MakeTransactionRef(cb);d.genesis.hashMerkleRoot=BlockMerkleRoot(d.genesis);
   if(UintToArith256(d.genesis.GetHash())<=target)break;
  }
- d.pinned_genesis=d.genesis.GetHash();if(d.pinned_genesis!=NativeAuditQaGenesis())throw std::logic_error("QA genesis definition changed");d.magic={0x70,0x67,0x6e,0x71};d.peer_port=48951;d.rpc_port=48952;d.addresses.hrp="qpgn";
+ d.pinned_genesis=d.genesis.GetHash();if(d.pinned_genesis!=NativeAuditQaGenesis())throw std::logic_error("QA genesis definition changed");d.magic={0x70,0x67,0x6e,0x71};d.peer_port=48951;d.rpc_port=48952;d.addresses.hrp="qpgn";d.addresses.keyhash_alias.reset();
  return d;
 }
 }
