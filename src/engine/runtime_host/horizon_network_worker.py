@@ -121,6 +121,9 @@ class NetworkWorker:
         self.startup_phase("engine_constructed")
         if not self.cpu_only:
             self.source = LogicalMinerCpuResources(self.source, self.root, self.emit)
+        bind_control = getattr(self.source, 'bind_run_control', None)
+        if callable(bind_control):
+            bind_control(self.running, self.quitting)
         self.sequence = 0
         self.device_lease = None
         self.off_announced = False
@@ -288,21 +291,29 @@ class NetworkWorker:
                     threading.Thread(target=self.configure_cpu_resource, args=(control,), daemon=True,
                                      name="cpu-resource-control").start()
                     continue
-                save(self.root / "last-control.json", dict(action=action, observed_utc=time.time()))
                 if action in ("pause", "stop", "quit"):
+                    # Desired OFF/quit is an immediate control effect. Full
+                    # storage must not leave the scheduler ON while reporting
+                    # that its control journal could not be written.
                     self.running.clear()
-                    atomic_bytes(self.root / "pause.request", b"user mining off\n")
+                    if action == "quit":
+                        self.quitting.set()
                     request_ack = getattr(self, 'request_pause_ack', None)
                     if callable(request_ack):
                         request_ack()
-                    if action == "quit":
-                        self.quitting.set()
+                    try:
+                        atomic_bytes(self.root / "pause.request", b"user mining off\n")
+                    finally:
+                        save(self.root / "last-control.json", dict(action=action, observed_utc=time.time()))
                 elif action in ("resume", "start"):
+                    save(self.root / "last-control.json", dict(action=action, observed_utc=time.time()))
                     acknowledged = getattr(self, 'pause_acknowledged', None)
                     if acknowledged is not None:
                         acknowledged.clear()
                     (self.root / "pause.request").unlink(missing_ok=True)
                     self.running.set()
+                else:
+                    save(self.root / "last-control.json", dict(action=action, observed_utc=time.time()))
             except (ValueError, OSError):
                 if action == 'public_profile':
                     self.emit(dict(schema='PGN_PUBLIC_PROFILE_STATUS_V1', applied=False,
@@ -312,13 +323,15 @@ class NetworkWorker:
                                    device_id=control.get("device_id", ""), message="CPU control reply retained for reconciliation"))
                 else:
                     self.message("Control request could not be applied", "Needs attention")
-        save(self.root / "last-control.json", dict(action="input_closed", observed_utc=time.time()))
         self.running.clear()
         self.quitting.set()
         cancel = getattr(self.source, "cancel_cpu_transport", None)
         if cancel is not None:
             cancel("Normal miner controller input closed")
-        atomic_bytes(self.root / "pause.request", b"controller disconnected\n")
+        try:
+            atomic_bytes(self.root / "pause.request", b"controller disconnected\n")
+        finally:
+            save(self.root / "last-control.json", dict(action="input_closed", observed_utc=time.time()))
 
     def ledger(self, envelopes, *, on_intent=None):
         if not self.args.pilot_coordination:

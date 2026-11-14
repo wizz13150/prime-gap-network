@@ -152,6 +152,55 @@ class SealRecoveryTests(unittest.TestCase):
         saved = json.loads((self.audits.folder / 'sealed-answers' / (self.name + '.json')).read_bytes())
         self.assertEqual(saved['answer'], next(answer for kind, answer in outcomes if kind == 'published'))
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows sharing/access error compatibility')
+    def test_transient_read_denied_keeps_original_seal(self):
+        target=self.audits.folder/'sealed-answers'/(self.name+'.json')
+        before=target.read_bytes();real=type(target).open;calls=[]
+        def briefly_denied(path,*args,**kwargs):
+            calls.append(str(path))
+            if len(calls)==1:raise PermissionError(errno.EACCES,'sharing handle')
+            return real(path,*args,**kwargs)
+        with patch.object(type(target),'open',briefly_denied):
+            recovered,digest=self.audits.answers.read_path(self.name,target)
+        self.assertEqual(len(calls),2);self.assertEqual(recovered,self.audit)
+        self.assertEqual(target.read_bytes(),before);self.assertEqual(digest,self.digest())
+
+    @unittest.skipUnless(os.name == 'nt', 'Real Windows exclusive sharing handle')
+    def test_real_windows_sharing_handle_can_expire_without_losing_seal(self):
+        import ctypes,time
+        from ctypes import wintypes
+        target=self.audits.folder/'sealed-answers'/(self.name+'.json')
+        before=target.read_bytes();kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+        kernel.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.LPVOID,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+        kernel.CreateFileW.restype=wintypes.HANDLE
+        kernel.CloseHandle.argtypes=[wintypes.HANDLE];kernel.CloseHandle.restype=wintypes.BOOL
+        handle=kernel.CreateFileW(str(target),0x80000000,0,None,3,0,None)
+        self.assertNotEqual(handle,ctypes.c_void_p(-1).value)
+        release=threading.Event()
+        def unlock():
+            release.wait(.02);kernel.CloseHandle(handle)
+        thread=threading.Thread(target=unlock)
+        try:
+            with self.assertRaises(PermissionError):target.read_bytes()
+            thread.start();recovered,digest=self.audits.answers.read_path(self.name,target)
+            self.assertEqual(recovered,self.audit)
+        finally:
+            if thread.ident is None:kernel.CloseHandle(handle)
+            else:release.set();thread.join(1)
+        self.assertEqual(target.read_bytes(),before);self.assertEqual(digest,self.digest())
+
+    def test_persistent_denied_or_missing_read_is_bounded_and_keeps_seal(self):
+        target=self.audits.folder/'sealed-answers'/(self.name+'.json')
+        before=target.read_bytes()
+        with patch.object(type(target),'open',side_effect=PermissionError(errno.EACCES,'denied'))as opened:
+            with patch('horizon_audit_answers.time.sleep')as sleep:
+                with self.assertRaises(PermissionError):self.audits.answers.read_path(self.name,target)
+        self.assertEqual(opened.call_count,5 if os.name=='nt'else 1)
+        self.assertEqual(sleep.call_count,4 if os.name=='nt'else 0)
+        with patch.object(type(target),'open',side_effect=FileNotFoundError(errno.ENOENT,'missing'))as opened:
+            with self.assertRaises(FileNotFoundError):self.audits.answers.read_path(self.name,target)
+        self.assertEqual(opened.call_count,1);self.assertEqual(target.read_bytes(),before)
+
     @unittest.skipUnless(os.name == 'nt', 'Native Windows no-replace rename contract')
     def test_windows_registration_and_recovery_need_no_hardlink(self):
         self.remove_registration()

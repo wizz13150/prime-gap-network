@@ -21,6 +21,7 @@ class MiningPresealFlowTests(unittest.TestCase):
         self.flow.prefetch=SimpleNamespace(native_service_status=dict(enforced=True,may_request=False,credits=[]))
         self.flow.audit_lanes=[]
         self.flow.worker=SimpleNamespace(root=self.root,quitting=threading.Event(),network_notice='')
+        self.flow.worker.running=threading.Event();self.flow.worker.running.set()
         self.flow.preseal=PresealQueue(self.root);self.flow.outbox=ReportOutbox(self.root)
         self.flow.changed=threading.Event();self.flow.gpu=SimpleNamespace(timings=[],wake=lambda:None)
         self.flow.finalizer=lambda work,raw:raw
@@ -73,12 +74,29 @@ class MiningPresealFlowTests(unittest.TestCase):
         self.flow.preseal=PresealQueue(self.root,maximum=1)
         self.flow.completed(self.job(self.work),self.raw)
         self.assertFalse(self.flow.may_start_work(self.job(self.work)))
-        self.flow.cycles=SimpleNamespace()
-        audit=SimpleNamespace(context=dict(role='audit',work_cycle=None,audit_request_id='a'*64,audit_slot=0,audit_attempt=0))
+        self.flow.cycles=SimpleNamespace(may_audit=lambda request,position:True)
+        audit=SimpleNamespace(context=dict(role='audit',work_cycle='a'*64,audit_position=0))
         self.assertTrue(self.flow.may_start_work(audit))
         work,raw=self.second()
         with self.assertRaises(BufferError):self.flow.completed(self.job(work),raw)
         self.assertEqual(len(self.flow.preseal.entries()),1)
+
+    def test_OFF_during_finalization_retains_output_and_ON_does_not_recompute(self):
+        calls=[];finished=threading.Event()
+        def finalize(work,raw):
+            calls.append(work['request_id']);self.flow.worker.running.clear();finished.set();return raw
+        self.flow.finalizer=finalize;self.flow.completed(self.job(self.work),self.raw)
+        thread=threading.Thread(target=self.flow.finalize_reports);thread.start()
+        try:
+            self.assertTrue(finished.wait(2));deadline=time.monotonic()+2
+            while not self.fixture.file('preseal-final.json').exists()and time.monotonic()<deadline:time.sleep(.01)
+            self.assertTrue(self.fixture.file('preseal-final.json').exists());self.assertIsNone(self.flow.outbox.first())
+            self.flow.worker.running.set();deadline=time.monotonic()+3
+            while self.flow.preseal.entries()and time.monotonic()<deadline:time.sleep(.01)
+            self.assertEqual(self.flow.preseal.entries(),[]);self.assertIsNotNone(self.flow.outbox.first())
+            self.assertEqual(calls,[self.work['request_id']])
+        finally:self.flow.worker.quitting.set();self.flow.worker.running.set();thread.join(3)
+        self.assertFalse(thread.is_alive())
 
 
 if __name__=='__main__':unittest.main()

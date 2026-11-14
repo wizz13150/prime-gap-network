@@ -77,7 +77,16 @@ class PreparedSourcePlan:
     feeds: ComplementFeedBank
     exact_prime: object
 
-    def refine(self, report, configuration, primary):
+    def refine(self, report, configuration, primary, *, cancelled=None):
+        def check():
+            if cancelled is not None and cancelled():
+                raise InterruptedError('Source refinement retained while mining is OFF')
+        def prime(value):
+            check()
+            result = self.exact_prime(value)
+            check()
+            return result
+        check()
         work = next((work for work in self.plan.selected
                      if work.work_id == configuration.get('ticket_id')), None)
         if (work is None or configuration.get('start') != str(work.start)
@@ -97,9 +106,9 @@ class PreparedSourcePlan:
         # Only Euler-Jacobi survivors can be false primary separators. All
         # residual factor products remain retained in the original bundle.
         factors = tuple(row for row in self.bundle.witnesses[index]
-                        if work.left_prime < row[0] < work.right_prime and euler_jacobi(row[0]))
+                        if (check() is None and work.left_prime < row[0] < work.right_prime and euler_jacobi(row[0])))
         return refine_report(report, configuration, primary, factors,
-                             work.left_prime, work.right_prime, self.exact_prime)
+                             work.left_prime, work.right_prime, prime)
 
 
 class PreparationProvider:

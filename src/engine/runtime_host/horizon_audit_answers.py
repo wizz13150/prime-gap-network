@@ -13,6 +13,8 @@ import re
 import sqlite3
 import tempfile
 import threading
+import time
+import errno
 from report_commitment import audit_commitment, canonical_bytes
 from pgn_paths import state_path
 
@@ -54,7 +56,17 @@ class AuditAnswers:
 
     def read_path(self,name,file):
         self.checked_name(name)
-        with file.open('rb')as stream:raw=stream.read(262145)
+        # A Windows rename/sharing handle may temporarily deny this read even
+        # after the no-clobber target becomes visible. Retry only this read,
+        # for at most 75ms; never replace a seal or generate a new nonce.
+        for attempt in range(5):
+            try:
+                with file.open('rb')as stream:raw=stream.read(262145)
+                break
+            except OSError as error:
+                if (os.name!='nt' or attempt==4
+                        or not (error.errno==errno.EACCES or getattr(error,'winerror',None)in(5,32,33))):raise
+                time.sleep(.005*(2**attempt))
         return self.decode(name,raw)
 
     def decode(self,name,raw):

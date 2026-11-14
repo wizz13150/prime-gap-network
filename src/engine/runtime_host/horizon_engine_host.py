@@ -35,6 +35,8 @@ from pgn_index import SessionIndexWalBudgetExceeded
 
 from horizon_engine_capabilities import NATIVE_SOURCE, IMAGES, qualified_workers
 
+ENGINE_HOST_VERSION = "2026.11.14.74"
+
 GAP = re.compile(r"\bGAP merit=([0-9.eE+\-]+) gap=(\d+) lower=(\d+) upper=(\d+)")
 COUNTERS = re.compile(r"\[pgn-counters\].*?\bpositions=(\d+)\b.*?\btests=(\d+)\b")
 
@@ -103,6 +105,32 @@ def instance_alive(instance):
 
 
 class EngineService:
+    def bind_run_control(self, enabled, stopping):
+        # In-memory desired state remains observable even when no pause file
+        # can be created. Legacy standalone callers keep their file protocol.
+        self._run_enabled, self._run_stopping = enabled, stopping
+        resolver = getattr(self.complement, 'source_resolver', None)
+        bind = getattr(resolver, 'bind_run_control', None)
+        if callable(bind):
+            bind(enabled)
+
+    def pause_requested(self):
+        enabled = getattr(self, '_run_enabled', None)
+        stopping = getattr(self, '_run_stopping', None)
+        return (enabled is not None and not enabled.is_set()
+                or stopping is not None and stopping.is_set()
+                or (self.root / 'pause.request').exists())
+
+    def request_native_pause(self, stop, job):
+        try:
+            atomic_bytes(stop, b'Horizon pause request\n')
+        except OSError:
+            # A native stop-file failure must not leave an owned resident
+            # computing behind an OFF controller. Keep all journals/spools;
+            # no receipt or output prefix is acknowledged by this fallback.
+            job.terminate()
+            raise
+
     def __init__(self, bundle, state_root, gpu_uuid, architecture, observer=emit, *, complement=None):
         self.bundle = Path(bundle).resolve(strict=True)
         self.root = state_path(state_root)
@@ -191,6 +219,8 @@ class EngineService:
 
     def finalize_prepared_report(self, work, computed):
         """Read every retained primary pair, then refine off the GPU lane."""
+        if self.pause_requested():
+            raise InterruptedError('Source finalization retained while mining is OFF')
         from report_commitment import validate_computed_report
         from sparse_gap_repair import bounded
         validate_computed_report(computed, work)
@@ -228,7 +258,9 @@ class EngineService:
                 controller.release()
             resolver = getattr(self.complement, 'prepared_source_for', None)
             prepared = resolver(configuration) if callable(resolver) else self.complement.prepared_source
-            refined = prepared.refine(computed, configuration, pairs)
+            refined = prepared.refine(computed, configuration, pairs, cancelled=self.pause_requested)
+            if self.pause_requested():
+                raise InterruptedError('Refined source retained before finalization publication')
             corrected = refined.report
             # Preserve the exact consequence before reproducible factor caches
             # retire. Best100 alone cannot reconstruct a corrected full index.
@@ -458,7 +490,7 @@ class EngineService:
                 if (old_positions, old_tests) != (store.meta["positions"], store.meta["tests"]):
                     store.recovery_rewind(old_positions, old_tests, unknown_wall=True)
                 self.diagnostic(worker, store)
-                if (self.root / "pause.request").exists():
+                if self.pause_requested():
                     store.closed("PAUSED", active, paused)
                     self.publish(store, "PAUSED")
                     return {"state": "PAUSED", "ticket_id": cfg["ticket_id"]}
@@ -514,8 +546,8 @@ class EngineService:
                 try:
                     deadline = time.monotonic() + 3600
                     while True:
-                        if (self.root / "pause.request").exists() and not stop.exists():
-                            atomic_bytes(stop, b"Horizon pause request\n")
+                        if self.pause_requested() and not stop.exists():
+                            self.request_native_pause(stop, job)
                         if time.monotonic() >= deadline:
                             raise TimeoutError("Native physical job exceeded its execution budget")
                         try:
@@ -563,7 +595,7 @@ class EngineService:
                     self.publish(store, "PAUSED")
                     return {"state": "PAUSED", "ticket_id": cfg["ticket_id"]}
                 if (should_yield is not None and int(store.meta["positions"]) < end - start
-                        and not (self.root / "pause.request").exists() and should_yield()):
+                        and not self.pause_requested() and should_yield()):
                     return {"state": "YIELDED", "ticket_id": cfg["ticket_id"]}
             self.boundary(store, end)
             store.closed("COMPLETE", active, paused)
@@ -646,7 +678,7 @@ def main():
         from horizon_status_stream import main as observe_main
         return observe_main()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", action="version", version="PGN Horizon native engine host")
+    parser.add_argument("--version", action="version", version="PGN Horizon native engine host " + ENGINE_HOST_VERSION)
     parser.add_argument("--bundle", required=True, type=Path)
     parser.add_argument("--state-root", required=True, type=Path)
     parser.add_argument("--gpu", required=True)

@@ -5,7 +5,24 @@ from dataclasses import dataclass, field
 import threading
 import copy
 import time
+import errno
+import sqlite3
 from pgn_index import SessionIndexWalBudgetExceeded
+
+def retryable_storage_error(error):
+    if isinstance(error, OSError):
+        return error.errno in (errno.ENOSPC, errno.EDQUOT, errno.EBUSY)
+    if isinstance(error, sqlite3.Error):
+        code = getattr(error, 'sqlite_errorcode', None)
+        # SQLite's primary codes are stable. Python exposes the constants and
+        # exception code only since 3.11; the Linux host also supports 3.10.
+        if type(code) is int:
+            return code & 255 in (5, 6, 13)  # BUSY, LOCKED, FULL
+        if isinstance(error, sqlite3.OperationalError):
+            message = str(error)
+            return (message in ('database is locked', 'database table is locked', 'database or disk is full')
+                    or message.startswith(('database table is locked: ', 'database schema is locked: ')))
+    return False
 
 @dataclass
 class GpuJob:
@@ -16,6 +33,7 @@ class GpuJob:
     view_sequence: int | None = None
     storage_retry_after: float = 0.0
     storage_retries: int = 0
+    completed_result: dict | None = None
 
 class ResidentGpuQueue:
     minimum_service_ns = 1_000_000_000
@@ -145,6 +163,10 @@ class ResidentGpuQueue:
                         self.condition.wait(.05)
                         continue
             except Exception as error:
+                if retryable_storage_error(error):
+                    self.on_error(error)
+                    self.stopping.wait(.1)
+                    continue
                 self.enabled.clear()
                 self.on_error(error)
                 self.on_paused()
@@ -154,6 +176,16 @@ class ResidentGpuQueue:
             waiting_since = None
             self.active = job
             try:
+                if job.completed_result is not None:
+                    # Computation already finished. Retry only the durable
+                    # handoff: reactivation could regress a completed cycle to
+                    # running, repeat arithmetic, or alter presentation binding.
+                    self.on_result(job, copy.deepcopy(job.completed_result))
+                    self.last_completed = (job.ticket['ticket_id'], self.clock_ns())
+                    job.future.set_result(copy.deepcopy(job.completed_result))
+                    with self.condition:
+                        self.jobs.pop(job.ticket['ticket_id'], None)
+                    continue
                 preparation_started = self.clock_ns()
                 self.on_start(job)
                 started = self.clock_ns()
@@ -193,9 +225,10 @@ class ResidentGpuQueue:
                     continue
                 # Persist the completed handoff before publishing another active
                 # job. This callback must never perform network requests.
-                self.on_result(job, result)
+                job.completed_result = copy.deepcopy(result)
+                self.on_result(job, copy.deepcopy(job.completed_result))
                 self.last_completed = (job.ticket["ticket_id"],finished)
-                job.future.set_result(result)
+                job.future.set_result(copy.deepcopy(job.completed_result))
                 with self.condition:
                     self.jobs.pop(job.ticket["ticket_id"], None)
             except SessionIndexWalBudgetExceeded as error:
@@ -210,6 +243,15 @@ class ResidentGpuQueue:
                 self.on_error(error)
                 self.last_completed = None
             except Exception as error:
+                if retryable_storage_error(error):
+                    job.storage_retries += 1
+                    job.storage_retry_after = time.monotonic() + min(2.0, .25 * 2 ** min(job.storage_retries - 1, 3))
+                    job.view_sequence = None
+                    with self.condition:
+                        (self.search if job.context['role'] == 'search' else self.audits).appendleft(job)
+                    self.on_error(error)
+                    self.last_completed = None
+                    continue
                 # Retain this bound job until an explicit restart. Never skip
                 # failed work, invent completion or select another arithmetic.
                 self.enabled.clear()
