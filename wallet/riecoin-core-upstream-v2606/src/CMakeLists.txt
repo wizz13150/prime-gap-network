@@ -517,6 +517,11 @@ target_link_libraries(pgn-native-audit-retained-history-test PRIVATE core_interf
 add_executable(pgn-native-hourly-complete-returns-test EXCLUDE_FROM_ALL pgn/native_hourly_complete_returns_test.cpp)
 target_link_libraries(pgn-native-hourly-complete-returns-test PRIVATE core_interface riecoin_node univalue)
 
+add_executable(pgn-native-hourly-consensus-quote-test EXCLUDE_FROM_ALL pgn/native_hourly_consensus_quote_test.cpp)
+target_link_libraries(pgn-native-hourly-consensus-quote-test PRIVATE core_interface riecoin_node univalue)
+add_executable(pgn-native-hourly-consensus-math-test EXCLUDE_FROM_ALL pgn/hourly_consensus_quote_test.cpp)
+target_link_libraries(pgn-native-hourly-consensus-math-test PRIVATE core_interface riecoin_node univalue)
+
 add_executable(pgn-native-audit-config-test EXCLUDE_FROM_ALL pgn/native_audit_config_test.cpp)
 target_link_libraries(pgn-native-audit-config-test PRIVATE core_interface riecoin_node univalue)
 
