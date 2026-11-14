@@ -50,6 +50,28 @@ class NetworkAudits:
 
     def event(self, action, request=None, slot=None, attempt=None, body=None):
         owner = self.worker.address()
+        if action == 'reveal':
+            # The miner identity can change after an immutable answer was
+            # committed. Recover its canonical signer, never rebind the result
+            # or sign on behalf of an address whose key is not in this wallet.
+            state = self.state(request)
+            job = next((j for j in state.get('jobs', [])
+                        if j.get('slot') == slot and j.get('attempt') == attempt), None)
+            if not job or job.get('commitment') != hashlib.sha256(bytes.fromhex(body)).hexdigest():
+                raise RuntimeError('Retained audit no longer matches its canonical commitment; private answer retained')
+            script = job.get('actor')
+            if script is not None:
+                if (type(script) is not str or not script or len(script) > 8192
+                        or len(script) % 2 or bytes.fromhex(script).hex() != script):
+                    raise ValueError('Invalid canonical audit signer; private answer retained')
+                address = self.worker.rpc.call('decodescript', [script]).get('address')
+                if type(address) is not str or not address:
+                    raise RuntimeError('Canonical audit signer has no supported address; private answer retained')
+                if address != owner:
+                    info = self.worker.rpc.call('getaddressinfo', [address], wallet=True)
+                    if info.get('ismine') is not True or info.get('scriptPubKey') != script:
+                        raise RuntimeError('Retained audit signer key is unavailable in this wallet; private answer retained')
+                    owner = address
         args = [action, owner, request, slot, attempt, body]
         proposal = self.worker.rpc.call("getpgnauditevent", args)
         if not proposal.get("available"):
