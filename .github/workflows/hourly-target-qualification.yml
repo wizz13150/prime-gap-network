@@ -1,0 +1,29 @@
+name: Hourly target component qualification
+on:
+  push:
+    branches: [qualification/hourly-controller-193]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-hourly-components:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Ensure header-only arithmetic dependency
+        run: |
+          if ! test -f /usr/include/boost/multiprecision/cpp_int.hpp; then
+            sudo apt-get update -qq
+            sudo apt-get install --no-install-recommends -y libboost-dev
+          fi
+      - name: Build isolated hourly components
+        run: |
+          g++ -std=c++20 -O2 -I research/hourly-controller-193/src research/hourly-controller-193/hourly_snapshot_test.cpp -o /tmp/hourly-snapshot-test
+          g++ -std=c++20 -O2 -I research/hourly-controller-193/src -I wallet/riecoin-core-upstream-v2606/src research/hourly-controller-193/hourly_quote_test.cpp wallet/riecoin-core-upstream-v2606/src/pgn/merit_arithmetic.cpp -o /tmp/hourly-quote-test
+      - name: Verify failure handling, immutable targets and exact decimal boundaries
+        run: |
+          /tmp/hourly-snapshot-test
+          /tmp/hourly-quote-test
