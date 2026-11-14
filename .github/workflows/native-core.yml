@@ -98,6 +98,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Prepare private hourly activation in this disposable build
+        shell: pwsh
         run: python tools/prepare_hourly_node_fixture.py --phase prepare
       - name: Rebuild the private hourly daemon
         run: cmake --build build-native --parallel 2 --target riecoind
@@ -106,8 +107,11 @@ jobs:
           mkdir -p native-hourly-fixture
           cp native-artifact/* native-hourly-fixture/
           cp build-native/bin/riecoind.exe native-hourly-fixture/pgn-core.exe
-          python tools/prepare_hourly_node_fixture.py --phase collect
+      - name: Fingerprint the private hourly Windows image
+        shell: pwsh
+        run: python tools/prepare_hourly_node_fixture.py --phase collect
       - name: Verify private hourly image on disconnected fresh genesis
+        shell: pwsh
         run: python tests/native_genesis_crash_recovery.py --core native-hourly-fixture/pgn-core.exe --expected-version 2026.11.13.18 --report native-hourly-fixture/genesis-crash.json
       - name: Preserve private hourly fixture separately
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -118,6 +122,7 @@ jobs:
           retention-days: 3
 
   native-ubuntu:
+    if: github.event_name != 'workflow_dispatch'
     name: Native ubuntu Core and identity
     runs-on: ubuntu-24.04
     timeout-minutes: 25
