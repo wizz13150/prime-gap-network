@@ -1,0 +1,30 @@
+name: UI150 existing portable loader
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  portable-loader:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Obtain pinned public136 runtime and qualified UI150
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/wizz13150/prime-gap-network/actions/artifacts/14116273194/zip > ui.zip
+          curl --fail --location --retry 2 --output portable.tar.gz https://github.com/wizz13150/prime-gap-network/releases/download/horizon-testnet/PGN-Horizon-testnet-Ubuntu-x86_64.tar.gz
+      - name: Check new ELF against the actual unchanged published libraries
+        run: python3 -I tools/qualify_ui150_portable.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ui150-portable-loader
+          path: |
+            PORTABLE-LOADER.json
+            loader-dependencies.txt
+          if-no-files-found: error
+          retention-days: 7
