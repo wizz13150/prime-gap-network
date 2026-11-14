@@ -344,6 +344,15 @@ if(BUILD_DAEMON)
     $<TARGET_NAME_IF_EXISTS:riecoin_wallet>
   )
   install_binary_component(riecoind HAS_MANPAGE)
+  # Explicit synthetic QA daemon. Never installed, never the updater payload.
+  add_executable(pgn-audit-qa-core EXCLUDE_FROM_ALL
+    riecoind.cpp init/riecoind.cpp kernel/chainparams.cpp
+  )
+  target_compile_definitions(pgn-audit-qa-core PRIVATE PGN_NATIVE_AUDIT_QA_TARGET=1)
+  target_link_libraries(pgn-audit-qa-core PRIVATE
+    core_interface riecoin_node $<TARGET_NAME_IF_EXISTS:riecoin_wallet>
+  )
+
 endif()
 if(ENABLE_IPC AND BUILD_DAEMON)
   add_executable(riecoin-node
@@ -506,9 +515,9 @@ if(BUILD_TESTS)
 endif()
 
 # Candidate publication is inactive; exercise it through explicit test ledgers.
+add_executable(pgn-native-audit-publication-test EXCLUDE_FROM_ALL pgn/native_audit_publication_test.cpp)
+target_link_libraries(pgn-native-audit-publication-test PRIVATE core_interface riecoin_node univalue)
 if(BUILD_TESTS)
-  add_executable(pgn-native-audit-publication-test pgn/native_audit_publication_test.cpp)
-  target_link_libraries(pgn-native-audit-publication-test PRIVATE core_interface riecoin_node univalue)
   add_test(NAME native-audit-publication COMMAND pgn-native-audit-publication-test)
 endif()
 
@@ -527,7 +536,7 @@ target_link_libraries(pgn-native-audit-config-test PRIVATE core_interface riecoi
 # Portable Core must resolve its bundled non-system libraries after relocation.
 # RPATH (rather than RUNPATH) also covers the bundled libraries' children.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  foreach(portable_core IN ITEMS riecoind riecoin-cli)
+  foreach(portable_core IN ITEMS riecoind riecoin-cli pgn-audit-qa-core)
     if(TARGET ${portable_core})
       set_target_properties(${portable_core} PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE INSTALL_RPATH "$ORIGIN")
       target_link_options(${portable_core} PRIVATE "LINKER:--disable-new-dtags")

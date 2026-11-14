@@ -1,8 +1,10 @@
 // Copyright (c) 2026 The PGN developers. MIT.
 #include <pgn/audit_operator_policy.h>
+#include <pgn/native_audit_qa_identity.h>
 namespace pgn::core {
 std::optional<NativeAuditOperatorRules> ConfiguredNativeAuditOperatorRules(const uint256& chain)
 {
+    if(chain==NativeAuditQaGenesis())return NativeAuditOperatorRules{chain,1};
     // Only the current PGN public testnet. Historical candidate heights keep
     // their original assignment and distinct-operator validation rules.
     static const auto genesis=*uint256::FromHex("0ccd1f2349ed75f9cf4d0279871a204e107683e5baa1dd6641c4e6f08a25a17d");

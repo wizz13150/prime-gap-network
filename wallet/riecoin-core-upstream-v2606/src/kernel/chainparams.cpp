@@ -1,3 +1,6 @@
+#ifdef PGN_NATIVE_AUDIT_QA_TARGET
+#include <pgn/native_audit_qa_definition.h>
+#endif
 #include <pgn/testnet_definition.h>
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-present The Bitcoin Core developers
@@ -333,7 +336,11 @@ std::unique_ptr<const CChainParams> CChainParams::Main(const MainNetOptions& opt
 std::unique_ptr<const CChainParams> CChainParams::TestNet(const TestNetOptions& options)
 {
     if(!options.dep_opts.version_bits_parameters.empty())throw std::invalid_argument("PGN testnet deployments are genesis-pinned");
+#ifdef PGN_NATIVE_AUDIT_QA_TARGET
+    return pgn::core::CreateNativeTestnetParameters(pgn::core::BuildPgnAuditQaDefinition());
+#else
     return pgn::core::CreateNativeTestnetParameters(pgn::core::BuildPgnTestnetDefinition());
+#endif
 }
 
 std::vector<int> CChainParams::GetAvailableSnapshotHeights() const

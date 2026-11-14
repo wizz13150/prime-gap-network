@@ -2,6 +2,7 @@
 // One immutable testnet schedule shared by work service and audit settlement.
 #pragma once
 #include <uint256.h>
+#include <pgn/native_audit_qa_identity.h>
 #include <optional>
 namespace pgn::core {
 struct TestnetServiceActivation {
@@ -13,6 +14,7 @@ struct TestnetServiceActivation {
 inline std::optional<TestnetServiceActivation> PgnTestnetServiceActivation(const uint256& chain){
     static const auto genesis=*uint256::FromHex("0ccd1f2349ed75f9cf4d0279871a204e107683e5baa1dd6641c4e6f08a25a17d");
     static const auto money=*uint256::FromHex("89135cb022c8afb18cc0df2581d1ef8e97df0d7fbc4be3700ca4c49c7fbf3e4a");
+    if(chain==NativeAuditQaGenesis())return TestnetServiceActivation{chain,NativeAuditQaMonetaryPolicy()};
     if(chain!=genesis)return {};
     return TestnetServiceActivation{genesis,money};
 }
