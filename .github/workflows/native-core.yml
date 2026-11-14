@@ -62,7 +62,7 @@ jobs:
               if f.suffix in ('.a','.h','.hpp','.cmake')or rel in ('CMakeCache.txt','compile_commands.json','build.ninja'):
                   files['build/'+rel]=f
           assert any(n.endswith('/libriecoin_node.a')for n in files)
-          assert any('config/bitcoin-config.h'in n for n in files)
+          assert 'build/src/riecoin-build-config.h' in files
           rows=[dict(path=n,bytes=f.stat().st_size,sha256=hashlib.sha256(f.read_bytes()).hexdigest())for n,f in sorted(files.items())]
           manifest=dict(source=pin,core_tree='0fa700b9cf47f1629cfd7ff38a6ec9b1de284ea7',files=rows,validation_outcome='${{ steps.native_check.outcome }}',contains_user_wallet_data=False,contains_user_secrets=False,scope='Read-only development SDK; never a runtime update payload; failed checks must be resolved before reuse')
           Path('SDK-MANIFEST.json').write_text(json.dumps(manifest,indent=2)+'\n')
