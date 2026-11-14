@@ -514,6 +514,9 @@ target_link_libraries(pgn-native-audit-self-history-test PRIVATE core_interface 
 add_executable(pgn-native-audit-retained-history-test EXCLUDE_FROM_ALL pgn/native_audit_retained_history_test.cpp)
 target_link_libraries(pgn-native-audit-retained-history-test PRIVATE core_interface riecoin_node univalue)
 
+add_executable(pgn-native-hourly-complete-returns-test EXCLUDE_FROM_ALL pgn/native_hourly_complete_returns_test.cpp)
+target_link_libraries(pgn-native-hourly-complete-returns-test PRIVATE core_interface riecoin_node univalue)
+
 add_executable(pgn-native-audit-config-test EXCLUDE_FROM_ALL pgn/native_audit_config_test.cpp)
 target_link_libraries(pgn-native-audit-config-test PRIVATE core_interface riecoin_node univalue)
 
