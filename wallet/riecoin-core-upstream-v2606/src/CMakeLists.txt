@@ -350,7 +350,7 @@ if(BUILD_DAEMON)
   )
   target_compile_definitions(pgn-audit-qa-core PRIVATE PGN_NATIVE_AUDIT_QA_TARGET=1)
   target_link_libraries(pgn-audit-qa-core PRIVATE
-    core_interface riecoin_node $<TARGET_NAME_IF_EXISTS:riecoin_wallet>
+    core_interface riecoin_node univalue $<TARGET_NAME_IF_EXISTS:riecoin_wallet>
   )
 
 endif()
