@@ -1,6 +1,6 @@
 // Copyright (c) 2026 The PGN developers. MIT.
 #pragma once
-#include <pgn/native_elapsed_retarget.h>
+#include <pgn/native_network_target.h>
 #include <pgn/native_report_audit.h>
 #include <pgn/native_retarget_policy.h>
 #include <pgn/bit_range_coverage.h>
@@ -24,7 +24,8 @@ inline int32_t NativeHeightAfterTime(const CBlockIndex& tip,int64_t boundary){
 
 inline UniValue NativeNetworkMetrics(const NativeAuditLedger& ledger,const CBlockIndex& tip,
     const MeritControllerDefinition& policy,unsigned maximum_points,int64_t span_seconds,int64_t window_seconds,
-    const RangePoolDefinition* range_domain=nullptr){
+    const RangePoolDefinition* range_domain=nullptr,
+    const pgn::discussion::NativeHourlyHistory* hourly_history=nullptr){
     if(maximum_points<2||maximum_points>256||span_seconds<60||span_seconds>604800||
        window_seconds<30||window_seconds>86400||tip.nHeight<0||tip.nHeight==std::numeric_limits<int32_t>::max())
         throw std::invalid_argument("Bounded metrics window required");
@@ -140,11 +141,14 @@ inline UniValue NativeNetworkMetrics(const NativeAuditLedger& ledger,const CBloc
         reported+=reported_delta[i];audited+=audited_delta[i];
         const auto* index=tip.GetAncestor(last[i]);
         if(!index)throw std::runtime_error("Metrics sample ancestry unavailable");
-        const auto quote=DeriveNextMeritTarget(*index,policy);
+        const auto quote=NativeNetworkTargetAt(*index,policy,hourly_history);
         if(!quote)throw std::runtime_error("Metrics target unavailable");
         UniValue point{UniValue::VOBJ};point.pushKV("time",timestamps[i]);point.pushKV("height",index->nHeight);
-        point.pushKV("hash",index->GetBlockHash().GetHex());point.pushKV("merit_target_q16",uint64_t(quote->target_q16));
+        point.pushKV("hash",index->GetBlockHash().GetHex());point.pushKV("merit_target_q16",uint64_t(quote->header_q16));
         point.pushKV("gold_count",uint64_t(quote->scientific_count));
+        point.pushKV("merit_target_numerator",quote->numerator.convert_to<std::string>());
+        point.pushKV("merit_target_denominator",quote->denominator.convert_to<std::string>());
+        point.pushKV("merit_target_source",quote->hourly?"authenticated_hourly_returns":"historical_elapsed_controller");
         point.pushKV("window_seconds",std::min(window_seconds,timestamps[i]-origin));
         point.pushKV("reported_positions",reported.convert_to<std::string>());
         point.pushKV("audited_positions",audited.convert_to<std::string>());points.push_back(point);
