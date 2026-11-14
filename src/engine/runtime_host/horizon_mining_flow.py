@@ -653,10 +653,12 @@ class MiningFlow:
 
     def finalize_reports(self):
         while not self.worker.quitting.is_set():
+            if not self.worker.running.wait(.1):
+                continue
             try:
                 acknowledge = getattr(getattr(self.worker, 'source', None), 'acknowledge_preparation', None)
                 changed = self.preseal.pump(self.finalizer, self.outbox,
-                                           cancelled=self.worker.quitting.is_set,
+                                           cancelled=lambda: self.worker.quitting.is_set() or not self.worker.running.is_set(),
                                            on_sealed=(lambda work: acknowledge(work['ticket'])) if callable(acknowledge) else None)
                 if changed:
                     self.changed.set()
@@ -741,6 +743,10 @@ class MiningFlow:
                              step=("session_index_writer_admission"
                                    if observation.get("stage") == "writer_admission"
                                    else "session_index_checkpoint"), causes=causes)))
+            return
+        from horizon_gpu_queue import retryable_storage_error
+        if retryable_storage_error(error):
+            self.worker.message('Storage is unavailable. Work is retained and will retry automatically.', 'Waiting for storage')
             return
         self.worker.message(str(error), "Needs attention")
 

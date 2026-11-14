@@ -37,6 +37,7 @@ class EngineHostBuilderTests(unittest.TestCase):
                 payload = self.build(platform, output)
                 raw = (output / 'ENGINE-HOST-SOURCE.json').read_bytes()
                 receipt = json.loads(raw)
+                self.assertEqual(receipt['component_version'],json.loads((ROOT/'tools/component_versions.json').read_bytes())['gpu'])
                 self.assertEqual(receipt['executable_sha256'], hashlib.sha256(payload).hexdigest())
                 self.assertEqual(receipt['sources']['tools/build_horizon_engine_host.py'],
                                  hashlib.sha256(SCRIPT.read_bytes()).hexdigest())

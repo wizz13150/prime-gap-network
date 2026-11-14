@@ -49,6 +49,25 @@ class ProviderFixture:
 
 
 class PreparationResolverTests(unittest.TestCase):
+    def test_OFF_cancels_preparation_but_ON_resumes_resident_lane(self):
+        entered=threading.Event();cancelled=threading.Event();ready=threading.Event()
+        enabled=threading.Event();enabled.set();provider=ProviderFixture();original=provider.pump
+        def produce(**resources):
+            if not entered.is_set():
+                entered.set()
+                deadline=__import__('time').monotonic()+2
+                while not resources['cancelled']():
+                    if __import__('time').monotonic()>deadline:raise AssertionError('OFF was not delivered')
+                    __import__('time').sleep(.01)
+                cancelled.set();raise InterruptedError('controlled OFF')
+            result=original(**resources);ready.set();return result
+        provider.pump=produce
+        r=resolver.PreparationResolver(self.root/'controlled',provider,logical_cpu=0,memory_mib=128,timeout=1,prefetch=True)
+        self.addCleanup(r.close);r.bind_run_control(enabled);r.register([self.ticket(1)])
+        self.assertTrue(entered.wait(2));enabled.clear();self.assertTrue(cancelled.wait(2))
+        self.assertTrue(r._thread.is_alive());self.assertFalse(ready.is_set())
+        enabled.set();self.assertTrue(ready.wait(3));self.assertTrue(r._thread.is_alive())
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.provider=ProviderFixture()

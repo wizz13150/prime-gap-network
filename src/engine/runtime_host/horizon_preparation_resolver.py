@@ -41,20 +41,31 @@ class PreparationResolver:
     def _stopped(self):
         return self._closed.is_set()or self.stopping.is_set()
 
+    def bind_run_control(self, enabled):
+        self.enabled = enabled
+        self._wake.set()
+
+    def _cancelled(self):
+        enabled = getattr(self, 'enabled', None)
+        return self._stopped() or enabled is not None and not enabled.is_set()
+
     def _pump_once(self):
         consumer=SessionControllerLock(self.consumer)
         try:
-            if self._stopped():raise InterruptedError('Source preparation retained for restart')
+            if self._cancelled():raise InterruptedError('Source preparation retained for restart')
             self._batch()
-            if self._stopped():raise InterruptedError('Source preparation retained for restart')
-            return self.provider.pump(**self.resources,cancelled=self._stopped)
+            if self._cancelled():raise InterruptedError('Source preparation retained for restart')
+            return self.provider.pump(**self.resources,cancelled=self._cancelled)
         finally:consumer.release()
 
     def _prefetch(self):
         while not self._stopped():
+            enabled = getattr(self, 'enabled', None)
+            if enabled is not None and not enabled.wait(.2):
+                continue
             if not self._wake.wait(.2):continue
             self._wake.clear()
-            while not self._stopped():
+            while not self._cancelled():
                 try:
                     if not self._pump_once():break
                     self.last_prefetch_error=None
@@ -65,6 +76,10 @@ class PreparationResolver:
                     # Preserve the durable failed/recoverable job. A later
                     # registration or explicit resolve may retry eligible work.
                     break
+            # OFF cancels one preparation, not the resident preparation lane.
+            # Preserve its wake until a later ON resumes the retained inputs.
+            if not self._stopped() and self._cancelled():
+                self._wake.set()
 
     def close(self):
         self._closed.set();self._wake.set()
@@ -221,7 +236,7 @@ class PreparationResolver:
 
     def __call__(self, configuration):
         deadline = time.monotonic() + 2 * self.resources['timeout'] + 10
-        while not self._stopped():
+        while not self._cancelled():
             row = self._work(configuration)
             if row['plan'] is not None:
                 _, job, _ = self.provider._input(row['plan'])
