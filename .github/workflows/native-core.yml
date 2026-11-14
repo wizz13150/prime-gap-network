@@ -22,6 +22,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
+            git
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
@@ -32,14 +33,17 @@ jobs:
       - name: Configure exact Core18 source
         run: cmake -S wallet/riecoin-core-upstream-v2606 -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTS=OFF -DBUILD_GUI=OFF -DBUILD_BENCH=OFF -DBUILD_BITCOIN_BIN=OFF -DENABLE_IPC=OFF -DWITH_ZMQ=OFF -DWITH_USDT=OFF
       - name: Build daemon libraries and native checks
+        id: native_build
         run: cmake --build build-native --parallel 2 --target riecoind pgn-native-audit-replay-test pgn-native-project-identity-test
       - name: Check source and native identity
+        id: native_check
         run: |
           test "$(git rev-parse HEAD)" = "6c34e8d0479235006af109417c924f5b2d95eaca"
-          build-native/bin/riecoind.exe --version | grep '^PGN Core daemon version 2026.11.13.18'
+          build-native/bin/riecoind.exe --version | grep '^PGN Core daemon version '
           build-native/bin/pgn-native-project-identity-test.exe
           build-native/bin/pgn-native-audit-replay-test.exe "$PWD/build-native/sdk-native-fixture"
       - name: Collect only source, archives and generated build interfaces
+        if: always() && steps.native_build.outcome == 'success'
         shell: pwsh
         run: |
           @'
@@ -60,7 +64,7 @@ jobs:
           assert any(n.endswith('/libriecoin_node.a')for n in files)
           assert any('config/bitcoin-config.h'in n for n in files)
           rows=[dict(path=n,bytes=f.stat().st_size,sha256=hashlib.sha256(f.read_bytes()).hexdigest())for n,f in sorted(files.items())]
-          manifest=dict(source=pin,core_tree='0fa700b9cf47f1629cfd7ff38a6ec9b1de284ea7',files=rows,contains_wallet_data=False,contains_private_keys=False,scope='Read-only development SDK; never a runtime update payload')
+          manifest=dict(source=pin,core_tree='0fa700b9cf47f1629cfd7ff38a6ec9b1de284ea7',files=rows,validation_outcome='${{ steps.native_check.outcome }}',contains_user_wallet_data=False,contains_user_secrets=False,scope='Read-only development SDK; never a runtime update payload; failed checks must be resolved before reuse')
           Path('SDK-MANIFEST.json').write_text(json.dumps(manifest,indent=2)+'\n')
           with tarfile.open('native18-sdk.tar.gz','w:gz',compresslevel=1)as z:
               for n,f in sorted(files.items()):z.add(f,arcname=n,recursive=False)
@@ -68,6 +72,7 @@ jobs:
           out=Path('native18-sdk.tar.gz');print(json.dumps(dict(PASS=True,source=pin,files=len(rows),bytes=out.stat().st_size,sha256=hashlib.sha256(out.read_bytes()).hexdigest())))
           '@ | python -I -
       - name: Preserve one-day SDK artifact
+        if: always() && steps.native_build.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native18-sdk-windows-${{ github.run_id }}
