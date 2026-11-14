@@ -97,6 +97,29 @@ jobs:
           path: native-artifact
           if-no-files-found: error
           retention-days: 7
+      - name: Prepare private hourly activation in this disposable build
+        shell: pwsh
+        run: python tools/prepare_hourly_node_fixture.py --phase prepare
+      - name: Rebuild the private hourly daemon
+        run: cmake --build build-native --parallel 2 --target riecoind
+      - name: Collect private hourly image without changing the production artifact
+        run: |
+          mkdir -p native-hourly-fixture
+          cp native-artifact/* native-hourly-fixture/
+          cp build-native/bin/riecoind.exe native-hourly-fixture/pgn-core.exe
+      - name: Fingerprint the private hourly Windows image
+        shell: pwsh
+        run: python tools/prepare_hourly_node_fixture.py --phase collect
+      - name: Verify private hourly image on disconnected fresh genesis
+        shell: pwsh
+        run: python tests/native_genesis_crash_recovery.py --core native-hourly-fixture/pgn-core.exe --expected-version 2026.11.13.18 --report native-hourly-fixture/genesis-crash.json
+      - name: Preserve private hourly fixture separately
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-hourly-fixture-windows-${{ github.run_id }}
+          path: native-hourly-fixture
+          if-no-files-found: error
+          retention-days: 3
 
   native-ubuntu:
     name: Native ubuntu Core and identity
@@ -149,3 +172,22 @@ jobs:
           path: native-artifact
           if-no-files-found: error
           retention-days: 7
+      - name: Prepare private hourly activation in this disposable build
+        run: python3 tools/prepare_hourly_node_fixture.py --phase prepare
+      - name: Rebuild the private hourly daemon
+        run: cmake --build build-native --parallel 2 --target riecoind
+      - name: Collect private hourly image without changing the production artifact
+        run: |
+          mkdir -p native-hourly-fixture
+          cp native-artifact/* native-hourly-fixture/
+          cp build-native/bin/riecoind native-hourly-fixture/pgn-core
+          python3 tools/prepare_hourly_node_fixture.py --phase collect
+      - name: Verify private hourly image on disconnected fresh genesis
+        run: python3 tests/native_genesis_crash_recovery.py --core native-hourly-fixture/pgn-core --expected-version 2026.11.13.18 --report native-hourly-fixture/genesis-crash.json
+      - name: Preserve private hourly fixture separately
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-hourly-fixture-ubuntu-${{ github.run_id }}
+          path: native-hourly-fixture
+          if-no-files-found: error
+          retention-days: 3
