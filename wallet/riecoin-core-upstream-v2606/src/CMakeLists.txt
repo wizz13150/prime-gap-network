@@ -522,6 +522,9 @@ target_link_libraries(pgn-native-hourly-consensus-quote-test PRIVATE core_interf
 add_executable(pgn-native-hourly-consensus-math-test EXCLUDE_FROM_ALL pgn/hourly_consensus_quote_test.cpp)
 target_link_libraries(pgn-native-hourly-consensus-math-test PRIVATE core_interface riecoin_node univalue)
 
+add_executable(pgn-hourly-receipt-histogram-test EXCLUDE_FROM_ALL pgn/hourly_receipt_histogram_test.cpp)
+target_link_libraries(pgn-hourly-receipt-histogram-test PRIVATE core_interface)
+
 add_executable(pgn-native-audit-config-test EXCLUDE_FROM_ALL pgn/native_audit_config_test.cpp)
 target_link_libraries(pgn-native-audit-config-test PRIVATE core_interface riecoin_node univalue)
 

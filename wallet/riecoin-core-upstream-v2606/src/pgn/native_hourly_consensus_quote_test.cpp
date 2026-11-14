@@ -71,7 +71,7 @@ int main(int argc,char** argv){
     const EncodingLimits encoding{10002,1048576,32,1};
     const CommittedGapPolicy evidence_policy{encoding,{{128,32,32},10000},{256,256,256},{128,64},1,1};
     const RangePolicyReadBudget policy_budget{16,4096,16384,8192};
-    const RangePoolDefinition pool{lower,Integer{"1000000000000000"},2,1,10};
+    const RangePoolDefinition pool{lower,Integer{"200000000000000"},2,1,10};
     const auto range_script=BuildCandidateRangePolicyEnvelope(pool,policy_budget);
     const auto science_script=BuildCandidateSciencePolicyEnvelope(ScienceVerificationDefinition{1,evidence_policy,encoding},policy_budget);
     const auto target_script=BuildCandidateNativeRetargetEnvelope({65536,65536,64U*65536U,600,86400},policy_budget);
@@ -300,12 +300,39 @@ int main(int argc,char** argv){
     exact.target_numerator=641;exact.target_denominator=10;need(!EncodeNativeScienceTarget(exact),"Oversized header target accepted");
     exact.target_numerator=0;need(!EncodeNativeScienceTarget(exact),"Zero scientific target accepted");
     exact.target_numerator=281;exact.target_denominator=0;need(!EncodeNativeScienceTarget(exact),"Zero target denominator accepted");
+    const auto* historical_parent=audit_tip;
+    const auto historical_quote=future_quote->quote;
+    for(unsigned i=0;i<12;++i)append({},11200+i);
+    CCoinsViewDB latest_db{{.path=path/"hourly-latest",.cache_bytes=1<<20,.memory_only=true,.wipe_data=false},{}};
+    CCoinsViewCache latest_view{&latest_db};latest_view.SetBestBlock(audit_tip->GetBlockHash());
+    latest_view.StagePgnFactCommit({{},FactHead{chain,audit_tip->GetBlockHash()},{}});
+    need(audit_tip->GetMedianTimePast()/3600*3600==18000,"Historical-pruning fixture clock changed");
+    const auto recent_after_prune=read_receipts(latest_view,*audit_tip,history);
+    need(recent_after_prune&&recent_after_prune->empty(),"Old detailed receipt did not leave the recent window");
+    auto historical=pgn::discussion::ReadNativeHourlyHistory(latest_view,*audit_tip,*ranges.policy,history,policy_budget,schedule,signature_budget,quote_cache);
+    need(historical.history.has_value(),"Authenticated historical counter projection missing");
+    const auto old_from_later=historical.history->QuoteAt(historical_parent->nHeight,historical_parent->GetBlockHash());
+    need(old_from_later.quote&&old_from_later.quote->snapshot.counts==historical_quote->snapshot.counts&&
+         old_from_later.quote->target.header_q16==historical_quote->target.header_q16,
+         "Pruning recent rows changed an earlier authenticated hourly quote");
+    const auto latest_quote=historical.history->QuoteAt(audit_tip->nHeight,audit_tip->GetBlockHash());
+    uint64_t latest_count=0;need(latest_quote.quote.has_value(),"Latest hourly quote missing");
+    for(auto count:latest_quote.quote->snapshot.counts)latest_count+=count;
+    need(latest_count==0,"Old receipts leaked into a later empty hourly window");
+    quote_cache={};
+    const auto cold_historical=pgn::discussion::ReadNativeHourlyHistory(latest_view,*audit_tip,*ranges.policy,history,policy_budget,schedule,signature_budget,quote_cache);
+    need(cold_historical.history.has_value(),"Cold historical counter replay missing");
+    const auto cold_old=cold_historical.history->QuoteAt(historical_parent->nHeight,historical_parent->GetBlockHash());
+    need(cold_old.quote&&cold_old.quote->snapshot==old_from_later.quote->snapshot,"Cold replay changed a historical hourly snapshot");
+    need(!pgn::discussion::ReadNativeHourlyHistory(latest_view,*audit_tip,*ranges.policy,quote_missing,policy_budget,schedule,signature_budget,quote_cache).history,
+         "Missing archive borrowed an old sealed historical projection");
     const auto duty=InspectAutomaticNativeWorkDuty(*restored_self,*audit_tip->GetAncestor(9),GetScriptForDestination(WitnessV0KeyHash(known(2).GetPubKey())),NativeDutySpent{},0);need(duty.checked.proof&&duty.references.size()==2,"Self history cannot serve ordinary cycle");
 
     // Real native index ancestry and authenticated alternate report bytes.
     const auto second_report=commitment_for(hashes[1]);
     const auto report_b=make_block(parent,{CTxOut{0,*BuildNativeReportEnvelope(second_report)}},501);
     const auto report_b_hash=report_b.GetHash();CBlockIndex report_b_index{report_b};
+    need(!historical.history->QuoteAt(4,report_b_hash).quote,"Historical quote accepted an orphan identity at the same height");
     report_b_index.phashBlock=&report_b_hash;report_b_index.pprev=&parent;report_b_index.nHeight=4;report_b_index.nTx=1;report_b_index.nStatus=BLOCK_VALID_SCRIPTS;report_b_index.BuildSkip();
     CCoinsViewDB coins_b{{.path=path/"coins-b",.cache_bytes=1<<20,.memory_only=true,.wipe_data=false},{}};
     CCoinsViewCache view_b{&coins_b};view_b.SetBestBlock(report_b_hash);view_b.StagePgnFactCommit({{},FactHead{chain,report_b_hash},{}});

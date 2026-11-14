@@ -2,6 +2,7 @@
 #pragma once
 #include <pgn/native_report_audit.h>
 #include <pgn/hourly_return_snapshot.h>
+#include <pgn/hourly_receipt_histogram.h>
 #include <algorithm>
 #include <map>
 #include <vector>
@@ -26,6 +27,7 @@ struct Pending {
 struct State {
     std::map<ReceiptId,Receipt> recent;
     std::vector<Pending> pending;
+    HourlyReceiptHistogram histogram;
 };
 struct Context {
     uint256 policy;
@@ -43,7 +45,7 @@ template<>struct ExtraCodec<pgn::discussion::complete_return_detail::State>{
     using State=pgn::discussion::complete_return_detail::State;
     static constexpr uint8_t id=2;
     static void Write(DataStream& s,const State& state,std::vector<std::pair<uint256,size_t>>*){
-        s<<uint8_t{1}<<uint64_t(state.recent.size());
+        s<<uint8_t{2}<<uint64_t(state.recent.size());
         for(const auto& [id,row]:state.recent){
             s<<id<<row.fact.first_received_utc<<row.fact.non_expired_at_first_receipt;
             s<<bool(row.fact.failure_known_utc);if(row.fact.failure_known_utc)s<<*row.fact.failure_known_utc;
@@ -51,10 +53,12 @@ template<>struct ExtraCodec<pgn::discussion::complete_return_detail::State>{
         }
         s<<uint64_t(state.pending.size());
         for(const auto& row:state.pending)s<<row.request<<row.block<<row.root<<row.height<<row.parent_mtp<<row.non_expired;
+        s<<state.histogram.first_bin<<uint64_t(state.histogram.bins.size());
+        for(auto count:state.histogram.bins)s<<count;
     }
     static State Read(DataStream& s){
         State state;uint8_t version{};uint64_t count{};s>>version>>count;
-        RequireAudit(version==1&&count<=s.size()/100,"Invalid hourly receipt checkpoint");
+        RequireAudit(version==2&&count<=s.size()/100,"Invalid hourly receipt checkpoint");
         while(count--){
             pgn::discussion::ReceiptId id;pgn::discussion::complete_return_detail::Receipt row;
             bool failed{};s>>id>>row.fact.first_received_utc>>row.fact.non_expired_at_first_receipt>>failed;
@@ -69,6 +73,11 @@ template<>struct ExtraCodec<pgn::discussion::complete_return_detail::State>{
             s>>row.request>>row.block>>row.root>>row.height>>row.parent_mtp>>row.non_expired;
             RequireAudit(row.height>0&&row.parent_mtp>=0,"Invalid pending receipt clock");state.pending.push_back(row);
         }
+        s>>state.histogram.first_bin>>count;
+        RequireAudit(count<=s.size()/sizeof(uint64_t),"Invalid hourly counter checkpoint");
+        state.histogram.bins.reserve(size_t(count));
+        while(count--){uint64_t value;s>>value;state.histogram.bins.push_back(value);}
+        RequireAudit(state.histogram.Valid(),"Invalid hourly counter shape");
         return state;
     }
 };
@@ -94,6 +103,8 @@ inline bool Flush(const NativeAuditLedger& ledger,const CBlockIndex& through,Sta
         const auto [old,inserted]=state.recent.emplace(id,receipt);
         if(!inserted&&(old->second.block!=receipt.block||old->second.root!=receipt.root||
                        old->second.height!=receipt.height||old->second.fact!=receipt.fact))return false;
+        if(inserted&&receipt.fact.non_expired_at_first_receipt&&
+           !state.histogram.Add(receipt.fact.first_received_utc))return false;
     }
     state.pending.clear();
     return true;
@@ -117,7 +128,7 @@ inline std::optional<std::vector<AdmittedReturn>> ReadNativeCompleteReturns(
     const pgn::core::RangePolicyReadBudget& policy_budget,
     const pgn::core::RangeScheduleBudget& schedule_budget,
     pgn::core::ScriptWorkBudget signature_budget,
-    complete_return_detail::Cache& cached)
+    complete_return_detail::Cache& cached,HourlyReceiptHistogram* histogram=nullptr)
 {
     using namespace pgn::core;
     using namespace complete_return_detail;
@@ -155,12 +166,15 @@ inline std::optional<std::vector<AdmittedReturn>> ReadNativeCompleteReturns(
         if(state.recent.size()>(std::numeric_limits<size_t>::max()-sizeof(State))/per)return {};
         const auto used=sizeof(State)+state.recent.size()*per;
         if(state.pending.capacity()>(std::numeric_limits<size_t>::max()-used)/sizeof(Pending))return {};
-        return used+state.pending.capacity()*sizeof(Pending);
+        const auto with_pending=used+state.pending.capacity()*sizeof(Pending);
+        if(state.histogram.bins.capacity()>(std::numeric_limits<size_t>::max()-with_pending)/sizeof(uint64_t))return {};
+        return with_pending+state.histogram.bins.capacity()*sizeof(uint64_t);
     };
     auto result=native_audit_replay_detail::ReadIncremental(view,parent,history,policy_budget,
         schedule_budget,signature_budget,cached,Context{policy.Id()},before,charge);
     if(!result||!Flush(result->audits,parent,result->extra))return {};
     Prune(result->extra,parent.GetMedianTimePast());
+    if(histogram)*histogram=result->extra.histogram;
     // Cache pruning is a local optimization only. A failed cache admission
     // never truncates, drops or changes the returned consensus-derived facts.
     const auto bytes=charge(result->extra);
