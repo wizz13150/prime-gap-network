@@ -2,6 +2,9 @@
 #include <pgn/native_audit_replay_test_helpers.h>
 #include <pgn/native_work_duty.h>
 #include <pgn/native_hourly_consensus_quote.h>
+#include <pgn/native_hourly_activation.h>
+#include <pgn/native_science_target.h>
+#include <pgn/native_retarget_policy.h>
 #include <deque>
 #include <pgn/chain_science_policy.h>
 #include <pgn/chain_monetary_policy.h>
@@ -22,6 +25,13 @@
 #include <stdexcept>
 extern const TranslateFn G_TRANSLATION_FUN=[](const char* text){ return std::string(text); };
 using namespace pgn::core;
+static uint256 hourly_fixture_genesis;
+// Only this executable selects a future hourly rule for its synthetic genesis.
+// The production activation CPP deliberately returns nullopt.
+std::optional<NativeHourlyMeritActivation> pgn::core::ConfiguredNativeHourlyMerit(const uint256& genesis){
+    if(genesis!=hourly_fixture_genesis||genesis.IsNull())return {};
+    return NativeHourlyMeritActivation{genesis,10800};
+}
 // This executable alone supplies a fixed synthetic network policy. It cannot
 // activate the production daemon, whose policy CPP returns nullopt.
 std::optional<NativeAuditOperatorRules> pgn::core::ConfiguredNativeAuditOperatorRules(const uint256& chain){
@@ -64,14 +74,16 @@ int main(int argc,char** argv){
     const RangePoolDefinition pool{lower,Integer{"1000000000000000"},2,1,10};
     const auto range_script=BuildCandidateRangePolicyEnvelope(pool,policy_budget);
     const auto science_script=BuildCandidateSciencePolicyEnvelope(ScienceVerificationDefinition{1,evidence_policy,encoding},policy_budget);
+    const auto target_script=BuildCandidateNativeRetargetEnvelope({65536,65536,64U*65536U,600,86400},policy_budget);
     const CAmount unit=PGN_ATOMIC_UNITS_PER_COIN;
     const MonetaryPolicyDefinition money_definition{99000000*unit,1000000*unit,{200*unit,1},100,70,25,5,FeeRoutingDefinition{100,100}};
     const auto money_script=BuildCandidateMonetaryPolicyEnvelope(money_definition,policy_budget);
-    need(range_script&&science_script&&money_script,"Private policy envelopes rejected");
+    need(range_script&&science_script&&money_script&&target_script,"Private policy envelopes rejected");
     std::array<CBlock,4> blocks; std::array<uint256,4> hashes;
     CMutableTransaction coinbase; coinbase.vin.resize(1); coinbase.vin[0].prevout.SetNull(); coinbase.vin[0].scriptSig=CScript{}<<1<<OP_0;
-    coinbase.vout={CTxOut{0,*range_script},CTxOut{0,*science_script},CTxOut{0,*money_script}};
+    coinbase.vout={CTxOut{0,*range_script},CTxOut{0,*science_script},CTxOut{0,*money_script},CTxOut{0,*target_script}};
     blocks[0].nTime=7300; blocks[0].vtx={MakeTransactionRef(coinbase)}; blocks[0].hashMerkleRoot=BlockMerkleRoot(blocks[0]); hashes[0]=blocks[0].GetHash();
+    blocks[0].nNonce=2;blocks[0].nBits=0x207fffff;hashes[0]=blocks[0].GetHash();hourly_fixture_genesis=hashes[0];
     const TicketRequestBudget request_budget{128,128,4096};
     TicketRequest first{chain,hashes[0],0,miner,miner}; auto second=first; second.reward=alternate;
     const auto request_signature=[&](const TicketRequest& request) {
@@ -83,11 +95,11 @@ int main(int argc,char** argv){
     const auto b=BuildTicketRequestEnvelope(second,request_signature(second),request_budget);
     need(a.envelope&&b.envelope,"Native signed request envelopes rejected");
     coinbase.vout={CTxOut{0,a.envelope->Script()},CTxOut{0,b.envelope->Script()}};
-    blocks[1].nTime=7400; blocks[1].hashPrevBlock=hashes[0]; blocks[1].vtx={MakeTransactionRef(coinbase)};
+    blocks[1].nTime=7400;blocks[1].nNonce=2;blocks[1].nBits=0x207fffff; blocks[1].hashPrevBlock=hashes[0]; blocks[1].vtx={MakeTransactionRef(coinbase)};
     blocks[1].hashMerkleRoot=BlockMerkleRoot(blocks[1]); hashes[1]=blocks[1].GetHash();
     coinbase.vout={CTxOut{0,CScript{}<<OP_RETURN}};
     for (size_t height=2;height<blocks.size();++height) {
-        blocks[height].nTime=7500+height; blocks[height].hashPrevBlock=hashes[height-1]; blocks[height].vtx={MakeTransactionRef(coinbase)};
+        blocks[height].nTime=7500+height;blocks[height].nNonce=2;blocks[height].nBits=0x207fffff; blocks[height].hashPrevBlock=hashes[height-1]; blocks[height].vtx={MakeTransactionRef(coinbase)};
         blocks[height].hashMerkleRoot=BlockMerkleRoot(blocks[height]); hashes[height]=blocks[height].GetHash();
     }
     std::vector<std::unique_ptr<CBlockIndex>> indices;
@@ -107,6 +119,7 @@ int main(int argc,char** argv){
     const auto science=ReadChainSciencePolicy(view,parent,history,replay.archive,policy_budget);
     const auto money=ReadChainMonetaryPolicy(view,parent,history,replay.archive,policy_budget);
     need(ranges.policy&&science.policy&&money.policy,"Policies were not authenticated from fixture genesis");
+    need(NativeScientificHeaderTarget(*science.policy)==std::optional<uint32_t>{65536},"Legacy native header encoding changed");
     const RangeScheduleBudget schedule{64,100,100,replay.archive,scan,{64,4096,1024}};
     auto reserved=DeriveNativeCandidateReservation(view,parent,*ranges.policy,history,schedule,a.envelope->Request().Id());
     need(reserved.reservation.has_value(),"First complete native reservation missing");
@@ -138,7 +151,7 @@ int main(int argc,char** argv){
     };
     const auto make_block=[&](const CBlockIndex& previous,std::vector<CTxOut> outputs,unsigned time){
         CMutableTransaction tx;tx.vin.resize(1);tx.vin[0].prevout.SetNull();tx.vin[0].scriptSig=CScript{}<<OP_1;
-        tx.vout=std::move(outputs);CBlock block;block.hashPrevBlock=previous.GetBlockHash();block.nTime=time+7200;
+        tx.vout=std::move(outputs);CBlock block;block.hashPrevBlock=previous.GetBlockHash();block.nTime=time+7200;block.nNonce=2;block.nBits=0x207fffff;
         block.vtx={MakeTransactionRef(tx)};block.hashMerkleRoot=BlockMerkleRoot(block);return block;
     };
     UniValue disclosure{UniValue::VOBJ},computed{UniValue::VOBJ},counts{UniValue::VARR},best{UniValue::VARR};
@@ -253,6 +266,40 @@ int main(int argc,char** argv){
     need(future_quote&&future_quote->quote&&future_quote->quote->snapshot.hour==10800,"Canonical clock did not enter next hour");
     uint64_t projected_returns=0;for(auto count:future_quote->quote->snapshot.counts)projected_returns+=count;
     need(projected_returns==1,"Authenticated complete return was not counted exactly once in a future hourly window");
+    CCoinsViewDB future_db{{.path=path/"hourly-future",.cache_bytes=1<<20,.memory_only=true,.wipe_data=false},{}};
+    CCoinsViewCache future_view{&future_db};future_view.SetBestBlock(audit_tip->GetBlockHash());
+    future_view.StagePgnFactCommit({{},FactHead{chain,audit_tip->GetBlockHash()},{}});
+    const auto future_science=ReadChainSciencePolicy(future_view,*audit_tip,history,replay.archive,policy_budget,&schedule,&signature_budget);
+    need(future_science.policy.has_value(),"Hourly target did not enter the actual native science-policy reader");
+    need(future_science.policy->Definition().evidence.target_numerator==future_quote->quote->target.proof_numerator&&
+         future_science.policy->Definition().evidence.target_denominator==future_quote->quote->target.proof_denominator,
+         "Native proof threshold differs from the canonical hourly quote");
+    need(NativeScientificHeaderTarget(*future_science.policy)==std::optional<uint32_t>{future_quote->quote->target.header_q16},
+         "Native template/header identifier differs from the proof threshold");
+    need(ChainSciencePolicyOnBranch(future_view,*audit_tip,*future_science.policy)&&
+         !ChainSciencePolicyOnBranch(view,parent,*future_science.policy),"Hourly policy escaped its exact native parent");
+    need(!ReadChainSciencePolicy(future_view,*audit_tip,history,replay.archive,policy_budget).policy,
+         "An activated consumer without receipt context silently used the old target");
+    need(!ReadChainSciencePolicy(future_view,*audit_tip,quote_missing,replay.archive,policy_budget,&schedule,&signature_budget).policy,
+         "An empty local archive silently authorized a zero/legacy target");
+    const auto old_science=ReadChainSciencePolicy(view,parent,history,replay.archive,policy_budget);
+    need(old_science.policy&&NativeScientificHeaderTarget(*old_science.policy)==std::optional<uint32_t>{65536},
+         "A later hourly activation changed the historical target");
+    auto exact=evidence_policy;
+    for(unsigned tenths=275;tenths<=640;++tenths){
+        exact.target_numerator=tenths;exact.target_denominator=10;
+        const auto decimal=pgn::discussion::QuoteHourlyTarget(tenths,64U*65536U);
+        need(decimal&&EncodeNativeScienceTarget(exact)==std::optional<uint32_t>{decimal->header_q16},
+             "Exact decimal proof/header encoding diverged");
+        need(exact.target_numerator==tenths&&exact.target_denominator==10,"Encoding rewrote the scientific proof threshold");
+    }
+    for(unsigned q=65536;q<64U*65536U;q+=12345){
+        exact.target_numerator=q;exact.target_denominator=65536;
+        need(EncodeNativeScienceTarget(exact)==std::optional<uint32_t>{q},"Historical Q16 threshold changed");
+    }
+    exact.target_numerator=641;exact.target_denominator=10;need(!EncodeNativeScienceTarget(exact),"Oversized header target accepted");
+    exact.target_numerator=0;need(!EncodeNativeScienceTarget(exact),"Zero scientific target accepted");
+    exact.target_numerator=281;exact.target_denominator=0;need(!EncodeNativeScienceTarget(exact),"Zero target denominator accepted");
     const auto duty=InspectAutomaticNativeWorkDuty(*restored_self,*audit_tip->GetAncestor(9),GetScriptForDestination(WitnessV0KeyHash(known(2).GetPubKey())),NativeDutySpent{},0);need(duty.checked.proof&&duty.references.size()==2,"Self history cannot serve ordinary cycle");
 
     // Real native index ancestry and authenticated alternate report bytes.
@@ -272,7 +319,7 @@ int main(int argc,char** argv){
     need(!read_receipts(view_admitted,admitted_index,missing),"Missing history became zero activity");
     need(!compare(view_admitted,admitted_index,missing,policy_budget,schedule,signature_budget),"Different empty archive borrowed cached authority");
     need(compare(view_admitted,admitted_index,history,policy_budget,schedule,signature_budget).has_value(),"Recovery after unavailable archive");
-    std::cout<<"{\"PASS\":true,\"whole_state_comparisons\":"<<comparisons<<",\"native_signed_enrollments\":3,\"native_signed_retained_audit_events\":8,\"full_incremental_retained_history\":true,\"retained_receipt_reorg_restored\":true,\"canonical_hourly_quote_from_native_receipts\":true,\"missing_history_never_quotes\":true,\"future_window_nonzero\":true,\"mathematics_tested\":false,\"reorg_and_restore\":true,\"warm_budget_rejections\":true,\"empty_archive_refused\":true}\n";
+    std::cout<<"{\"PASS\":true,\"whole_state_comparisons\":"<<comparisons<<",\"native_signed_enrollments\":3,\"native_signed_retained_audit_events\":8,\"full_incremental_retained_history\":true,\"retained_receipt_reorg_restored\":true,\"canonical_hourly_quote_from_native_receipts\":true,\"missing_history_never_quotes\":true,\"future_window_nonzero\":true,\"native_policy_header_binding\":true,\"historical_target_preserved\":true,\"missing_context_refused\":true,\"exact_decimal_header_encoding\":true,\"mathematics_tested\":false,\"reorg_and_restore\":true,\"warm_budget_rejections\":true,\"empty_archive_refused\":true}\n";
     return 0;
   }catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}
 }

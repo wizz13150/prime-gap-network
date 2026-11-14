@@ -8,12 +8,15 @@ struct ScienceVerificationDefinition {
     uint32_t segments;CommittedGapPolicy evidence;EncodingLimits proof;
 };
 struct ChainSciencePolicyCheck;
+struct RangeScheduleBudget;
+struct ScriptWorkBudget;
 class ChainSciencePolicy {
     uint256 m_chain,m_genesis,m_id,m_effective_parent;ScienceVerificationDefinition m_definition;
     ChainSciencePolicy(uint256 chain,uint256 genesis,uint256 id,ScienceVerificationDefinition definition,uint256 effective_parent={})
         :m_chain(chain),m_genesis(genesis),m_id(id),m_effective_parent(effective_parent),m_definition(std::move(definition)){}
     friend ChainSciencePolicyCheck ReadChainSciencePolicy(const CCoinsView&,const CBlockIndex&,
-        const NativeRequestHistoryArchive&,RequestHistoryArchiveBudget,RangePolicyReadBudget);
+        const NativeRequestHistoryArchive&,RequestHistoryArchiveBudget,RangePolicyReadBudget,
+        const RangeScheduleBudget*,const ScriptWorkBudget*);
 public:
     ChainSciencePolicy(const ChainSciencePolicy&)=default;
     ChainSciencePolicy& operator=(const ChainSciencePolicy&)=default;
@@ -28,7 +31,8 @@ struct ChainSciencePolicyCheck {ChainRangePolicyVerdict verdict;std::optional<Ch
 std::optional<ScienceVerificationDefinition> DecodeCandidateScienceVerificationDefinitionPayload(const Bytes&,RangePolicyReadBudget);
 std::optional<CScript> BuildCandidateSciencePolicyEnvelope(const ScienceVerificationDefinition&,RangePolicyReadBudget);
 ChainSciencePolicyCheck ReadChainSciencePolicy(const CCoinsView&,const CBlockIndex&,
-    const NativeRequestHistoryArchive&,RequestHistoryArchiveBudget,RangePolicyReadBudget);
+    const NativeRequestHistoryArchive&,RequestHistoryArchiveBudget,RangePolicyReadBudget,
+    const RangeScheduleBudget* schedule=nullptr,const ScriptWorkBudget* signature=nullptr);
 bool ChainSciencePolicyOnBranch(const CCoinsView&,const CBlockIndex&,const ChainSciencePolicy&);
 // This fixes the initial candidate verifier configuration only: no retarget,
 // proof-weight/fork rule, economics, coverage or approved mainnet profile.

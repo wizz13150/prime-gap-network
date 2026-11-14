@@ -1,4 +1,5 @@
 #include <pgn/candidate_block_science.h>
+#include <pgn/native_science_target.h>
 #include <pgn/canonical_encoding.h>
 #include <pgn/proposed_ticket_requests.h>
 #include <pgn/native_report_commitment.h>
@@ -84,12 +85,11 @@ NativeBlockScienceCheck VerifyNativeCandidateBlockScience(const CCoinsView& view
     }
     if(!payload)return {NativeBlockScienceVerdict::MissingProof,{},{}};
     const auto ranges=ReadChainRangePolicy(view,parent,history,budget.schedule.archive,budget.policy);
-    const auto policy=ReadChainSciencePolicy(view,parent,history,budget.schedule.archive,budget.policy);
+    const auto policy=ReadChainSciencePolicy(view,parent,history,budget.schedule.archive,budget.policy,&budget.schedule,&budget.signature);
     if(!ranges.policy||!policy.policy)return {NativeBlockScienceVerdict::NativeHistoryHeld,{},{}};
     if(!policy.policy->EffectiveParent().IsNull()){
-        const auto& e=policy.policy->Definition().evidence;
-        const Integer scaled=e.target_numerator*65536/e.target_denominator;
-        if(scaled<1||scaled>64U*65536U||block.nNonce!=0||block.nBits!=scaled.convert_to<uint32_t>())
+        const auto encoded=NativeScientificHeaderTarget(*policy.policy);
+        if(!encoded||block.nNonce!=0||block.nBits!=*encoded)
             return {NativeBlockScienceVerdict::InvalidBlock,{},{}};
     }
     // Requests are NEW proposed bytes, not yet a SCRIPT-valid native ancestor.

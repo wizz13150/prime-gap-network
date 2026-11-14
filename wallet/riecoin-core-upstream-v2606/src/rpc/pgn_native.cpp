@@ -1,6 +1,8 @@
 // Copyright (c) 2026 The PGN developers. MIT.
 // Native current-state work interface. No search, wallet keys or caller seals.
 #include <pgn/native_elapsed_retarget.h>
+#include <pgn/native_hourly_activation.h>
+#include <pgn/native_science_target.h>
 #include <pgn/native_node_options.h>
 #include <pgn/rpc_audit_cache.h>
 #include <pgn/rpc_audit_incremental.h>
@@ -125,7 +127,7 @@ RPCMethod getpgnstate(){
   const auto money=active.CoinsTip().GetPgnIssuanceState();if(!money||!money->pools||!money->partition)
     throw JSONRPCError(RPC_MISC_ERROR,"Native monetary state unavailable; no zero fallback");
   const auto range=ReadChainRangePolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy);
-  const auto science=ReadChainSciencePolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy);
+  const auto science=ReadChainSciencePolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy,&budget.schedule,&budget.signature);
   if(!range.policy||!science.policy)throw JSONRPCError(RPC_MISC_ERROR,"Own native definitions unavailable");
    const auto offset=request.params[0].isNull()?0:request.params[0].getInt<int64_t>(),limit=request.params[1].isNull()?100:request.params[1].getInt<int64_t>();if(offset<0||limit<1||limit>100)throw JSONRPCError(RPC_INVALID_PARAMETER,"Bounded lease page required");
    std::optional<uint256> selected;if(!request.params[2].isNull()){const auto text=request.params[2].get_str();selected=uint256::FromHex(text);if(!selected||selected->IsNull()||selected->GetHex()!=text)throw JSONRPCError(RPC_INVALID_PARAMETER,"Canonical request lookup required");}
@@ -147,7 +149,7 @@ RPCMethod getpgnstate(){
    }
   const auto phase=InspectNativeBootstrapPhase(active.CoinsTip(),tip,manager.m_options.pgn_candidate_bootstrap_budget->maximum_phase_blocks);
   if(phase!=NativeBootstrapPhaseVerdict::Bootstrap&&phase!=NativeBootstrapPhaseVerdict::Scientific)throw JSONRPCError(RPC_MISC_ERROR,"Native phase history held");
-  const auto q=DeriveNextMeritTarget(tip,NativeParameterController(*manager.GetConsensus().pgn_native_proof));
+  const auto q=NativeScientificHeaderTarget(*science.policy);
   if(!q)throw JSONRPCError(RPC_MISC_ERROR,"Native target unavailable");
   UniValue result{UniValue::VOBJ};result.pushKV("genesis",manager.GetConsensus().hashGenesisBlock.GetHex());result.pushKV("height",tip.nHeight);
   result.pushKV("bestblockhash",tip.GetBlockHash().GetHex());result.pushKV("median_time_past",tip.GetMedianTimePast());result.pushKV("phase",phase==NativeBootstrapPhaseVerdict::Bootstrap?"bootstrap":"scientific");
@@ -159,8 +161,15 @@ RPCMethod getpgnstate(){
        result.pushKV("audit_activation_contract",activation->Id().GetHex());result.pushKV("audit_activation_height",activation->height);
    }
   if(money->epochs){result.pushKV("gold_blocks",money->epochs->golds);result.pushKV("last_gold_ledger_height",money->epochs->last_gold_height);}else if(phase==NativeBootstrapPhaseVerdict::Bootstrap){result.pushKV("gold_blocks",0);result.pushKV("last_gold_ledger_height",0);}else throw JSONRPCError(RPC_MISC_ERROR,"Authenticated Gold epoch counters unavailable");
-  result.pushKV("merit_target_q16",uint64_t(q->target_q16));result.pushKV("segments",uint64_t(science.policy->Definition().segments));
-  if(const auto retarget=ConfiguredElapsedRetarget(manager.GetConsensus().hashGenesisBlock)){
+  result.pushKV("merit_target_q16",uint64_t(*q));result.pushKV("segments",uint64_t(science.policy->Definition().segments));
+  result.pushKV("merit_target_numerator",science.policy->Definition().evidence.target_numerator.convert_to<std::string>());
+  result.pushKV("merit_target_denominator",science.policy->Definition().evidence.target_denominator.convert_to<std::string>());
+  const auto hourly=ConfiguredNativeHourlyMerit(manager.GetConsensus().hashGenesisBlock);
+  if(hourly&&tip.GetMedianTimePast()>=hourly->median_time){
+    result.pushKV("merit_retarget_mode","hourly_complete_returns_c1");
+    result.pushKV("merit_retarget_activation_mtp",hourly->median_time);
+    result.pushKV("merit_retarget_minimum_q16",uint64_t(55U*32768U));
+  }else if(const auto retarget=ConfiguredElapsedRetarget(manager.GetConsensus().hashGenesisBlock)){
     result.pushKV("merit_retarget_mode",int64_t(tip.nHeight)+1>=retarget->height?"elapsed_mtp_bounded":"gold_median_legacy");
     result.pushKV("merit_retarget_activation_height",retarget->height);
     result.pushKV("merit_retarget_half_life_seconds",uint64_t(retarget->half_life_seconds));
@@ -313,7 +322,7 @@ RPCMethod getpgnscientificwork(){
   Digest root{};const auto rootBytes=ParseHex(rootText);std::copy(rootBytes.begin(),rootBytes.end(),root.begin());
   const auto history=ReadOwnHistory(manager);const auto& budget=*manager.m_options.pgn_candidate_science_budget;
   const auto range=ReadChainRangePolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy);
-  const auto science=ReadChainSciencePolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy);
+  const auto science=ReadChainSciencePolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy,&budget.schedule,&budget.signature);
   if(!range.policy||!science.policy)throw JSONRPCError(RPC_MISC_ERROR,"Own native policies held");
   const auto allocation=DeriveNativeCandidateReservation(active.CoinsTip(),tip,*range.policy,history.archive,budget.schedule,*id);
   if(!allocation.reservation)throw JSONRPCError(RPC_VERIFY_ERROR,"Request is not eligible at current parent");
@@ -371,10 +380,11 @@ RPCMethod getpgnscientifictemplate(){
   const auto text=request.params[0].get_str();if(text.empty()||text.size()>2*budget.maximum_script_bytes||!IsHex(text))throw JSONRPCError(RPC_INVALID_PARAMETER,"Bounded canonical proof hex required");
   const auto bytes=ParseHex(text);if(HexStr(bytes)!=text)throw JSONRPCError(RPC_INVALID_PARAMETER,"Canonical proof hex required");
   const auto history=ReadOwnHistory(manager);const auto money=ReadChainMonetaryPolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy);
-  const auto target=DeriveNextMeritTarget(tip,NativeParameterController(*manager.GetConsensus().pgn_native_proof));
+  const auto science=ReadChainSciencePolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy,&budget.schedule,&budget.signature);
+  const auto target=science.policy?NativeScientificHeaderTarget(*science.policy):std::nullopt;
   if(!money.policy||!target)throw JSONRPCError(RPC_MISC_ERROR,"Actual monetary policy or target held");
   CMutableTransaction cb;cb.vin.resize(1);cb.vin[0].prevout.SetNull();cb.vin[0].scriptSig=CScript{}<<(tip.nHeight+1)<<OP_0;cb.vout.emplace_back(0,CScript{bytes.begin(),bytes.end()});
-  CBlock block;block.nVersion=4;block.hashPrevBlock=tip.GetBlockHash();block.nTime=std::max<int64_t>(GetTime(),tip.GetMedianTimePast()+1);block.nBits=target->target_q16;block.nNonce=0;
+  CBlock block;block.nVersion=4;block.hashPrevBlock=tip.GetBlockHash();block.nTime=std::max<int64_t>(GetTime(),tip.GetMedianTimePast()+1);block.nBits=*target;block.nNonce=0;
   block.vtx={MakeTransactionRef(cb)};block.hashMerkleRoot=BlockMerkleRoot(block);
   if(GetBlockWeight(block)>MAX_BLOCK_WEIGHT)throw JSONRPCError(RPC_INVALID_PARAMETER,"Proof exceeds block weight");
   const auto checked=VerifyNativeCandidateBlockScience(active.CoinsTip(),tip,history.archive,block,budget);

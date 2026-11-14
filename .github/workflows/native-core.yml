@@ -46,7 +46,7 @@ jobs:
       - name: Configure the actual native daemon and wallet
         run: cmake -S wallet/riecoin-core-upstream-v2606 -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_GUI=OFF -DBUILD_BENCH=OFF -DBUILD_BITCOIN_BIN=OFF -DENABLE_IPC=OFF -DWITH_ZMQ=OFF -DWITH_USDT=OFF
       - name: Compile hourly quote adapters before the full daemon
-        run: cmake --build build-native --parallel 2 --target src/CMakeFiles/pgn-native-hourly-consensus-quote-test.dir/pgn/native_hourly_consensus_quote_test.cpp.obj src/CMakeFiles/pgn-native-hourly-consensus-math-test.dir/pgn/hourly_consensus_quote_test.cpp.obj
+        run: cmake --build build-native --parallel 2 --target src/CMakeFiles/pgn-native-hourly-consensus-quote-test.dir/pgn/native_hourly_consensus_quote_test.cpp.obj src/CMakeFiles/pgn-native-hourly-consensus-math-test.dir/pgn/hourly_consensus_quote_test.cpp.obj src/CMakeFiles/riecoin_node.dir/pgn/chain_science_policy.cpp.obj src/CMakeFiles/riecoin_node.dir/pgn/candidate_block_science.cpp.obj src/CMakeFiles/riecoin_node.dir/rpc/pgn_native.cpp.obj src/CMakeFiles/riecoin_node.dir/pgn/native_hourly_activation.cpp.obj
       - name: Rebuild every native translation unit
         run: cmake --build build-native --parallel 2 --target pgn-native-hourly-consensus-quote-test pgn-native-hourly-consensus-math-test riecoind riecoin-cli pgn-native-audit-replay-test pgn-native-script-work-cache-test pgn-native-bootstrap-dispatch-test pgn-native-project-identity-test pgn-native-leaderboard-test pgn-native-audit-selector-test pgn-native-hourly-complete-returns-test
       - name: Check signed credit replay, forks, budgets and context-bound verification
@@ -112,7 +112,7 @@ jobs:
       - name: Configure the actual native daemon and wallet
         run: cmake -S wallet/riecoin-core-upstream-v2606 -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_GUI=OFF -DBUILD_BENCH=OFF -DBUILD_BITCOIN_BIN=OFF -DENABLE_IPC=OFF -DWITH_ZMQ=OFF -DWITH_USDT=OFF '-DCMAKE_BUILD_RPATH=$ORIGIN'
       - name: Compile hourly quote adapters before the full daemon
-        run: cmake --build build-native --parallel 2 --target src/CMakeFiles/pgn-native-hourly-consensus-quote-test.dir/pgn/native_hourly_consensus_quote_test.cpp.o src/CMakeFiles/pgn-native-hourly-consensus-math-test.dir/pgn/hourly_consensus_quote_test.cpp.o
+        run: cmake --build build-native --parallel 2 --target src/CMakeFiles/pgn-native-hourly-consensus-quote-test.dir/pgn/native_hourly_consensus_quote_test.cpp.o src/CMakeFiles/pgn-native-hourly-consensus-math-test.dir/pgn/hourly_consensus_quote_test.cpp.o src/CMakeFiles/riecoin_node.dir/pgn/chain_science_policy.cpp.o src/CMakeFiles/riecoin_node.dir/pgn/candidate_block_science.cpp.o src/CMakeFiles/riecoin_node.dir/rpc/pgn_native.cpp.o src/CMakeFiles/riecoin_node.dir/pgn/native_hourly_activation.cpp.o
       - name: Rebuild every native translation unit
         run: cmake --build build-native --parallel 2 --target pgn-native-hourly-consensus-quote-test pgn-native-hourly-consensus-math-test riecoind riecoin-cli pgn-native-audit-replay-test pgn-native-script-work-cache-test pgn-native-bootstrap-dispatch-test pgn-native-project-identity-test pgn-native-leaderboard-test pgn-native-audit-selector-test pgn-native-hourly-complete-returns-test
       - name: Check signed credit replay, forks, budgets and context-bound verification

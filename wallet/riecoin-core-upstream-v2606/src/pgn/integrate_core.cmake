@@ -24,6 +24,7 @@ target_sources(riecoin_node PRIVATE ${PROJECT_SOURCE_DIR}/src/pgn/candidate_rang
 target_sources(riecoin_node PRIVATE ${PROJECT_SOURCE_DIR}/src/pgn/candidate_reserved_science.cpp)
 target_sources(riecoin_node PRIVATE ${PROJECT_SOURCE_DIR}/src/pgn/candidate_block_science.cpp)
 target_sources(riecoin_node PRIVATE ${PROJECT_SOURCE_DIR}/src/pgn/chain_science_policy.cpp)
+target_sources(riecoin_node PRIVATE ${PROJECT_SOURCE_DIR}/src/pgn/native_hourly_activation.cpp)
 target_sources(riecoin_node PRIVATE ${PROJECT_SOURCE_DIR}/src/pgn/request_registry.cpp)
 target_sources(riecoin_node PRIVATE ${PROJECT_SOURCE_DIR}/src/pgn/proposed_ticket_requests.cpp)
 target_sources(riecoin_node PRIVATE ${PROJECT_SOURCE_DIR}/src/pgn/request_history_archive.cpp)
