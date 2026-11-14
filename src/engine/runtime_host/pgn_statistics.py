@@ -37,7 +37,7 @@ def statistics_rows(projection, target):
 def statistics_state(value):
     """Copy bounded scalar aggregates only; never query all gaps per frame."""
     return {key: value.get(key) for key in
-            ("count_total", "threshold_counts", "merit_band_counts", "at_or_above_target", "statistics_target")}
+            ("count_total", "threshold_counts", "merit_band_counts", "at_or_above_target", "statistics_target", "rosette_counts")}
 
 
 def saved_range_preview(folder, configuration, limit=10):
@@ -63,7 +63,7 @@ def saved_range_preview(folder, configuration, limit=10):
     records = [r for r in projection["count_top"][:rows] if r[1] not in recent_lowers] + list(reversed(recent))
     statistics = statistics_state(projection)
     if statistics["statistics_target"] != float(configuration.get("target_merit", 32)):
-        statistics.update(merit_band_counts=None, at_or_above_target=None)
+        statistics.update(merit_band_counts=None, at_or_above_target=None, rosette_counts=None)
     return dict(position=positions, tests=int(progress["tests"]), gap_count=int(projection["count_total"]),
                 range_statistics=statistics,
                 gaps=[(int(gap), int(gap)/math.log(int(low)), int(low)) for gap, low, sequence in records])

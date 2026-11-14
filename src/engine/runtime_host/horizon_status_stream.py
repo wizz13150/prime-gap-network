@@ -113,6 +113,14 @@ def ticket_frame(folder, sequence=1, ticket_number=None):
                 frame["phase"] = "Connection lost"
             for key in ("speed_rate", "average_rate", "compute_tests_rate", "observed_active_seconds", "eta_rate"):
                 frame[key] = live.get(key) if live.get("phase") == "SEARCHING" and not frame.get("source_stale") else None
+    # Complete durable session timing survives a late UI attach and a closed
+    # worker. An unknown crash interval must never become a zero-time sample.
+    active = meta.get("active_seconds")
+    if (meta.get("state") == "COMPLETE" and positions == end-start
+            and meta.get("timing_complete") is True and type(active) in (int, float)
+            and math.isfinite(active) and 0 < active < (1 << 63)/1e9):
+        frame["completed_search_timing"] = dict(schema="PGN_COMPLETE_SEARCH_TIMING_V1",
+            ticket_id=cfg["ticket_id"],active_time_ns=str(round(active*1e9)))
     return frame
 
 

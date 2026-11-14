@@ -9,6 +9,7 @@ import copy
 import math
 from bisect import bisect_right
 from pgn_threshold_policy import verify_pin
+from pgn_rosette_statistics import empty_rosettes,add_rosette
 
 
 def encoded(number):
@@ -111,12 +112,13 @@ class Projection:
 
         # Migrate the derived histogram once, from the committed prefix only.
         # Best/Recent are bounded views and cannot supply complete statistics.
-        if self.value.get("statistics_target") != self.target:
+        if self.value.get("statistics_target") != self.target or self.value.get("rosette_counts") is None:
             value = copy.deepcopy(self.value)
             value.update(
                 merit_band_counts={},
                 at_or_above_target=0,
                 statistics_target=self.target,
+                rosette_counts=empty_rosettes(),
             )
             for gap, low in self.db.execute(
                 "SELECT gap,lo FROM gaps WHERE visible=1 AND count_ok=1"
@@ -154,6 +156,7 @@ class Projection:
 
     def add_merit(self, value, gap, low, delta):
         merit = gap / math.log(low)
+        add_rosette(value["rosette_counts"],merit,self.target,delta)
         if merit >= self.target:
             value["at_or_above_target"] += delta
         else:

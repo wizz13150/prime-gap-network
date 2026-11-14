@@ -41,6 +41,14 @@ class MiningScopeArchive {
         QJsonObject out;QSet<QString> keys;for(auto i=a.begin();i!=a.end();++i)keys.insert(i.key());for(auto i=b.begin();i!=b.end();++i)keys.insert(i.key());
         for(const auto& key:keys){if(intersection&&(!a.contains(key)||!b.contains(key)))continue;out.insert(key,QString::number(sum(a.contains(key)?count(a.value(key)):0,b.contains(key)?count(b.value(key)):0)));}return out;
     }
+    static QJsonValue rosettes(const QJsonObject& first,const QJsonObject& second){
+        const auto a=first.value("rosette_counts"),b=second.value("rosette_counts");
+        if(!a.isObject()||!b.isObject())return {};
+        QJsonObject out;for(const auto* key:{"gold","silver","bronze","rust","ordinary"}){
+            if(!a.toObject().contains(key)||!b.toObject().contains(key))return {};
+            out.insert(key,QString::number(sum(count(a.toObject().value(key)),count(b.toObject().value(key)))));
+        }return out;
+    }
     static QJsonArray combineRows(const QJsonArray& first,const QJsonArray& second,bool best){
         QVector<QJsonObject> rows;QSet<QString> seen;
         for(const auto& array:{first,second}){if(array.size()>100)throw std::runtime_error("Too many archive rows");for(const auto& v:array){auto r=v.toObject();const auto key=r.value("lower_prime").toString()+":"+QString::number(r.value("gap").toInt());if(!seen.contains(key)){seen.insert(key);rows.append(r);}}}
@@ -65,8 +73,8 @@ public:
         if(older.isEmpty())return newer;if(newer.isEmpty())return older;
         auto a=older.value("statistics").toObject(),b=newer.value("statistics").toObject();
         const bool same=a.value("statistics_target").isDouble()&&a.value("statistics_target")==b.value("statistics_target");
-        QJsonObject stats{{"count_total",QString::number(sum(count(a.value("count_total")),count(b.value("count_total"))))},{"at_or_above_target",QString::number(sum(count(a.value("at_or_above_target")),count(b.value("at_or_above_target"))))},{"threshold_counts",histogram(a.value("threshold_counts").toObject(),b.value("threshold_counts").toObject(),true)},{"merit_band_counts",histogram(a.value("merit_band_counts").toObject(),b.value("merit_band_counts").toObject(),false)},{"statistics_target",same?a.value("statistics_target"):QJsonValue()},{"mixed_targets",!same}};
-        return {{"statistics",stats},{"best",combineRows(older.value("best").toArray(),newer.value("best").toArray(),true)},{"recent",combineRows(newer.value("recent").toArray(),older.value("recent").toArray(),false)},{"ticket_count",QString::number(sum(count(older.value("ticket_count")),count(newer.value("ticket_count"))))},{"completed_tickets",QString::number(sum(older.value("completed_tickets").toVariant().toLongLong(),newer.value("completed_tickets").toVariant().toLongLong()))},{"observed_golds",QString::number(sum(older.value("observed_golds").toVariant().toLongLong(),newer.value("observed_golds").toVariant().toLongLong()))},{"observed_positions",addDecimal(older.value("observed_positions").toString(),newer.value("observed_positions").toString())},{"observed_tests",addDecimal(older.value("observed_tests").toString(),newer.value("observed_tests").toString())},{"positions",addDecimal(older.value("positions").toString(),newer.value("positions").toString())},{"tests",addDecimal(older.value("tests").toString(),newer.value("tests").toString())},{"active_time_ns",addDecimal(older.value("active_time_ns").toString(),newer.value("active_time_ns").toString())}};
+        QJsonObject stats{{"rosette_counts",rosettes(a,b)},{"count_total",QString::number(sum(count(a.value("count_total")),count(b.value("count_total"))))},{"at_or_above_target",QString::number(sum(count(a.value("at_or_above_target")),count(b.value("at_or_above_target"))))},{"threshold_counts",histogram(a.value("threshold_counts").toObject(),b.value("threshold_counts").toObject(),true)},{"merit_band_counts",histogram(a.value("merit_band_counts").toObject(),b.value("merit_band_counts").toObject(),false)},{"statistics_target",same?a.value("statistics_target"):QJsonValue()},{"mixed_targets",!same}};
+        return {{"statistics",stats},{"best",combineRows(older.value("best").toArray(),newer.value("best").toArray(),true)},{"recent",combineRows(newer.value("recent").toArray(),older.value("recent").toArray(),false)},{"ticket_count",QString::number(sum(count(older.value("ticket_count")),count(newer.value("ticket_count"))))},{"completed_tickets",QString::number(sum(older.value("completed_tickets").toVariant().toLongLong(),newer.value("completed_tickets").toVariant().toLongLong()))},{"observed_golds",QString::number(sum(older.value("observed_golds").toVariant().toLongLong(),newer.value("observed_golds").toVariant().toLongLong()))},{"observed_positions",addDecimal(older.value("observed_positions").toString(),newer.value("observed_positions").toString())},{"observed_tests",addDecimal(older.value("observed_tests").toString(),newer.value("observed_tests").toString())},{"positions",addDecimal(older.value("positions").toString(),newer.value("positions").toString())},{"tests",addDecimal(older.value("tests").toString(),newer.value("tests").toString())},{"active_time_ns",addDecimal(older.value("active_time_ns").toString(),newer.value("active_time_ns").toString())},{ "completed_timed_tickets",QString::number(sum(older.value("completed_timed_tickets").toVariant().toLongLong(),newer.value("completed_timed_tickets").toVariant().toLongLong()))},{"completed_compute_time_ns",addDecimal(older.value("completed_compute_time_ns").toString(),newer.value("completed_compute_time_ns").toString())}};
     }
     bool observe(const QJsonObject& frame){
         if(blocked_)return false;
@@ -87,6 +95,14 @@ public:
             const auto bins=stats.value("merit_band_counts").toObject(),thresholds=stats.value("threshold_counts").toObject();
             if(bins.size()>128||thresholds.size()>128||!stats.value("statistics_target").isDouble())throw std::runtime_error("Incomplete source statistics");
             for(auto i=bins.begin();i!=bins.end();++i)bands=sum(bands,count(i.value()));if(bands!=total)throw std::runtime_error("Merit histogram does not match source count");
+            if(stats.value("rosette_counts").isObject()){
+                const auto medals=stats.value("rosette_counts").toObject();qint64 medalsTotal{};
+                for(const auto* key:{"gold","silver","bronze","rust","ordinary"}){
+                    if(!medals.contains(key))throw std::runtime_error("Incomplete source rosette counts");
+                    medalsTotal=sum(medalsTotal,count(medals.value(key)));
+                }
+                if(medalsTotal!=total||count(medals.value("gold"))!=above)throw std::runtime_error("Source rosette counts disagree with the full histogram");
+            }
             for(auto i=thresholds.begin();i!=thresholds.end();++i)if(count(i.value())>total)throw std::runtime_error("Gap histogram exceeds source count");
             current.insert("ticket_count",QString("1"));
             for(const auto& key:{QString("best"),QString("recent")}){auto rows=current.value(key).toArray();if(rows.size()>100)throw std::runtime_error("Source row budget exceeded");for(int i=0;i<rows.size();++i){auto row=rows[i].toObject();row.insert("target_merit",frame.value("target_merit"));rows[i]=row;}current.insert(key,rows);}
@@ -103,6 +119,17 @@ public:
             const bool fullPrefix=prefix!="0"&&frame.value("positions_total").isString()&&prefix==frame.value("positions_total").toString();
             const bool completed=(sameTicket&&current_.value("completed_tickets")=="1")||frame.value("phase")=="Report ready"||fullPrefix;
             current.insert("completed_tickets",completed?QString("1"):QString("0"));
+            // A complete search duration is supplied by the durable source,
+            // not inferred from whether the UI happened to observe prefix0.
+            const auto timing=frame.value("completed_search_timing").toObject();
+            const auto duration=timing.value("active_time_ns").toString();bool durationOk=false;
+            const auto durationNs=duration.toULongLong(&durationOk);
+            const bool sourceMeasured=completed&&timing.value("schema")=="PGN_COMPLETE_SEARCH_TIMING_V1"&&
+                timing.value("ticket_id")==ticket&&durationOk&&durationNs>0&&QString::number(durationNs)==duration;
+            const bool measuredBefore=sameTicket&&current_.value("completed_timed_tickets")=="1";
+            const bool measured=measuredBefore||sourceMeasured;
+            current.insert("completed_timed_tickets",measured?QString("1"):QString("0"));
+            current.insert("completed_compute_time_ns",measuredBefore?current_.value("completed_compute_time_ns"):QJsonValue(sourceMeasured?duration:QString("0")));
             // Commit only after every counter and histogram has validated.
             // A source-root change is a new producer generation, not a new
             // lifetime history. Retired generations cannot be counted twice.
