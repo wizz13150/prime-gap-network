@@ -1286,6 +1286,7 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME network-admission-binding COMMAND "${Python3_EXECUTABLE}" -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_network_admission_binding.py")
     add_test(NAME network-observation-export COMMAND "${Python3_EXECUTABLE}" -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_network_observation_export.py")
     add_test(NAME component-manifest COMMAND "${Python3_EXECUTABLE}" -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_component_manifest.py")
+    add_test(NAME rosette-statistics COMMAND "${Python3_EXECUTABLE}" -B -I -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rosette_statistics.py")
     set_tests_properties(component-manifest PROPERTIES TIMEOUT 15 LABELS "components;synthetic" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     set_tests_properties(network-observation-export PROPERTIES TIMEOUT 15 LABELS "network;observations;synthetic" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     set_tests_properties(cpu-normal-resources cpu-normal-contracts cpu-normal-flow network-admission-binding

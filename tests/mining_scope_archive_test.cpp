@@ -27,5 +27,47 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);QTemporaryDir dir
   auto future=frame(2,10,7);future.insert("work_role","unrecognized");require(!a.observe(future));require(a.scope()==before&&!a.error().isEmpty());
   search=frame(2,10,2);search.insert("work_role","search");require(a.observe(search));require(a.error().isEmpty()&&total(a)==5&&a.scope().value("ticket_count").toString()=="2");
  }
+ {
+  const auto path=dir.path()+"/measured-search.json";
+  const auto sample=[](int ticket,int positions,quint64 ns,const QString& epoch,bool done,double target=27.5){
+   auto value=frame(ticket,positions,5,target);value.insert("work_role","search");value.insert("compute_time_ns",QString::number(ns));value.insert("compute_epoch",epoch);
+   auto scopes=value.value("scopes").toObject(),data=scopes.value("ticket").toObject(),stats=data.value("statistics").toObject();
+   stats.insert("at_or_above_target",1);stats.insert("merit_band_counts",QJsonObject{{"21",4}});
+   stats.insert("rosette_counts",QJsonObject{{"gold",1},{"silver",1},{"bronze",1},{"rust",1},{"ordinary",1}});
+   data.insert("statistics",stats);scopes.insert("ticket",data);value.insert("scopes",scopes);
+   if(done)value.insert("phase","Report ready");return value;
+  };
+  {
+   MiningScopeArchive a(path);require(a.observe(sample(1,0,0,"epoch1",false)));
+   require(a.observe(sample(1,100,30'000'000'000ULL,"epoch1",true)));
+   require(a.currentScope().value("completed_timed_tickets")=="1");require(a.currentScope().value("completed_compute_time_ns")=="30000000000");
+   require(a.observe(sample(1,100,50'000'000'000ULL,"epoch1",true)));
+   require(a.currentScope().value("completed_compute_time_ns")=="30000000000");
+   require(a.observe(sample(1,100,50'000'000'000ULL,"epoch1",true)));
+   require(a.scope().value("completed_timed_tickets")=="1");a.flush();
+  }
+  {
+   MiningScopeArchive a(path);require(a.error().isEmpty());require(a.currentScope().value("completed_compute_time_ns")=="30000000000");
+   require(a.observe(sample(2,0,0,"epoch2",false,29.3)));require(a.observe(sample(2,100,10'000'000'000ULL,"epoch2",true,29.3)));
+   const auto all=a.scope();require(all.value("completed_timed_tickets")=="2");require(all.value("completed_compute_time_ns")=="40000000000");
+   const auto stats=all.value("statistics").toObject();require(stats.value("mixed_targets").toBool());
+   const auto medals=stats.value("rosette_counts").toObject();for(const auto* key:{"gold","silver","bronze","rust","ordinary"})require(medals.value(key)=="2");
+   auto invalid=sample(2,100,11'000'000'000ULL,"epoch2",true,29.3);auto scopes=invalid.value("scopes").toObject(),data=scopes.value("ticket").toObject(),bad=data.value("statistics").toObject();
+   auto wrong=bad.value("rosette_counts").toObject();wrong.insert("silver",99);bad.insert("rosette_counts",wrong);data.insert("statistics",bad);scopes.insert("ticket",data);invalid.insert("scopes",scopes);
+   require(!a.observe(invalid));require(a.scope()==all);
+  }
+  {
+   MiningScopeArchive a;require(a.observe(sample(1,50,3'000'000'000ULL,"partial",false)));require(a.observe(sample(1,100,10'000'000'000ULL,"partial",true)));
+   require(a.scope().value("completed_timed_tickets")=="0");
+  }
+  {
+   MiningScopeArchive a;require(a.observe(sample(1,0,0,"before-restart",false)));require(a.observe(sample(1,50,5'000'000'000ULL,"before-restart",false)));
+   require(a.observe(sample(1,100,1'000'000'000ULL,"after-restart",true)));require(a.scope().value("completed_timed_tickets")=="0");
+  }
+  {
+   MiningScopeArchive a;require(a.observe(frame(1,10,5)));require(a.observe(sample(2,0,0,"new-version",false)));
+   require(a.scope().value("statistics").toObject().value("rosette_counts").isNull());
+  }
+ }
  std::cout<<"PASS "<<checks<<" compact archive checks\n";
 }

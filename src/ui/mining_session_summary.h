@@ -25,7 +25,7 @@
 #include <functional>
 namespace pgn::ui {
 class MiningSessionSummary final:public QWidget {
-    QJsonObject ticket_,session_,history_,context_,productivity_;QRectF trackedRect_;QString scopeKey_{"session"};QPushButton *ticketButton_,*sessionButton_,*historyButton_;
+    QJsonObject ticket_,session_,history_,context_,productivity_;QRectF trackedRect_,timingRect_,rosettesRect_;QString scopeKey_{"session"};QPushButton *ticketButton_,*sessionButton_,*historyButton_;
     QElapsedTimer received_;QScrollBar* scroll_{};
     QElapsedTimer productivityClock_;ObservedTicketProductivity observedProductivity_;
     QJsonObject coreMetrics_;QString coreGenesis_;QElapsedTimer coreReceived_;bool coreBound_{};
@@ -33,10 +33,17 @@ class MiningSessionSummary final:public QWidget {
     const QJsonObject& scope()const{return scopeKey_=="ticket"?ticket_:scopeKey_=="history"?history_:session_;}
     static QString scalar(const QJsonObject& object,const char* key){return object.contains(key)?object.value(key).toVariant().toString():QString("—");}
     QStringList values()const{
-        if(scope().value("statistics").toObject().isEmpty())return {"—","—","—","—","—","—","—"};
-        const auto& data=scope();const double seconds=scalar(data,"active_time_ns").toDouble()/1e9;const auto secs=qint64(seconds),golds=data.value("observed_golds").toVariant().toLongLong();const auto best=data.value("best").toArray();
-        return {scalar(data,"completed_tickets"),scalar(data,"ticket_count"),positionFormats(scalar(data,"positions")).decimal,positionFormats(scalar(data,"tests")).decimal,data.contains("active_time_ns")?QString("%1:%2:%3").arg(secs/3600,2,10,QChar('0')).arg(secs/60%60,2,10,QChar('0')).arg(secs%60,2,10,QChar('0')):QString("—"),data.contains("observed_golds")?QString::number(golds):QString("—"),best.isEmpty()?QString("—"):QString::number(best.first().toObject().value("gap").toInt())};
+        if(scope().value("statistics").toObject().isEmpty())return QStringList(11,QString("—"));
+        const auto& data=scope();const auto statistics=data.value("statistics").toObject(),medals=statistics.value("rosette_counts").toObject();
+        const double seconds=scalar(data,"active_time_ns").toDouble()/1e9;const auto secs=qint64(seconds);const auto best=data.value("best").toArray();
+        const bool audit=scopeKey_=="ticket"&&context_.value("work_role")=="audit";
+        const auto medal=[&](const char* key){return audit?QString("—"):medals.contains(key)?scalar(medals,key):QString(key)=="gold"?scalar(statistics,"at_or_above_target"):QString("—");};
+        const auto measured=data.value("completed_timed_tickets").toVariant().toLongLong();bool nsOk=false;
+        const auto elapsed=data.value("completed_compute_time_ns").toString().toDouble(&nsOk);
+        const QString average=!audit&&measured>0&&nsOk&&std::isfinite(elapsed)&&elapsed>0?QString::number(elapsed/1e9/measured,'f',1)+" s":QString("—");
+        return {scalar(data,"completed_tickets"),scalar(data,"ticket_count"),positionFormats(scalar(data,"positions")).decimal,positionFormats(scalar(data,"tests")).decimal,data.contains("active_time_ns")?QString("%1:%2:%3").arg(secs/3600,2,10,QChar('0')).arg(secs/60%60,2,10,QChar('0')).arg(secs%60,2,10,QChar('0')):QString("—"),average,medal("gold"),medal("silver"),medal("bronze"),medal("rust"),best.isEmpty()?QString("—"):QString::number(best.first().toObject().value("gap").toInt())};
     }
+
     void mode(const QString& selected){scopeKey_=selected;ticketButton_->setChecked(selected=="ticket");sessionButton_->setChecked(selected=="session");historyButton_->setChecked(selected=="history");QSettings().setValue("mining/statisticsScope",selected);setProperty("pgn_summary_scope",selected);describe();update();if(onScopeChanged)onScopeChanged(selected);}
     void describe(){setProperty("pgn_summary_statistics",scope());setToolTip(QString{});setProperty("pgn_summary_range_start",context_.value("start").toString());setProperty("pgn_summary_range_end",context_.value("end").toString());}
 
@@ -52,7 +59,7 @@ public:
     void presentNetworkMetrics(const QJsonObject& metrics,const QString& genesis){coreBound_=true;coreMetrics_=metrics;coreGenesis_=genesis;coreReceived_.start();update();}
     void presentProductivity(const QJsonArray& devices,const QString& width){if(!productivityClock_.isValid())productivityClock_.start();auto value=ticketProductivity(devices,width);value.insert("observed",observedProductivity_.observe(devices,width,productivityClock_.nsecsElapsed()));if(value==productivity_)return;productivity_=value;setProperty("pgn_ticket_productivity",value);update();}
 protected:
-    bool event(QEvent* event)override{if(event->type()==QEvent::ToolTip){auto* help=static_cast<QHelpEvent*>(event);if(trackedRect_.contains(help->pos())){QToolTip::showText(help->globalPos(),"Distinct tickets included in this view: completed, current or paused. Tickets done counts completed calculation, not network audit acceptance.",this,trackedRect_.toRect());}else QToolTip::hideText();event->accept();return true;}return QWidget::event(event);}
+    bool event(QEvent* event)override{if(event->type()==QEvent::ToolTip){auto* help=static_cast<QHelpEvent*>(event);if(trackedRect_.contains(help->pos())){QToolTip::showText(help->globalPos(),"Distinct tickets included in this view: completed, current or paused. Tickets done counts completed calculation, not network audit acceptance.",this,trackedRect_.toRect());}else if(timingRect_.contains(help->pos())){QToolTip::showText(help->globalPos(),QString("Average compute time of %1 complete search tickets measured from the start. Audits and waiting are excluded. Partial or interrupted clock measurements are excluded.").arg(scope().value("completed_timed_tickets").toVariant().toLongLong()),this,timingRect_.toRect());}else if(rosettesRect_.contains(help->pos())){QToolTip::showText(help->globalPos(),"Discovered rosettes against each ticket's original unrounded target. These counts do not mean audited, accepted or paid. A dash means older statistics did not retain that complete count.",this,rosettesRect_.toRect());}else QToolTip::hideText();event->accept();return true;}return QWidget::event(event);}
     void contextMenuEvent(QContextMenuEvent* event)override{
         QMenu menu(this);auto* detail=menu.addMenu("Tickets/h details");
         const auto observed=productivity_.value("observed").toObject();
@@ -78,7 +85,7 @@ protected:
     }
     void paintEvent(QPaintEvent*)override{
         QPainter p(this);p.setRenderHint(QPainter::TextAntialiasing);
-        const QStringList labels{"Tickets done","Tickets tracked","Integers","PRP tests","Active time","Golds found","Largest gap"};
+        const QStringList labels{"Tickets done","Tickets tracked","Integers","PRP tests","Active time","Avg search/ticket","Gold","Silver","Bronze","Rust","Largest gap"};
         const auto& data=scope();const auto v=values();
         const auto network=networkSummary();
         const auto coverage=networkBitCoverage(coreMetrics_,coreGenesis_,context_.value("bits").toInt(),coreReceived_.isValid()?coreReceived_.elapsed():90001);
@@ -88,8 +95,8 @@ protected:
         constexpr double top=32.,domainHeight=22.,rateHeight=22.,networkHeight=116.;
         const double coverageHeight=hasCoverage?64.:0.;
         const bool footer=height()>=560;
-        const double unit=std::clamp((height()-top-domainHeight-rateHeight-networkHeight-coverageHeight-(footer?34.:0.))/7.,17.,25.);
-        const double contentHeight=top+7*unit+domainHeight+rateHeight+networkHeight+coverageHeight+(footer?34.:0.);
+        const double unit=std::clamp((height()-top-domainHeight-rateHeight-networkHeight-coverageHeight-(footer?34.:0.))/11.,17.,25.);
+        const double contentHeight=top+11*unit+domainHeight+rateHeight+networkHeight+coverageHeight+(footer?34.:0.);
         const bool needsScroll=contentHeight>height();
         {QSignalBlocker blocked(scroll_);scroll_->setRange(0,std::max(0,int(std::ceil(contentHeight-height()))));scroll_->setPageStep(std::max(1,height()-int(top)));}
         scroll_->setVisible(needsScroll);
@@ -111,7 +118,10 @@ protected:
         for(int i=0;i<labels.size();++i){
             const QRectF firstLine(left,y,usable,unit);
             if(i==1)trackedRect_=firstLine.translated(0,-offset).intersected(viewport);
-            row(labels[i],v.value(i),unit,QColor(i==5?"#ffd700":"#e7fff7"));
+            if(i==5)timingRect_=firstLine.translated(0,-offset).intersected(viewport);
+            if(i==6)rosettesRect_=firstLine.translated(0,-offset).intersected(viewport);
+            else if(i>6&&i<=9)rosettesRect_=rosettesRect_.united(firstLine.translated(0,-offset).intersected(viewport));
+            row(labels[i],v.value(i),unit,QColor(i==6?"#ffd700":i==7?"#c0c0c0":i==8?"#cd7f32":i==9?"#ff6474":"#e7fff7"));
 
         }
         const int bits=context_.value("bits").toVariant().toInt(),minimum=context_.value("minimum_gap").toVariant().toInt();

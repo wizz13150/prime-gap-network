@@ -2,6 +2,7 @@
 from bisect import bisect_right
 import math
 from pgn_threshold_policy import at_position, verify_pin
+from pgn_rosette_statistics import empty_rosettes,add_rosette
 
 MAX_PAIRS=65536
 
@@ -49,7 +50,7 @@ def presentation(values,configuration):
     target=float(configuration.get('target_merit',32))
     if not math.isfinite(target)or target<=0:raise ValueError('Invalid statistics target')
     stats=dict(count_total=0,threshold_counts={str(t):0 for t in thresholds},
-               merit_band_counts={},at_or_above_target=0,statistics_target=target)
+               merit_band_counts={},at_or_above_target=0,statistics_target=target,rosette_counts=empty_rosettes())
     counted=[]
     def row(pair):
         lo,hi=pair
@@ -61,6 +62,7 @@ def presentation(values,configuration):
         if gap>=int(at_position(configuration['threshold_policy'],lo)['count_gap']):
             counted.append((lo,hi));stats['count_total']+=1
             merit=gap/math.log(lo)
+            add_rosette(stats["rosette_counts"],merit,target)
             if merit>=target:stats['at_or_above_target']+=1
             else:
                 key=str(math.floor(merit));stats['merit_band_counts'][key]=stats['merit_band_counts'].get(key,0)+1

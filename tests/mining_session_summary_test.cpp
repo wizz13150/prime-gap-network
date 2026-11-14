@@ -62,6 +62,20 @@ int main(int argc,char** argv){
         const auto rates=view.property("pgn_productivity_regions").toJsonArray();double bottom=rates.last().toObject().value("y").toDouble()+rates.last().toObject().value("height").toDouble();for(const auto& item:rows){const auto row=item.toObject();require(row.value("y").toDouble()>=bottom);bottom=row.value("y").toDouble()+row.value("height").toDouble();}
         if(argc>1){const auto dir=QDir(QString::fromLocal8Bit(argv[1]));require(render().save(dir.filePath(QString("network-summary-%1x%2.png").arg(size.width()).arg(size.height()))));auto* scroll=view.findChild<QScrollBar*>("pgn-summary-scroll");if(scroll->isVisible()){scroll->setValue(scroll->maximum());require(render().save(dir.filePath(QString("network-summary-%1x%2-bottom.png").arg(size.width()).arg(size.height()))));scroll->setValue(0);}}
     }
+    // Display exact per-ticket tier aggregates; never derive S/B/R from
+    // rounded one-merit bins or pretend old absent metadata means zero.
+    auto measuredScope=scope;auto measuredStats=scope.value("statistics").toObject();
+    measuredStats.insert("rosette_counts",QJsonObject{{"gold",1},{"silver",2},{"bronze",3},{"rust",4},{"ordinary",721}});
+    measuredScope.insert("statistics",measuredStats);measuredScope.insert("completed_timed_tickets","9");measuredScope.insert("completed_compute_time_ns","1800000000000");
+    view.resize(420,780);view.present(measuredScope,scope,networkPacket);view.findChild<QPushButton*>("pgn-summary-session")->click();render();
+    const auto valueOf=[&](const QString& label){for(const auto& item:view.property("pgn_summary_layout_regions").toJsonArray()){const auto row=item.toObject();if(row.value("label")==label)return row.value("text").toString();}return QString{};};
+    require(valueOf("Gold")=="1"&&valueOf("Silver")=="2"&&valueOf("Bronze")=="3"&&valueOf("Rust")=="4");
+    require(valueOf("Avg search/ticket")=="200.0 s");verifyReadableLayout();
+    if(argc>1)require(render().save(QDir(QString::fromLocal8Bit(argv[1])).filePath("rosettes-and-measured-search.png")));
+    view.findChild<QPushButton*>("pgn-summary-history")->click();render();require(valueOf("Silver")=="—"&&valueOf("Avg search/ticket")=="—");
+    view.presentTicket(measuredScope);auto auditContext=networkPacket;auditContext.insert("work_role","audit");view.present(measuredScope,scope,auditContext);
+    view.findChild<QPushButton*>("pgn-summary-ticket")->click();render();require(valueOf("Gold")=="—"&&valueOf("Silver")=="—"&&valueOf("Avg search/ticket")=="—");
+    view.present(measuredScope,scope,networkPacket);view.findChild<QPushButton*>("pgn-summary-session")->click();render();
     // Real widget clock and adapter, synthetic counters: no mining benchmark.
     QElapsedTimer measured;measured.start();QJsonObject measuredDevice{{"id","observed-widget"},{"kind","GPU"},{"label","Test GPU"},{"active",true},{"selected",true},{"counter_fresh",true},{"counter_epoch","widget-fixture"},{"positions_per_second",1e12},{"completed_positions","0"}};
     view.presentProductivity({measuredDevice},"200000000000000");
