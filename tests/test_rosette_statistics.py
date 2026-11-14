@@ -1,4 +1,5 @@
 import copy,math,tempfile,unittest,sys
+from unittest.mock import patch
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/p)for p in ('src/engine/runtime_host','src/engine/shared_composite','src/protocol')]
@@ -22,10 +23,10 @@ class RosetteStatisticsTests(unittest.TestCase):
         for merit,target in ((math.nan,27.5),(26,math.inf),(-1,28),(28,0)):
             with self.assertRaises(ValueError):add_rosette(empty_rosettes(),merit,target)
     def make_store(self):
-        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);self.folder=Path(tmp.name)/'session'
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);self.folder=Path(tmp.name)/'tickets'/('a'*64)
         self.start=154000000000000000001;self.width=100000
         self.config=dict(start=str(self.start),end=str(self.start+self.width),bins=100,report_top=100,**fields(self.start,self.start+self.width))
-        self.config['target_merit']=26.4
+        self.config.update(target_merit=26.4,ticket_id='a'*64)
         return SessionStore.create(self.folder,self.config,{'uuid':'NO-HARDWARE-STATISTICS-QA'})
     def test_full_incremental_projection_rebuild_migration_and_reopen(self):
         store=self.make_store();pairs=[]
@@ -73,6 +74,21 @@ class RosetteStatisticsTests(unittest.TestCase):
             changed=dict(self.config,target_merit=29.3)
             self.assertNotEqual(presentation(pairs,changed)['statistics']['rosette_counts'],expected)
             self.assertEqual(projected['statistics']['statistics_target'],26.4)
+        finally:store.close()
+    def test_durable_complete_search_timing_survives_late_read_and_reopen(self):
+        from horizon_status_stream import ticket_frame
+        store=self.make_store()
+        try:
+            store.accepted_progress(self.width,0);store.closed('COMPLETE',133.125,9.0)
+            with patch('horizon_engine_capabilities.qualified_presentation_identity',return_value=True):
+                frame=ticket_frame(self.folder)
+            self.assertEqual(frame['completed_search_timing'],dict(schema='PGN_COMPLETE_SEARCH_TIMING_V1',ticket_id='a'*64,active_time_ns='133125000000'))
+            store.close();store=SessionStore.load(self.folder)
+            with patch('horizon_engine_capabilities.qualified_presentation_identity',return_value=True):
+                self.assertEqual(ticket_frame(self.folder)['completed_search_timing'],frame['completed_search_timing'])
+            store.recovery_rewind(self.width,0,unknown_wall=True);store.closed('COMPLETE',133.125,9.0)
+            with patch('horizon_engine_capabilities.qualified_presentation_identity',return_value=True):
+                self.assertNotIn('completed_search_timing',ticket_frame(self.folder))
         finally:store.close()
 
 if __name__=='__main__':unittest.main()

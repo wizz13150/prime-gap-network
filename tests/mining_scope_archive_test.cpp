@@ -35,7 +35,7 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);QTemporaryDir dir
    stats.insert("at_or_above_target",1);stats.insert("merit_band_counts",QJsonObject{{"21",4}});
    stats.insert("rosette_counts",QJsonObject{{"gold",1},{"silver",1},{"bronze",1},{"rust",1},{"ordinary",1}});
    data.insert("statistics",stats);scopes.insert("ticket",data);value.insert("scopes",scopes);
-   if(done)value.insert("phase","Report ready");return value;
+   if(done){value.insert("phase","Report ready");if(epoch!="after-restart")value.insert("completed_search_timing",QJsonObject{{"schema","PGN_COMPLETE_SEARCH_TIMING_V1"},{"ticket_id",value.value("ticket_id")},{"active_time_ns",QString::number(ns)}});}return value;
   };
   {
    MiningScopeArchive a(path);require(a.observe(sample(1,0,0,"epoch1",false)));
@@ -58,7 +58,7 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);QTemporaryDir dir
   }
   {
    MiningScopeArchive a;require(a.observe(sample(1,50,3'000'000'000ULL,"partial",false)));require(a.observe(sample(1,100,10'000'000'000ULL,"partial",true)));
-   require(a.scope().value("completed_timed_tickets")=="0");
+   require(a.scope().value("completed_timed_tickets")=="1");require(a.scope().value("completed_compute_time_ns")=="10000000000");
   }
   {
    MiningScopeArchive a;require(a.observe(sample(1,0,0,"before-restart",false)));require(a.observe(sample(1,50,5'000'000'000ULL,"before-restart",false)));

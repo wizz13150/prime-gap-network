@@ -119,16 +119,17 @@ public:
             const bool fullPrefix=prefix!="0"&&frame.value("positions_total").isString()&&prefix==frame.value("positions_total").toString();
             const bool completed=(sameTicket&&current_.value("completed_tickets")=="1")||frame.value("phase")=="Report ready"||fullPrefix;
             current.insert("completed_tickets",completed?QString("1"):QString("0"));
-            bool timed=sameTicket?current_.value("timed_from_start").toBool():prefix=="0"&&clockOk&&!epoch.isEmpty();
-            if(sameTicket&&(!clockOk||epoch.isEmpty()||epoch!=oldEpoch||clock<oldClock))timed=false;
-            current.insert("timed_from_start",timed);
-            // Freeze a complete measured SEARCH at its first completion. Later
-            // waiting, audits, duplicate frames and restarts cannot extend it.
+            // A complete search duration is supplied by the durable source,
+            // not inferred from whether the UI happened to observe prefix0.
+            const auto timing=frame.value("completed_search_timing").toObject();
+            const auto duration=timing.value("active_time_ns").toString();bool durationOk=false;
+            const auto durationNs=duration.toULongLong(&durationOk);
+            const bool sourceMeasured=completed&&timing.value("schema")=="PGN_COMPLETE_SEARCH_TIMING_V1"&&
+                timing.value("ticket_id")==ticket&&durationOk&&durationNs>0&&QString::number(durationNs)==duration;
             const bool measuredBefore=sameTicket&&current_.value("completed_timed_tickets")=="1";
-            const bool measured=measuredBefore||(completed&&timed&&nextActive>0);
+            const bool measured=measuredBefore||sourceMeasured;
             current.insert("completed_timed_tickets",measured?QString("1"):QString("0"));
-            current.insert("completed_compute_time_ns",measuredBefore?current_.value("completed_compute_time_ns"):QJsonValue(measured?QString::number(nextActive):QString("0")));
-
+            current.insert("completed_compute_time_ns",measuredBefore?current_.value("completed_compute_time_ns"):QJsonValue(sourceMeasured?duration:QString("0")));
             // Commit only after every counter and histogram has validated.
             // A source-root change is a new producer generation, not a new
             // lifetime history. Retired generations cannot be counted twice.
