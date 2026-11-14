@@ -33,9 +33,9 @@ class MiningSessionSummary final:public QWidget {
     const QJsonObject& scope()const{return scopeKey_=="ticket"?ticket_:scopeKey_=="history"?history_:session_;}
     static QString scalar(const QJsonObject& object,const char* key){return object.contains(key)?object.value(key).toVariant().toString():QString("—");}
     QStringList values()const{
-        if(scope().value("statistics").toObject().isEmpty())return {"—","—","—","—","—","—","—","—"};
+        if(scope().value("statistics").toObject().isEmpty())return {"—","—","—","—","—","—","—"};
         const auto& data=scope();const double seconds=scalar(data,"active_time_ns").toDouble()/1e9;const auto secs=qint64(seconds),golds=data.value("observed_golds").toVariant().toLongLong();const auto best=data.value("best").toArray();
-        return {scalar(data,"completed_tickets"),scalar(data,"ticket_count"),positionFormats(scalar(data,"positions")).human,positionFormats(scalar(data,"tests")).human,data.contains("active_time_ns")?QString("%1:%2:%3").arg(secs/3600,2,10,QChar('0')).arg(secs/60%60,2,10,QChar('0')).arg(secs%60,2,10,QChar('0')):QString("—"),data.contains("observed_golds")?QString::number(golds):QString("—"),data.value("daily_forecast").toObject().value("validated").toBool()?QString("≈ %1").arg(data.value("daily_forecast").toObject().value("blocks_per_day").toDouble(),0,'f',1):QString("—"),best.isEmpty()?QString("—"):QString::number(best.first().toObject().value("gap").toInt())};
+        return {scalar(data,"completed_tickets"),scalar(data,"ticket_count"),positionFormats(scalar(data,"positions")).decimal,positionFormats(scalar(data,"tests")).decimal,data.contains("active_time_ns")?QString("%1:%2:%3").arg(secs/3600,2,10,QChar('0')).arg(secs/60%60,2,10,QChar('0')).arg(secs%60,2,10,QChar('0')):QString("—"),data.contains("observed_golds")?QString::number(golds):QString("—"),best.isEmpty()?QString("—"):QString::number(best.first().toObject().value("gap").toInt())};
     }
     void mode(const QString& selected){scopeKey_=selected;ticketButton_->setChecked(selected=="ticket");sessionButton_->setChecked(selected=="session");historyButton_->setChecked(selected=="history");QSettings().setValue("mining/statisticsScope",selected);setProperty("pgn_summary_scope",selected);describe();update();if(onScopeChanged)onScopeChanged(selected);}
     void describe(){setProperty("pgn_summary_statistics",scope());setToolTip(QString{});setProperty("pgn_summary_range_start",context_.value("start").toString());setProperty("pgn_summary_range_end",context_.value("end").toString());}
@@ -78,7 +78,7 @@ protected:
     }
     void paintEvent(QPaintEvent*)override{
         QPainter p(this);p.setRenderHint(QPainter::TextAntialiasing);
-        const QStringList labels{"Tickets done","Tickets tracked","Positions","Tests","Active time","Golds found","Blocks/day est.","Largest gap"};
+        const QStringList labels{"Tickets done","Tickets tracked","Integers","PRP tests","Active time","Golds found","Largest gap"};
         const auto& data=scope();const auto v=values();
         const auto network=networkSummary();
         const auto coverage=networkBitCoverage(coreMetrics_,coreGenesis_,context_.value("bits").toInt(),coreReceived_.isValid()?coreReceived_.elapsed():90001);
@@ -88,8 +88,8 @@ protected:
         constexpr double top=32.,domainHeight=22.,rateHeight=22.,networkHeight=116.;
         const double coverageHeight=hasCoverage?64.:0.;
         const bool footer=height()>=560;
-        const double unit=std::clamp((height()-top-domainHeight-rateHeight-networkHeight-coverageHeight-(footer?34.:0.))/12.,17.,25.);
-        const double contentHeight=top+12*unit+domainHeight+rateHeight+networkHeight+coverageHeight+(footer?34.:0.);
+        const double unit=std::clamp((height()-top-domainHeight-rateHeight-networkHeight-coverageHeight-(footer?34.:0.))/7.,17.,25.);
+        const double contentHeight=top+7*unit+domainHeight+rateHeight+networkHeight+coverageHeight+(footer?34.:0.);
         const bool needsScroll=contentHeight>height();
         {QSignalBlocker blocked(scroll_);scroll_->setRange(0,std::max(0,int(std::ceil(contentHeight-height()))));scroll_->setPageStep(std::max(1,height()-int(top)));}
         scroll_->setVisible(needsScroll);
@@ -108,16 +108,11 @@ protected:
             p.setPen(valueColor);p.drawText(rect,Qt::AlignRight|Qt::AlignVCenter,p.fontMetrics().elidedText(value,Qt::ElideMiddle,int(usable)));
             region(label,value,rect,font.pixelSize());y+=height;
         };
-        for(int i=0;i<8;++i){
-            const bool quantity=i==2||i==3;const QRectF firstLine(left,y,usable,unit);
+        for(int i=0;i<labels.size();++i){
+            const QRectF firstLine(left,y,usable,unit);
             if(i==1)trackedRect_=firstLine.translated(0,-offset).intersected(viewport);
-            row(labels[i],v.value(i),unit,QColor(i==5||i==6?"#ffd700":"#e7fff7"));
-            if(quantity){
-                const auto formats=positionFormats(scalar(data,i==2?"positions":"tests"));
-                for(const auto& text:QStringList{formats.decimal,formats.binary}){
-                    const QRectF rect(left,y,usable,unit);p.setFont(detail);p.setPen(QColor("#91b9b5"));p.drawText(rect,Qt::AlignRight|Qt::AlignVCenter,p.fontMetrics().elidedText(text,Qt::ElideMiddle,int(usable)));region(labels[i]+" notation",text,rect,detail.pixelSize());y+=unit;
-                }
-            }
+            row(labels[i],v.value(i),unit,QColor(i==5?"#ffd700":"#e7fff7"));
+
         }
         const int bits=context_.value("bits").toVariant().toInt(),minimum=context_.value("minimum_gap").toVariant().toInt();
         const QString bitText=bits?QString::number(bits):QString("—"),minText=minimum?QString::number(minimum):QString("—");
