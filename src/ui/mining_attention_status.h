@@ -5,11 +5,11 @@ inline QString miningAttentionStatus(const QString& reason)
 {
  const auto text=reason.simplified();
  if(text.contains("Active parent changed",Qt::CaseInsensitive))
-  return "Audit submission delayed · retrying on the updated network";
+  return "Network changed during audit submission · open Diagnostics";
  if(text.contains("WAL budget",Qt::CaseInsensitive))
-  return "Results saved · temporary storage access blocked";
+  return "Local results storage unavailable · open Diagnostics";
  if(text.contains("assignment changed",Qt::CaseInsensitive))
-  return "Audit reassigned · computed results retained";
+  return "Audit assignment changed · open Diagnostics";
  if(text.contains("Invalid audit actor signature",Qt::CaseInsensitive))
   return "Audit submission rejected · identity verification failed";
  return text.isEmpty()?QString("Mining needs attention · open Diagnostics for the reason"):

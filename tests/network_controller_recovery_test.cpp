@@ -12,8 +12,8 @@ static void need(bool okay,const char* why){if(!okay)throw std::runtime_error(wh
 int main(int argc,char** argv){
  if(argc>1&&QString::fromLocal8Bit(argv[1])=="--transport"){std::string line;while(std::getline(std::cin,line))if(line=="quit")return 255;return 0;}
  QCoreApplication app(argc,argv);
- need(pgn::ui::miningAttentionStatus("Audit 2: Active parent changed after submission").contains("retrying"),"Recoverable audit publication had no human explanation");
- need(!pgn::ui::miningAttentionStatus("Session index WAL budget reached").contains("100%"),"Storage failure looked like completed work");
+ need(pgn::ui::miningAttentionStatus("Audit 2: Active parent changed after submission").contains("Network changed")&&!pgn::ui::miningAttentionStatus("Active parent changed").contains("retrying"),"Failure text claimed a retry without observing one");
+ need(pgn::ui::miningAttentionStatus("Session index WAL budget reached").contains("storage unavailable")&&!pgn::ui::miningAttentionStatus("Session index WAL budget reached").contains("saved"),"Storage failure claimed an unverified durable save");
  need(pgn::ui::miningAttentionStatus("Invalid audit actor signature").contains("rejected"),"Signature rejection was hidden as success");
  need(pgn::ui::miningAttentionStatus({}).contains("Diagnostics"),"Missing diagnostic reason had no recovery route");
  const QStringList original{"-o","StrictHostKeyChecking=yes","-o","ServerAliveInterval=0","user@host","remote-program","--network"};
