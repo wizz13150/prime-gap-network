@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <pgn/native_elapsed_retarget.h>
+#include <pgn/native_hourly_activation.h>
 #include <node/blockstorage.h>
 #include <pgn/native_bootstrap_hash.h>
 #include <pgn/chain_work_policy.h>
@@ -494,6 +495,8 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     std::sort(vSortedByHeight.begin(), vSortedByHeight.end(),
               CBlockIndexHeightOnlyComparator());
 
+    const auto hourly=pgn::core::ConfiguredNativeHourlyMerit(GetConsensus().hashGenesisBlock);
+    if(hourly&&(hourly->genesis!=GetConsensus().hashGenesisBlock||hourly->median_time<0||hourly->median_time%3600))return false;
     CBlockIndex* previous_index{nullptr};
     for (CBlockIndex* pindex : vSortedByHeight) {
         if (m_interrupt) return false;
@@ -511,8 +514,14 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                 if(kind==pgn::core::AdaptiveHeaderKind::Invalid)return false;
                 if(kind==pgn::core::AdaptiveHeaderKind::Scientific){
                     if(!pindex->pprev)return false;
-                    const auto q=pgn::core::DeriveNextMeritTarget(*pindex->pprev,*own_retarget);
-                    if(!q||pindex->nBits!=q->target_q16)return false;
+                    if(!hourly||pindex->pprev->GetMedianTimePast()<hourly->median_time){
+                        const auto q=pgn::core::DeriveNextMeritTarget(*pindex->pprev,*own_retarget);
+                        if(!q||pindex->nBits!=q->target_q16)return false;
+                    }
+                    // Activated targets depend on authenticated native bodies.
+                    // CompleteChainstateInitialization checks these after coins
+                    // load and BEFORE candidates or services become ready.
+
                 }else if(pindex->nBits!=*pinned_bootstrap_bits||
                     (!GetParams().IsTestChain()&&pindex->pprev&&pgn::core::ClassifyAdaptiveHeader(*pindex->pprev,*own_retarget)==pgn::core::AdaptiveHeaderKind::Scientific))return false;
             }else if(pindex->nBits!=0&&(!pinned_bootstrap_bits||pindex->nBits!=*pinned_bootstrap_bits))return false;

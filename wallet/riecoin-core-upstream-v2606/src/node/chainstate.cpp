@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <node/chainstate.h>
+#include <pgn/native_hourly_startup.h>
 
 #include <arith_uint256.h>
 #include <chain.h>
@@ -133,6 +134,22 @@ static ChainstateLoadResult CompleteChainstateInitialization(
                 return {ChainstateLoadStatus::FAILURE, _("Error initializing block database")};
             }
             assert(chainstate->m_chain.Tip() != nullptr);
+        }
+    }
+
+    // Body-derived hourly targets must be authenticated before candidates are
+    // made available to activation, peers or RPC. Header-only arithmetic is
+    // still used for every pre-activation historical record.
+    for (const auto& chainstate : chainman.m_chainstates) {
+        std::string hourly_error;
+        try {
+            if (!pgn::core::VerifyLoadedNativeHourlyTargets(*chainstate, hourly_error)) {
+                LogError("Native hourly startup verification held: %s", hourly_error);
+                return {ChainstateLoadStatus::FAILURE, Untranslated("Authenticated hourly difficulty history could not be verified: " + hourly_error)};
+            }
+        } catch (const std::exception& error) {
+            LogError("Native hourly startup verification failed: %s", error.what());
+            return {ChainstateLoadStatus::FAILURE, Untranslated("Authenticated hourly difficulty verification failed")};
         }
     }
 

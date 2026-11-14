@@ -1,3 +1,5 @@
+#include <pgn/native_hourly_loaded_targets.h>
+#include <pgn/native_network_metrics.h>
 // Public known-key synthetic native history. No live wallet/network.
 #include <pgn/native_audit_replay_test_helpers.h>
 #include <pgn/native_work_duty.h>
@@ -326,6 +328,41 @@ int main(int argc,char** argv){
     need(cold_old.quote&&cold_old.quote->snapshot==old_from_later.quote->snapshot,"Cold replay changed a historical hourly snapshot");
     need(!pgn::discussion::ReadNativeHourlyHistory(latest_view,*audit_tip,*ranges.policy,quote_missing,policy_budget,schedule,signature_budget,quote_cache).history,
          "Missing archive borrowed an old sealed historical projection");
+    // Difficulty presentation is a task13 consumer, not an audit-policy test.
+    const std::optional<MeritControllerDefinition> metrics_policy{MeritControllerDefinition{65536,65536,64U*65536U,600,86400}};
+    const auto old_metric=NativeNetworkTargetAt(parent,*metrics_policy);
+    need(old_metric&&!old_metric->hourly&&old_metric->header_q16==65536,"Metrics rewrote a historical pre-activation target");
+    const auto hourly_metric=NativeNetworkTargetAt(*historical_parent,*metrics_policy,&*cold_historical.history);
+    need(hourly_metric&&hourly_metric->hourly&&hourly_metric->header_q16==historical_quote->target.header_q16&&
+         hourly_metric->numerator==historical_quote->target.proof_numerator&&
+         hourly_metric->denominator==historical_quote->target.proof_denominator,"Metrics differ from the native proof threshold");
+    need(!NativeNetworkTargetAt(*historical_parent,*metrics_policy),"Missing hourly metrics history silently fell back to the legacy controller");
+    CBlockIndex foreign_parent{historical_parent->GetBlockHeader()};uint256 foreign_hash=uint256::ONE;foreign_parent.phashBlock=&foreign_hash;
+    foreign_parent.pprev=historical_parent->pprev;foreign_parent.nHeight=historical_parent->nHeight;foreign_parent.BuildSkip();
+    need(!NativeNetworkTargetAt(foreign_parent,*metrics_policy,&*cold_historical.history),"Metrics accepted an unrelated branch");
+    CBlockHeader hourly_header;hourly_header.hashPrevBlock=historical_parent->GetBlockHash();
+    hourly_header.nTime=historical_parent->nTime+1;hourly_header.nNonce=0;hourly_header.nBits=historical_quote->target.header_q16;
+    CBlockIndex loaded_hourly{hourly_header};const auto loaded_hash=hourly_header.GetHash();
+    loaded_hourly.phashBlock=&loaded_hash;loaded_hourly.pprev=const_cast<CBlockIndex*>(historical_parent);
+    loaded_hourly.nHeight=historical_parent->nHeight+1;loaded_hourly.BuildSkip();
+    need(NativeLoadedHourlyHeaderMatches(loaded_hourly,*cold_historical.history),"Cold-loaded hourly header disagrees with the authenticated historical quote");
+    ++loaded_hourly.nBits;
+    need(!NativeLoadedHourlyHeaderMatches(loaded_hourly,*cold_historical.history),"Cold-load gate accepted a one-unit target mutation");
+    --loaded_hourly.nBits;loaded_hourly.nHeight+=1;
+    need(!NativeLoadedHourlyHeaderMatches(loaded_hourly,*cold_historical.history),"Cold-load gate accepted an invalid parent height");
+    --loaded_hourly.nHeight;loaded_hourly.nNonce=2;
+    need(!NativeLoadedHourlyHeaderMatches(loaded_hourly,*cold_historical.history),"A bootstrap record was misrepresented as a scientific header");
+    const auto metrics=NativeNetworkMetrics(*restored_self,*audit_tip,*metrics_policy,16,3600,600,nullptr,&*cold_historical.history);
+    need(metrics["points"].size()>1,"Historical metrics samples missing");
+    for(const auto& point:metrics["points"].getValues()){
+        const auto* selected=audit_tip->GetAncestor(point["height"].getInt<int>());
+        need(selected,"Metrics selected a non-existent parent");
+        const auto expected=NativeNetworkTargetAt(*selected,*metrics_policy,&*cold_historical.history);
+        need(expected&&point["merit_target_q16"].getInt<uint64_t>()==expected->header_q16&&
+             point["merit_target_numerator"].get_str()==expected->numerator.convert_to<std::string>()&&
+             point["merit_target_denominator"].get_str()==expected->denominator.convert_to<std::string>(),
+             "Historical graph does not use the exact native threshold");
+    }
     const auto duty=InspectAutomaticNativeWorkDuty(*restored_self,*audit_tip->GetAncestor(9),GetScriptForDestination(WitnessV0KeyHash(known(2).GetPubKey())),NativeDutySpent{},0);need(duty.checked.proof&&duty.references.size()==2,"Self history cannot serve ordinary cycle");
 
     // Real native index ancestry and authenticated alternate report bytes.
@@ -346,7 +383,7 @@ int main(int argc,char** argv){
     need(!read_receipts(view_admitted,admitted_index,missing),"Missing history became zero activity");
     need(!compare(view_admitted,admitted_index,missing,policy_budget,schedule,signature_budget),"Different empty archive borrowed cached authority");
     need(compare(view_admitted,admitted_index,history,policy_budget,schedule,signature_budget).has_value(),"Recovery after unavailable archive");
-    std::cout<<"{\"PASS\":true,\"whole_state_comparisons\":"<<comparisons<<",\"native_signed_enrollments\":3,\"native_signed_retained_audit_events\":8,\"full_incremental_retained_history\":true,\"retained_receipt_reorg_restored\":true,\"canonical_hourly_quote_from_native_receipts\":true,\"missing_history_never_quotes\":true,\"future_window_nonzero\":true,\"native_policy_header_binding\":true,\"historical_target_preserved\":true,\"missing_context_refused\":true,\"exact_decimal_header_encoding\":true,\"mathematics_tested\":false,\"reorg_and_restore\":true,\"warm_budget_rejections\":true,\"empty_archive_refused\":true}\n";
+    std::cout<<"{\"PASS\":true,\"whole_state_comparisons\":"<<comparisons<<",\"native_signed_enrollments\":3,\"native_signed_retained_audit_events\":8,\"full_incremental_retained_history\":true,\"retained_receipt_reorg_restored\":true,\"canonical_hourly_quote_from_native_receipts\":true,\"missing_history_never_quotes\":true,\"future_window_nonzero\":true,\"native_policy_header_binding\":true,\"native_metrics_threshold_binding\":true,\"cold_loaded_header_mutations_refused\":true,\"historical_target_preserved\":true,\"missing_context_refused\":true,\"exact_decimal_header_encoding\":true,\"mathematics_tested\":false,\"reorg_and_restore\":true,\"warm_budget_rejections\":true,\"empty_archive_refused\":true}\n";
     return 0;
   }catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}
 }

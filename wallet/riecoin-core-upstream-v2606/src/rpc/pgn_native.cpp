@@ -827,7 +827,19 @@ RPCMethod getpgnnetworkmetrics(){
     const auto& budget=*manager.m_options.pgn_candidate_science_budget;
     const auto range=ReadChainRangePolicy(active.CoinsTip(),tip,history.archive,budget.schedule.archive,budget.policy);
     if(!range.policy)throw std::runtime_error("Authenticated range domain unavailable");
-    auto value=NativeNetworkMetrics(*ledger,tip,NativeParameterController(*manager.GetConsensus().pgn_native_proof),unsigned(points),span,window,&range.policy->Definition());
+    std::optional<pgn::discussion::NativeHourlyHistory> hourly_history;
+    const auto activation=ConfiguredNativeHourlyMerit(genesis);
+    if(activation&&(activation->genesis!=genesis||activation->median_time<0||activation->median_time%3600))
+        throw std::runtime_error("Invalid hourly target activation");
+    if(activation&&tip.GetMedianTimePast()>=activation->median_time){
+        static pgn::discussion::complete_return_detail::Cache hourly_cache;
+        const auto checked=pgn::discussion::ReadNativeHourlyHistory(active.CoinsTip(),tip,*range.policy,history.archive,
+            budget.policy,budget.schedule,budget.signature,hourly_cache);
+        if(!checked.history)throw std::runtime_error("Authenticated hourly target history unavailable");
+        hourly_history=checked.history;
+    }
+    auto value=NativeNetworkMetrics(*ledger,tip,NativeParameterController(*manager.GetConsensus().pgn_native_proof),unsigned(points),span,window,
+        &range.policy->Definition(),hourly_history?&*hourly_history:nullptr);
    saved={&active,tip.GetBlockHash(),genesis,points,span,window,value};return value;
   }catch(const std::exception& error){throw JSONRPCError(RPC_MISC_ERROR,error.what());}
  }};
